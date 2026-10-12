@@ -13,6 +13,7 @@ dist/
 
 # --- Calisma zamani verileri (kisisel / uretilen) ---
 logs/
+_arsiv/
 mibox-ayarlar.json
 MiBox-ayarlar.json
 mibox-islem-gecmisi.jsonl

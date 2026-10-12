@@ -12,9 +12,8 @@ yardimcilari kullanir:
   - set_busy(widgets, busy): buton kilitleme (cift worker onler)
   - confirm(): No-varsayilanli onay (dialogs.confirm_action kisayolu)
 """
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QTableWidget,
+    QVBoxLayout, QGroupBox, QLabel, QTableWidget,
     QAbstractItemView, QMessageBox,
 )
 
@@ -185,7 +184,7 @@ def select_bar(grid, check_col):
     Donus: (bar_layout, secilen_sayisi_fonksiyonu).
     """
     from PySide6.QtCore import Qt as _Qt
-    from PySide6.QtWidgets import QHBoxLayout as _HB, QPushButton as _PB, QLabel as _LB
+    from PySide6.QtWidgets import QPushButton as _PB, QLabel as _LB
     from .flowlayout import FlowLayout as _FL
     bar = _FL()
     btn_all = _PB('Tumunu Sec')

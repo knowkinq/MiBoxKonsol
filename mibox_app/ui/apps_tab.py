@@ -5,10 +5,10 @@ import csv
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
+    QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidgetItem, QLineEdit, QComboBox, QPushButton,
-    QLabel, QHeaderView, QMenu, QMessageBox, QAbstractItemView,
-    QSpinBox, QFileDialog, QDialog, QDialogButtonBox, QTextEdit,
+    QLabel, QHeaderView, QMenu, QMessageBox,
+    QFileDialog, QDialog, QDialogButtonBox, QTextEdit,
 )
 
 from ..config import APK_DIR

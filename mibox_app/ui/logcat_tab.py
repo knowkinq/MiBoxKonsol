@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Logcat sekmesi: canlı sistem günlüğü + çökme avcısı + filtre."""
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton,
+    QWidget, QHBoxLayout, QPlainTextEdit, QPushButton,
     QLabel, QComboBox, QLineEdit, QMessageBox, QFileDialog, QCheckBox,
 )
 

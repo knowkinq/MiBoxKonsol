@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Sahne önizleme diyaloğu: işlem listesini göster, onayla/iptal et."""
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QAbstractItemView, QDialogButtonBox,
+    QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QLabel, QHeaderView, QAbstractItemView, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt
 

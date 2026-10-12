@@ -281,8 +281,11 @@ mibox_app/
 - `python tests/run_all.py` - TUM offline test suite'leri tek komutla:
   - `tests/faz2_core_test.py` - onbellek uretim sayaci, kilitli config, history kilidi
   - `tests/faz5_security_test.py` - guvenlik: komut kapi, paket/yol/etiket dogrulama,
-    kok dizin engeli, APK, keyevent (89 iddia, offline)
+    kok dizin engeli, APK, keyevent, Google TV sihirbaz tanima/kapatma
+    (106 iddia, offline)
   - `tests/faz7_quality_test.py` - logcat dedup, onbellek TTL, Stage mantigi,
     snapshot dogrulama, input sanitize, gate regresyonu (47 iddia, offline)
+- `dogrula.bat` - TEK TIK: yukaridaki uc adimi sirayla calistirir
+  (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
 - `python tests/device_test.py [hedef]` - GERCEK cihaz dogrulamasi (offline suite'ler
   cihaz gerektirmez; sahte veri YOK)

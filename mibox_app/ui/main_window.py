@@ -7,7 +7,7 @@ import threading
 
 from collections import deque
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QMutex
+from PySide6.QtCore import Qt, QTimer, QObject, QMutex
 from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

@@ -6,7 +6,6 @@ animasyon kapatma, command gate), android-tv-debloat-toolkit (launcher akışı)
 """
 import os
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QComboBox,

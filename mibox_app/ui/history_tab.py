@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """Geçmiş sekmesi: kalıcı işlem kayıtları + tek tıkla geri alma + snapshot."""
-import os
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QAbstractItemView, QMessageBox,
+    QWidget, QTableWidgetItem,
+    QPushButton, QLabel, QHeaderView, QMessageBox,
     QComboBox, QFileDialog,
 )
 

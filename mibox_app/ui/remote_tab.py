@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import SHOT_DIR
-from ..workers import Worker, ScreenshotWorker, DeviceInfoWorker
+from ..workers import Worker, DeviceInfoWorker
 from . import kit
 from .flowlayout import FlowLayout
 

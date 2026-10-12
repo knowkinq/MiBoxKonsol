@@ -305,7 +305,7 @@ class HealthTab(QWidget):
         self.window._run(w, desc='Saglik: otomatik baslayanlar taraniyor')
 
     def _show_autorun(self, found):
-        from PySide6.QtWidgets import QTableWidgetItem as _TWI3, QCheckBox as _CB
+        from PySide6.QtWidgets import QTableWidgetItem as _TWI3
         from PySide6.QtCore import Qt as _Qt3
         pkgs = sorted(found)
         self.grid_auto.setRowCount(0)

@@ -4,8 +4,8 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QAbstractItemView, QMessageBox,
+    QWidget, QHBoxLayout, QTableWidgetItem,
+    QPushButton, QLabel, QHeaderView, QMessageBox,
     QLineEdit, QFileDialog, QInputDialog,
 )
 

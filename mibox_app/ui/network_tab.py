@@ -6,8 +6,8 @@ import socket
 import time
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QAbstractItemView, QLineEdit,
+    QWidget, QHBoxLayout, QTableWidgetItem,
+    QPushButton, QLabel, QHeaderView, QLineEdit,
     QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy,
 )
 
