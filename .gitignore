@@ -1,0 +1,32 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- PyInstaller ciktilari ---
+build/
+dist/
+*.manifest
+
+# --- Calisma zamani verileri (kisisel / uretilen) ---
+logs/
+mibox-ayarlar.json
+MiBox-ayarlar.json
+mibox-islem-gecmisi.jsonl
+mibox-bilinen-uygulamalar.json
+MiBox-bilinen-uygulamalar.json
+mibox-snapshot-*.json
+mibox-selftest-ok.txt
+mibox-*.csv
+mibox-logcat.txt
+uad_exported_selection.txt
+ekran-goruntuleri/
+
+# --- Editör / OS ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
