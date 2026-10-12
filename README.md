@@ -243,10 +243,19 @@ v6.0.0 (GitHub UAD arastirmasi):
 
 ```bat
 pip install pyinstaller
-build_exe.bat
+build_exe.bat            :: tek dosya  -> dist\MiBoxKonsol.exe
+build_exe_onedir.bat     :: klasor     -> dist-onedir\MiBoxKonsol\MiBoxKonsol.exe
 ```
 
 `dist\MiBoxKonsol.exe` olusturur. adb.exe dosyasini exe yanina kopyalayin.
+
+**Hangi paket?**
+- `build_exe.bat` (onefile): tek dosya, tasimasi kolay. Calisirken `%TEMP%`
+  altinda gecici klasor acar.
+- `build_exe_onedir.bat` (onedir): klasor halinde, **gecici klasor acmaz** —
+  kisitli token/antivirus/temp kisitlamasi olan makinelerde sorunsuz calisir,
+  acilisi daha hizlidir. `tools/build_onedir.py` ayni spec'ten uretir
+  (exclude/filtre mantigi tek kaynaktan gelir, drift olmaz).
 
 Paketi dogrulama (kaynagi degil, donmus exe'yi test eder):
 
@@ -255,14 +264,16 @@ dogrula_exe.bat
 ```
 
 Bu betik `MiBoxKonsol.exe --version` ciktisini (surum + base_dir + log_dir)
-ve `--selftest` isaretcisini kontrol eder.
+ve `--selftest` isaretcisini kontrol eder. onedir pakette bu ikisi de
+dogrulanmistir (`SELFTEST_OK`).
 
 **Bilinen durum:** `Could not create temporary directory` hatasi UYGULAMADAN
 degil, PyInstaller'in tek-dosya paketleyicisinden gelir: exe, Windows gecici
 klasorunde (`%TEMP%`) kendi `_MEI...` klasorunu acamaz (kisitli token, antivirus
-veya kilitli temp). Cozum sirasi: (1) exe'yi baska bir klasore kopyalayip
-deneyin, (2) antivirus/Defender istisnasi ekleyin, (3) kaynaktan calistirin
-(`MiBox_Konsol.bat`). Kaynaktan calistirma her zaman bu kisitlamadan etkilenmez.
+veya kilitli temp). Cozum sirasi: (1) **onedir paketi kullanin**
+(`build_exe_onedir.bat`), (2) exe'yi baska bir klasore kopyalayip deneyin,
+(3) antivirus/Defender istisnasi ekleyin, (4) kaynaktan calistirin
+(`MiBox_Konsol.bat`).
 
 ## Cihaz Uyku Modu
 

@@ -66,6 +66,12 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   işaretçi yolu, `cwd`). Paketleme teşhisi için: `MiBoxKonsol.exe --version`.
   `mibox.py` ve `mibox_app/main.py` artık tek `main()` dağıtıcısını kullanır.
 - `dogrula.bat` (kaynak doğrulama) ve `dogrula_exe.bat` (donmuş exe doğrulama).
+- **ONEDIR paketleme:** `build_exe_onedir.bat` + `tools/build_onedir.py`.
+  Üretici, `MiBoxKonsol.spec`'i okuyup yalnızca `EXE(...)` bloğunu
+  `EXE+COLLECT` (onedir) bloğuna çevirir; exclude/filtre mantığı tek
+  kaynaktan geldiği için iki paket arasında drift olmaz. Çıktı:
+  `dist-onedir\MiBoxKonsol\MiBoxKonsol.exe`. Onefile'ın `%TEMP%` altında
+  geçici klasör açma zorunluluğu yoktur — kısıtlı makinelerde çalışır.
 - `tools/kalite_tara.py` — ölü import / aynı dosyada çakışan tanım / `print()` /
   TODO tarayıcısı (`--siki` ile bulgu varsa çıkış kodu 1).
 - Git deposu + `.gitattributes` (kaynak LF, `.bat/.ps1` CRLF).
@@ -85,6 +91,13 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   kısıtlaması** olduğu kanıtlandı (kaynak çalıştırma ve PowerShell klasör
   açabiliyor). Exe doğrulaması kullanıcı tarafında `dogrula_exe.bat` ile
   yapılır; ayrıntı README ".exe Olusturma" bölümünde.
+- **ONEDIR paket uçtan uca doğrulandı:** `dist-onedir\MiBoxKonsol\MiBoxKonsol.exe`
+  → `--version` çıkış kodu 0 (`frozen: True`, `base_dir` = paket klasörü) ve
+  `--selftest` çıkış kodu 0 + `mibox-selftest-ok.txt` = `SELFTEST_OK`.
+  Paket içinde `qwindows/qoffscreen/qminimal` platform eklentileri ve
+  `python314.dll` doğrulandı (59,3 MB klasör). Bu, donmuş kod yolunun,
+  `--version` teşhisinin ve `BASE_DIR` mantığının çalıştığını kanıtlar;
+  onefile'daki hata yalnızca oturumun `%TEMP%` kısıtlamasıdır.
 
 
 ## [8.4.0] - 2026-10-12

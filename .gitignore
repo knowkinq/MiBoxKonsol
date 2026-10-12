@@ -9,6 +9,7 @@ env/
 # --- PyInstaller ciktilari ---
 build/
 dist/
+dist-onedir/
 *.manifest
 
 # --- Calisma zamani verileri (kisisel / uretilen) ---
