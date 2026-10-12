@@ -247,6 +247,22 @@ build_exe.bat
 
 `dist\MiBoxKonsol.exe` olusturur. adb.exe dosyasini exe yanina kopyalayin.
 
+Paketi dogrulama (kaynagi degil, donmus exe'yi test eder):
+
+```bat
+dogrula_exe.bat
+```
+
+Bu betik `MiBoxKonsol.exe --version` ciktisini (surum + base_dir + log_dir)
+ve `--selftest` isaretcisini kontrol eder.
+
+**Bilinen durum:** `Could not create temporary directory` hatasi UYGULAMADAN
+degil, PyInstaller'in tek-dosya paketleyicisinden gelir: exe, Windows gecici
+klasorunde (`%TEMP%`) kendi `_MEI...` klasorunu acamaz (kisitli token, antivirus
+veya kilitli temp). Cozum sirasi: (1) exe'yi baska bir klasore kopyalayip
+deneyin, (2) antivirus/Defender istisnasi ekleyin, (3) kaynaktan calistirin
+(`MiBox_Konsol.bat`). Kaynaktan calistirma her zaman bu kisitlamadan etkilenmez.
+
 ## Cihaz Uyku Modu
 
 Eger ADB "cannot connect" diyorsa cihaz uyku modunda olabilir.
@@ -287,5 +303,9 @@ mibox_app/
     snapshot dogrulama, input sanitize, gate regresyonu (47 iddia, offline)
 - `dogrula.bat` - TEK TIK: yukaridaki uc adimi sirayla calistirir
   (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
+- `dogrula_exe.bat` - DONMUS exe dogrulamasi: `--version` ciktisi + `--selftest`
+  isaretcisi (paketleme bozulmasi ve `%TEMP%` kisitlamasi ayrimi)
+- `python tools/kalite_tara.py` - olu import / cakisan tanim / print() / TODO taramasi
+- `python mibox.py --version` - surum + frozen/meipass/base_dir/log_dir teshis ciktisi
 - `python tests/device_test.py [hedef]` - GERCEK cihaz dogrulamasi (offline suite'ler
   cihaz gerektirmez; sahte veri YOK)

@@ -35,11 +35,34 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   HOME paketi çıkarma ve "yalnızca sihirbaz paketi kapatılır" güvenliği
   (89 → 106 iddia).
 - `.gitignore` (build/dist/__pycache__/logs/ayar ve snapshot dosyaları).
+- **`--version` / `--bilgi` CLI:** pencere açmadan sürüm + ortam bilgisi
+  (`frozen`, `meipass`, `executable`, `base_dir`, `log_dir`, `selftest`
+  işaretçi yolu, `cwd`). Paketleme teşhisi için: `MiBoxKonsol.exe --version`.
+  `mibox.py` ve `mibox_app/main.py` artık tek `main()` dağıtıcısını kullanır.
+- `dogrula.bat` (kaynak doğrulama) ve `dogrula_exe.bat` (donmuş exe doğrulama).
+- `tools/kalite_tara.py` — ölü import / aynı dosyada çakışan tanım / `print()` /
+  TODO tarayıcısı (`--siki` ile bulgu varsa çıkış kodu 1).
+- Git deposu + `.gitattributes` (kaynak LF, `.bat/.ps1` CRLF).
+
+### Değiştirilen
+- **Ölü import temizliği:** 11 modülde 28 kullanılmayan import kaldırıldı
+  (`apps_tab`, `debloat_tab`, `files_tab`, `history_tab`, `install_tab`,
+  `kit.py`, `logcat_tab`, `main_window`, `network_tab`, `remote_tab`,
+  `stage_dialog`, `health_tab`).
 
 ### Doğrulanmış
 - `python -m compileall mibox_app` → temiz.
 - `python mibox.py --selftest` → SELFTEST_OK.
 - `python tests/run_all.py` → 3 suite yeşil (Faz2 + 106 güvenlik + 47 kalite).
+- `python tools/kalite_tara.py --siki` → 0 bulgu.
+- `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin
+  çalıştırma testi yapılamadı — `%TEMP%` altında `_MEI...` klasörü açılamıyor
+  (`Could not create temporary directory!`); aynı hata 3 satırlık bir
+  hello-world onefile exe'de de tekrarlandığı için bunun **oturum/ortam
+  kısıtlaması** olduğu kanıtlandı (kaynak çalıştırma ve PowerShell klasör
+  açabiliyor). Exe doğrulaması kullanıcı tarafında `dogrula_exe.bat` ile
+  yapılır; ayrıntı README ".exe Olusturma" bölümünde.
+
 
 ## [8.4.0] - 2026-10-12
 

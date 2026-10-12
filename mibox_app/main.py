@@ -7,9 +7,36 @@ Calisma bicimleri (hepsi calisir):
   python mibox.py               (kok dizindeki giris, .exe icin)
 
 --selftest: pencereyi kurar, event isler, mibox-selftest-ok.txt yazar, cikar.
+--version : surum + ortam bilgisi yazip cikar (paketleme tani icin).
 """
 import os
 import sys
+
+
+def _print_info():
+    """Surum + ortam bilgisi (frozen paket teshisi icin).
+
+    .exe penceresiz derlendigi icin ciktiyi gormek uzere yonlendirin:
+        MiBoxKonsol.exe --version > bilgi.txt
+    """
+    try:
+        from . import APP_NAME, __version__
+        from .config import BASE_DIR, CONFIG_PATH, LOG_DIR
+    except ImportError:  # script modu (python mibox_app\main.py)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from mibox_app import APP_NAME, __version__
+        from mibox_app.config import BASE_DIR, CONFIG_PATH, LOG_DIR
+    print('{} v{}'.format(APP_NAME, __version__))
+    print('frozen    : {}'.format(getattr(sys, 'frozen', False)))
+    print('meipass   : {}'.format(getattr(sys, '_MEIPASS', '-')))
+    print('executable: {}'.format(sys.executable))
+    print('base_dir  : {}'.format(BASE_DIR))
+    print('log_dir   : {}'.format(LOG_DIR))
+    print('config    : {}'.format(CONFIG_PATH))
+    print('selftest  : {}'.format(_selftest_path()))
+    print('cwd       : {}'.format(os.getcwd()))
 
 
 def _import_pkg():
@@ -260,5 +287,19 @@ def run(selftest=False):
     return app.exec()
 
 
+def main(argv=None):
+    """CLI dagitimi (hem mibox.py hem .exe ayni yolu kullanir).
+
+    --version / --bilgi : pencere acmadan surum + ortam bilgisi yaz, cik.
+    --selftest          : pencereyi offscreen kur, isaretci yaz, cik.
+    (baska)             : normal GUI.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    if '--version' in argv or '--bilgi' in argv:
+        _print_info()
+        return 0
+    return run(selftest='--selftest' in argv)
+
+
 if __name__ == '__main__':
-    sys.exit(run(selftest='--selftest' in sys.argv))
+    sys.exit(main())

@@ -2,7 +2,7 @@
 """Kok dizin giris noktasi (BAT ve PyInstaller .exe icin)."""
 import sys
 
-from mibox_app.main import run
+from mibox_app.main import main
 
 if __name__ == '__main__':
-    sys.exit(run(selftest='--selftest' in sys.argv))
+    sys.exit(main())
