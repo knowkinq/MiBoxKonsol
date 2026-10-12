@@ -16,6 +16,15 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   veri silinmez), ardından HOME yeniden ayarlanıp doğrulanır. Yapılan ek
   adımlar `engine.last_home_notes` üzerinden arayüzde raporlanır.
 - Geçersiz HOME bileşeni hâlâ ilk adımda reddedilir (enjeksiyon testi korunur).
+- **Filtre etiket/veri ayrımı (8.5.0 regresyonu):** filtre etiketleri
+  Türkçeleştirilirken karşılaştırma **etiket metni** üzerinden yapılmıştı;
+  motor verisi ASCII (`Kisitli`) ürettiği için
+  (a) `Kısıtlı` filtresi **hiç sonuç vermiyordu**,
+  (b) `Kaldırılmış` filtresi **kurulu uygulamaları da** listeliyordu.
+  Artık etiket (görünen) ve veri (karşılaştırılan) ayrıdır: combo
+  `addItem(etiket, veri)` ile kurulur, tüm karşılaştırmalar `currentData()`
+  ve `DATA_*` sabitleriyle yapılır. Yazım düzeltmesi filtreyi bozamaz.
+  (Regresyon testi: `tests/faz8_ui_filtre_test.py`.)
 
 ### Değiştirilen
 - **Uygulamalar sekmesi filtreleri:** ayrı `Çalışan` / `Kaldırılmış` /
@@ -27,6 +36,19 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
 - `AppScanWorker` uygulama sözlüğüne `system` alanı eklendi (APK yolu
   `/system`, `/system_ext`, `/vendor`, `/product`, `/apex`, `/odm`, `/oem`
   altındaysa True).
+- **Bağlantı dayanıklılığı:**
+  `AdbEngine.connect(target, timeout, deneme=1, bekleme=0.6)` — varsayılan tek
+  deneme (etkileşimli "Bağlan" hızlı başarısız olur), arka plan bekçisi
+  `deneme=2` verir ve yalnızca **geçici** hatalarda (zaman aşımı, `unable to
+  connect`, `no route`, `device offline`) kısa beklemeyle tekrar dener;
+  kalıcı hatalarda (geçersiz paket, adb yok, yetki) tekrar denenmez.
+  Bekçi aralığı ardışık hatada kademeli uzar: 15 → 30 → 60 sn
+  (`watchdog_interval`), başarıda tabana döner. Cihaz uykudayken log/ADB
+  gürültüsü biter.
+- **Ölü import temizliği:** 11 modülde 28 kullanılmayan import kaldırıldı
+  (`apps_tab`, `debloat_tab`, `files_tab`, `history_tab`, `install_tab`,
+  `kit.py`, `logcat_tab`, `main_window`, `network_tab`, `remote_tab`,
+  `stage_dialog`, `health_tab`).
 
 ### Eklenen
 - Debloat DB ve "Üretici Artıkları" profiline
@@ -34,6 +56,10 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
 - `tests/faz5_security_test.py` → [12] bölümü: kurulum sihirbazı tanıma,
   HOME paketi çıkarma ve "yalnızca sihirbaz paketi kapatılır" güvenliği
   (89 → 106 iddia).
+- `tests/faz8_ui_filtre_test.py` — 17 iddia: etiket/veri ayrımı ve yedi durum
+  filtresinin satır sayısı (offline, `QT_QPA_PLATFORM=offscreen`).
+- `tests/faz9_dayaniklilik_test.py` — 22 iddia: geçici/kalıcı hata ayrımı,
+  bekçi geri çekilmesi, `connect()` sözleşmesi (offline).
 - `.gitignore` (build/dist/__pycache__/logs/ayar ve snapshot dosyaları).
 - **`--version` / `--bilgi` CLI:** pencere açmadan sürüm + ortam bilgisi
   (`frozen`, `meipass`, `executable`, `base_dir`, `log_dir`, `selftest`
@@ -44,17 +70,14 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   TODO tarayıcısı (`--siki` ile bulgu varsa çıkış kodu 1).
 - Git deposu + `.gitattributes` (kaynak LF, `.bat/.ps1` CRLF).
 
-### Değiştirilen
-- **Ölü import temizliği:** 11 modülde 28 kullanılmayan import kaldırıldı
-  (`apps_tab`, `debloat_tab`, `files_tab`, `history_tab`, `install_tab`,
-  `kit.py`, `logcat_tab`, `main_window`, `network_tab`, `remote_tab`,
-  `stage_dialog`, `health_tab`).
-
 ### Doğrulanmış
-- `python -m compileall mibox_app` → temiz.
+- `python -m compileall mibox_app tests` → temiz.
 - `python mibox.py --selftest` → SELFTEST_OK.
-- `python tests/run_all.py` → 3 suite yeşil (Faz2 + 106 güvenlik + 47 kalite).
+- `python tests/run_all.py` → **5 suite yeşil** (Faz2 + 106 güvenlik + 47 kalite
+  + 17 UI filtre + 22 dayanıklılık) → `ALL_TESTS_OK`.
 - `python tools/kalite_tara.py --siki` → 0 bulgu.
+- Gerçek cihaz (salt-okunur ölçüm): hedefe bağlantı 0.28 sn; erişilemez
+  adreste `deneme=1` → 3.0 sn, `deneme=2` → 6.3 sn (tekrar deneme çalışıyor).
 - `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin
   çalıştırma testi yapılamadı — `%TEMP%` altında `_MEI...` klasörü açılamıyor
   (`Could not create temporary directory!`); aynı hata 3 satırlık bir

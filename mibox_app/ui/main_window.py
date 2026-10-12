@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
+from ..adb_engine import watchdog_interval
 from ..config import LOG_DIR
 from ..workers import Worker
 from .apps_tab import AppsTab
@@ -37,6 +38,7 @@ IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d+$')
 # tik acilmadikca panele basilmaz ve tampona DA yazilmaz (gürültü yok).
 LEVELS = ('INFO', 'WARN', 'ERROR', 'ADB', 'VERBOSE')
 LOG_CAPACITY = 2000  # Canli Log halka tamponu (tik degisiminde yeniden cizilir)
+WATCHDOG_BASE_MS = 15000  # baglanti bekcisi temel araligi (ardisik hatada uzar)
 
 
 class LogBus(QObject):
@@ -370,7 +372,7 @@ class MainWindow(QMainWindow):
         # Bağlantı bekçisi: 15 sn'de bir sessiz yoklama, kopmuşsa yeniden bağlan.
         self._watch = QTimer(self)
         self._watch.timeout.connect(self._watchdog)
-        self._watch.start(15000)
+        self._watch.start(WATCHDOG_BASE_MS)
         self._watch_fail = 0
         QTimer.singleShot(3000, self._watchdog)
         # append_log hem tamponu hem gunluk dosyasini besler; burada ikinci
@@ -635,7 +637,8 @@ class MainWindow(QMainWindow):
 
         def do():
             try:
-                self.core.engine.connect(target, timeout=8)
+                # Bekci: zaman asimi/ag hatasi gecici sayilir, bir kez tekrar dener.
+                self.core.engine.connect(target, timeout=8, deneme=2)
                 return True
             except Exception:
                 return False
@@ -645,6 +648,10 @@ class MainWindow(QMainWindow):
                 return
             if ok:
                 self._watch_fail = 0
+                try:
+                    self._watch.setInterval(WATCHDOG_BASE_MS)
+                except RuntimeError:
+                    pass
                 reconnected = not self.core.connected
                 if reconnected:
                     self.core.connected = True
@@ -656,6 +663,12 @@ class MainWindow(QMainWindow):
             else:
                 self._watch_fail += 1
                 self._set_link(False)
+                # Uyku/ag dalgalanmasinda her 15 sn'de ADB'ye vurmayalim:
+                # ardisik hatada yoklama araligi kademeli uzar (15 -> 30 -> 60).
+                try:
+                    self._watch.setInterval(watchdog_interval(self._watch_fail) * 1000)
+                except RuntimeError:
+                    pass
                 if self.core.connected and self._watch_fail >= 2:
                     self.core.connected = False
                     self.core.connection_changed.emit(False, target)

@@ -156,7 +156,8 @@ gercek TV uzerinde `tests/device_test.py` ile yapilir.
 ## Sekmeler
 
 1. **Uygulamalar** - Tum kurulu uygulamalari listeler. Arama (250 ms
-   debounce), filtre (kisitli/serbest/devre disi/calisan/debloat),
+   debounce), tek "Tumu" acilir listesinde filtre (Tumu / Kisitli / Serbest /
+   Devre disi / Kaldirilmis / Calisan / Sistem) + Debloat filtresi,
    basliga tiklayarak siralama, coklu secim, kisitla/serbest birak,
    force stop, veri silme, devre disi/aktif etme, kaldirma/geri yukleme,
    split APK dahil APK yedekleme, CSV aktarim, cift tiklama ile detay
@@ -299,8 +300,12 @@ mibox_app/
   - `tests/faz5_security_test.py` - guvenlik: komut kapi, paket/yol/etiket dogrulama,
     kok dizin engeli, APK, keyevent, Google TV sihirbaz tanima/kapatma
     (106 iddia, offline)
-  - `tests/faz7_quality_test.py` - logcat dedup, onbellek TTL, Stage mantigi,
+  - `tests/faz7_quality_test.py` - logcat dedup, onbellegi TTL, Stage mantigi,
     snapshot dogrulama, input sanitize, gate regresyonu (47 iddia, offline)
+  - `tests/faz8_ui_filtre_test.py` - Uygulamalar filtreleri: etiket/veri
+    ayrimi + 7 durum filtresinin satir sayisi (17 iddia, offline)
+  - `tests/faz9_dayaniklilik_test.py` - baglanti dayanikliligi: gecici/kalici
+    hata ayrimi, bekci geri cekilmesi 15->30->60 sn (22 iddia, offline)
 - `dogrula.bat` - TEK TIK: yukaridaki uc adimi sirayla calistirir
   (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
 - `dogrula_exe.bat` - DONMUS exe dogrulamasi: `--version` ciktisi + `--selftest`

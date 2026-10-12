@@ -145,6 +145,42 @@ def home_pkg_of(activity):
     return a if is_valid_package(a) else ''
 
 
+# --- Baglanti dayanikliligi ------------------------------------------------
+# Cihaz uyku modunda / ag dalgaliyken adb connect zaman asimi verebilir
+# (logda: 'adb connect ... 8024ms HATA: zaman asimi'). Bu durumda tekrar
+# denemek anlamlidir; kalici hatalarda (yetki yok, adb yok) degildir.
+_TRANSIENT_CONNECT_RE = re.compile(
+    r'zaman asimi|timeout|timed out|could not|can\'t connect|cannot connect|'
+    r'unable to connect|failed to connect|no route|connection refused|'
+    r'reset by peer|protocol fault|device offline',
+    re.I)
+
+WATCHDOG_BASE_S = 15
+WATCHDOG_MAX_S = 60
+
+
+def is_transient_connect_error(text):
+    """Baglanti hatasi gecici mi? (tekrar denemeye deger)"""
+    return bool(_TRANSIENT_CONNECT_RE.search(str(text or '')))
+
+
+def watchdog_interval(fail_count, base=WATCHDOG_BASE_S, max_interval=WATCHDOG_MAX_S):
+    """Ardisik basarisiz bekci denemesine gore yoklama araligi (saniye).
+
+    0-1 hata -> base, 2 hata -> 2*base, 3+ hata -> max_interval.
+    Cihaz uykudayken her 15 sn'de bir bosa ADB cagrilmasi boylece biter.
+    """
+    try:
+        n = int(fail_count)
+    except (TypeError, ValueError):
+        return base
+    if n <= 1:
+        return base
+    if n == 2:
+        return min(base * 2, max_interval)
+    return max_interval
+
+
 def clamp_lines(lines, default=200, lo=1, hi=2000):
     try:
         n = int(lines)
@@ -301,15 +337,45 @@ class AdbEngine:
     # ------------------------------------------------------------------
     # Baglanti
     # ------------------------------------------------------------------
-    def connect(self, target, timeout=10):
-        r = self.run(['connect', target], timeout=timeout)
-        text = '{} {}'.format(r.output, r.error)
-        if r.exit_code != 0 or re.search(r'failed|refused|cannot|unreachable|unable|no route', text, re.I):
-            raise AdbError('Baglanti basarisiz: {} (Cihaz uyku modunda olabilir; fiziksel kumandayla uyandin.)'.format(text.strip()))
-        st = self.run(['-s', target, 'get-state'], timeout=timeout)
-        if st.output != 'device':
-            raise AdbError('Cihaz hazir degil: {} {}'.format(st.output, st.error))
-        return target
+    def connect(self, target, timeout=10, deneme=1, bekleme=0.6):
+        """Baglanti kurar; basarisizsa AdbError.
+
+        deneme=1 (varsayilan): tek deneme — etkilesimli 'Baglan' hizli basarisiz
+        olsun. Arka plan bekcisi deneme=2 verir: zaman asimi/ag hatasi gecici
+        sayilir ve kisa bir beklemeden sonra bir kez daha denenir.
+        """
+        import time as _time
+        deneme = max(1, int(deneme or 1))
+        son_hata = None
+        for i in range(deneme):
+            try:
+                r = self.run(['connect', target], timeout=timeout)
+            except AdbError as e:
+                if i + 1 < deneme and is_transient_connect_error(str(e)):
+                    son_hata = e
+                    _time.sleep(bekleme)
+                    continue
+                raise
+            text = '{} {}'.format(r.output, r.error)
+            if r.exit_code != 0 or re.search(r'failed|refused|cannot|unreachable|unable|no route',
+                                             text, re.I):
+                hata = AdbError('Baglanti basarisiz: {} (Cihaz uyku modunda olabilir; '
+                                'fiziksel kumandayla uyandin.)'.format(text.strip()))
+                if i + 1 < deneme and is_transient_connect_error(text):
+                    son_hata = hata
+                    _time.sleep(bekleme)
+                    continue
+                raise hata
+            st = self.run(['-s', target, 'get-state'], timeout=timeout)
+            if st.output != 'device':
+                hata = AdbError('Cihaz hazir degil: {} {}'.format(st.output, st.error))
+                if i + 1 < deneme and is_transient_connect_error('{} {}'.format(st.output, st.error)):
+                    son_hata = hata
+                    _time.sleep(bekleme)
+                    continue
+                raise hata
+            return target
+        raise son_hata or AdbError('Baglanti kurulamadi: {}'.format(target))
 
     def disconnect(self, target):
         try:

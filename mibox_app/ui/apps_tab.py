@@ -28,16 +28,31 @@ COL_ENABLED = 6
 
 # Durum filtresi: eskiden ayri duran "Calisan / Kaldirilmis / Sistem"
 # kutularinin islevi artik bu TEK acilir listenin icinde toplanmistir.
-STATUS_ALL = 'Tümü'
-STATUS_RESTRICTED = 'Kısıtlı'
-STATUS_FREE = 'Serbest'
-STATUS_DISABLED = 'Devre dışı'
-STATUS_REMOVED = 'Kaldırılmış'
-STATUS_RUNNING = 'Çalışan'
-STATUS_SYSTEM = 'Sistem'
-STATUS_FILTERS = [STATUS_ALL, STATUS_RESTRICTED, STATUS_FREE, STATUS_DISABLED,
-                  STATUS_REMOVED, STATUS_RUNNING, STATUS_SYSTEM]
-DEBLOAT_ALL = 'Debloat: Tümü'
+#
+# ONEMLI: ekranda gorunen ETIKET ile karsilastirilan VERI ayridir.
+# Filtre karsilastirmalari HER ZAMAN veri (currentData) ile yapilir; boylece
+# "Kisitli" -> "Kısıtlı" gibi yazim duzeltmeleri filtreyi sessizce bozamaz.
+STATUS_ALL = 'all'
+STATUS_RESTRICTED = 'restricted'
+STATUS_FREE = 'free'
+STATUS_DISABLED = 'disabled'
+STATUS_REMOVED = 'removed'
+STATUS_RUNNING = 'running'
+STATUS_SYSTEM = 'system'
+STATUS_ITEMS = [
+    ('Tümü', STATUS_ALL),
+    ('Kısıtlı', STATUS_RESTRICTED),
+    ('Serbest', STATUS_FREE),
+    ('Devre dışı', STATUS_DISABLED),
+    ('Kaldırılmış', STATUS_REMOVED),
+    ('Çalışan', STATUS_RUNNING),
+    ('Sistem', STATUS_SYSTEM),
+]
+# Motorun urettigi VERI degerleri (adb_engine.app_status / workers) — etiket degil.
+DATA_RESTRICTED = 'Kisitli'
+DATA_FREE = 'Serbest'
+DATA_RUNNING = 'Evet'
+DEBLOAT_ALL_LABEL = 'Debloat: Tümü'
 
 
 class AppsTab(QWidget):
@@ -70,7 +85,8 @@ class AppsTab(QWidget):
         # Durum filtresi: Tümü / Kısıtlı / Serbest / Devre dışı / Kaldırılmış /
         # Çalışan / Sistem. (Eskiden ayri duran 3 kutu artik burada.)
         self.cmb_status = QComboBox()
-        self.cmb_status.addItems(STATUS_FILTERS)
+        for etiket, veri in STATUS_ITEMS:
+            self.cmb_status.addItem(etiket, veri)
         # Kutu, listedeki en uzun secenegi (Kaldırılmış/Devre dışı) gosterecek
         # kadar genis olsun; secenekler kirpilmasin.
         self.cmb_status.setSizeAdjustPolicy(QComboBox.AdjustToContents)
@@ -82,7 +98,9 @@ class AppsTab(QWidget):
         self.cmb_status.currentIndexChanged.connect(self._on_status_combo)
         self._restore_status_from_config()
         self.cmb_debloat = QComboBox()
-        self.cmb_debloat.addItems([DEBLOAT_ALL] + [v for v in CAT_LABELS.values()])
+        self.cmb_debloat.addItem(DEBLOAT_ALL_LABEL, '')
+        for etiket in CAT_LABELS.values():
+            self.cmb_debloat.addItem(etiket, etiket)
         self.cmb_debloat.currentIndexChanged.connect(self._apply_filter_now)
         self.btn_export = QPushButton('CSV')
         self.btn_export.setToolTip('Listeyi CSV olarak aktar')
@@ -184,7 +202,7 @@ class AppsTab(QWidget):
         """Kalici 'kaldirilmis gorunumu' ayarini acilir listeye uygula."""
         try:
             want = STATUS_REMOVED if self.core.config.show_removed else STATUS_ALL
-            idx = self.cmb_status.findText(want)
+            idx = self.cmb_status.findData(want)
         except Exception:
             return
         if idx < 0 or idx == self.cmb_status.currentIndex():
@@ -205,12 +223,12 @@ class AppsTab(QWidget):
         tek acilir liste hem filtre hem de tarama kapsamini belirler.
         """
         try:
-            txt = self.cmb_status.currentText()
+            veri = self.cmb_status.currentData()
         except RuntimeError:
             return
         # 'Kaldirilmis' secilince kaldirilmis uygulamalar gorunur (kalici).
         try:
-            want_removed = (txt == STATUS_REMOVED)
+            want_removed = (veri == STATUS_REMOVED)
             if bool(self.core.config.show_removed) != want_removed:
                 self.core.config.show_removed = want_removed
                 self.core.config.save()
@@ -218,7 +236,7 @@ class AppsTab(QWidget):
             pass
         # 'Sistem' secilince tarama sistem paketlerini de kapsar (kalici);
         # eldeki liste sistem paketleri olmadan tarandiysa tazele.
-        if txt == STATUS_SYSTEM:
+        if veri == STATUS_SYSTEM:
             need_scan = False
             try:
                 if not self.core.config.include_system:
@@ -378,8 +396,8 @@ class AppsTab(QWidget):
 
     def _apply_filter_now(self):
         q = self.txt_search.text().strip().lower()
-        sf = self.cmb_status.currentText()
-        df = self.cmb_debloat.currentText()
+        sf = self.cmb_status.currentData()      # etiket degil, VERI
+        df = self.cmb_debloat.currentData()     # '' = tum kategoriler
         # Tek acilir liste: durum + calisan + kaldirilmis + sistem filtreleri.
         only_removed = (sf == STATUS_REMOVED)
         only_run = (sf == STATUS_RUNNING)
@@ -398,20 +416,23 @@ class AppsTab(QWidget):
                 if not only_removed:
                     removed_hidden += 1
                     continue
+            elif only_removed:
+                # 'Kaldırılmış' filtresi: kurulu olanlar gösterilmez.
+                continue
             hay = (a['name'] + ' ' + a['package']).lower()
             if q and q not in hay:
                 continue
-            if sf == STATUS_RESTRICTED and a['status'] != STATUS_RESTRICTED:
+            if sf == STATUS_RESTRICTED and a['status'] != DATA_RESTRICTED:
                 continue
-            if sf == STATUS_FREE and a['status'] != STATUS_FREE:
+            if sf == STATUS_FREE and a['status'] != DATA_FREE:
                 continue
             if sf == STATUS_DISABLED and (a.get('enabled', True) or is_removed):
                 continue
             if only_system and not a.get('system'):
                 continue
-            if df != DEBLOAT_ALL and a['debloat'] != df:
+            if df and a['debloat'] != df:
                 continue
-            if only_run and a['running'] != 'Evet':
+            if only_run and a['running'] != DATA_RUNNING:
                 continue
             r = self.grid.rowCount()
             self.grid.insertRow(r)
