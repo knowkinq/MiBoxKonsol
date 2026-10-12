@@ -18,6 +18,10 @@ def _print_info():
 
     .exe penceresiz derlendigi icin ciktiyi gormek uzere yonlendirin:
         MiBoxKonsol.exe --version > bilgi.txt
+
+    Not: burada print() BILEREK kullanilir (CLI ciktisi, GUI log'u degil);
+    tools/kalite_tara.py bu dosyada print() uyarisi uretmez:
+    kalite_tara: print-serbest
     """
     try:
         from . import APP_NAME, __version__

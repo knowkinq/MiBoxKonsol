@@ -23,6 +23,8 @@ HEDEFLER = [os.path.join(ROOT, 'mibox_app'), os.path.join(ROOT, 'tests'),
             os.path.join(ROOT, 'mibox.py')]
 ISARETLER = ('TODO', 'FIXME', 'XXX', 'HACK')
 _RE_ISARET = {i: re.compile(r'\b' + i + r'\b', re.I) for i in ISARETLER}
+# Bu satiri iceren dosyada print() serbest sayilir (CLI/tani ciktilari icin).
+PRINT_SERBEST = 'kalite_tara: print-serbest'
 
 
 def _py_dosyalari(yol):
@@ -137,7 +139,7 @@ def tara():
                     if _RE_ISARET[isaret].search(satir):
                         rapor['isaret'].append((rel, i, satir.strip()[:100]))
                         break
-            if rel.startswith('mibox_app'):
+            if rel.startswith('mibox_app') and PRINT_SERBEST not in kaynak:
                 for node in ast.walk(tree):
                     if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                             and node.func.id == 'print'):
