@@ -5,6 +5,41 @@ Uygulama Python ve PySide6 ile geliştirilmiştir.
 
 **Sürüm: 1.0.0**
 
+## Ekran görüntüleri
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/apps.jpg" alt="Uygulamalar sayfası" width="100%"><br>
+      <strong>Uygulamalar</strong>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/remote.jpg" alt="Kumanda sayfası" width="100%"><br>
+      <strong>Kumanda</strong>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/debloat.jpg" alt="Debloat sayfası" width="100%"><br>
+      <strong>Debloat</strong>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/health.jpg" alt="Sağlık sayfası" width="100%"><br>
+      <strong>Cihaz sağlığı</strong>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/files.jpg" alt="Dosyalar sayfası" width="100%"><br>
+      <strong>Dosyalar</strong>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/install.jpg" alt="Kurulum sayfası" width="100%"><br>
+      <strong>APK kurulumu</strong>
+    </td>
+  </tr>
+</table>
+
 ## Özellikler
 
 - Yüklü uygulamaları görüntüleme, başlatma, yükleme ve kaldırma
