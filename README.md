@@ -330,4 +330,6 @@ mibox_app/
 - `python tools/kalite_tara.py` - olu import / cakisan tanim / print() / TODO taramasi
 - `python mibox.py --version` - surum + frozen/meipass/base_dir/log_dir teshis ciktisi
 - `python tests/device_test.py [hedef]` - GERCEK cihaz dogrulamasi (offline suite'ler
-  cihaz gerektirmez; sahte veri YOK)
+  cihaz gerektirmez; sahte veri YOK). Restrict dongusu HOME launcher'ini,
+  koruma listesini ve ROM paketlerini atlar; `unrestrict` her durumda calisir.
+  Son kosum: **15/15 DEVICE_OK**. `python tests/device_scan.py` → **LIVE_OK**.

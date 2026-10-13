@@ -125,6 +125,22 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
 - `python tools/diakritik.py` (kuru) → 0 kalıntı.
 - Testlerden sonra gerçek kullanıcı verisi **değişmemiş** olarak doğrulandı
   (faz2 "gercek ayar/gecmis dosyalari korundu"; snapshot listesi boş).
+- **GERÇEK CİHAZ DOĞRULAMASI (13.10.2026, 192.0.2.1:5555):**
+  - `python tests/device_test.py` → **15/15 DEVICE_OK** (bağlantı, detaylı liste,
+    önbellek soğuk/sıcak, user0, çalışan tespiti, sağlık, snapshot+fark+sil,
+    restrict→doğrula→unrestrict→doğrula, ekran görüntüsü PNG, logcat, dosya
+    listesi, otomatik başlayanlar).
+  - `python tests/device_scan.py` → **LIVE_OK**: başlıklar `['Seç','Uygulama',
+    'Paket','Durum','Çalışıyor','Debloat','Aktif']`; özet "Gösterilen: 130 |
+    Serbest: 126 | Kısıtlı: 4 | Kaldırılmış: 16 | Debloat DB de: 26" →
+    diakritik geçişi, `DISPLAY_STATUS` eşlemesi ve filtre sayıları gerçek
+    veriyle doğrulandı. Debloat DB'de eklenen
+    `com.google.android.tungsten.setupwraith` cihazda "Güvenli" olarak göründü.
+- **`tests/device_test.py` güvenlik sertleştirmesi:** restrict döngüsü artık
+  HOME launcher'ını, kullanıcının koruma listesini, zaten kısıtlı paketleri ve
+  ROM paketlerini (`/system`, `/vendor`, `/product` …) **atlar**; seçim
+  `/data/app` (kullanıcı uygulaması) ile sınırlıdır ve `unrestrict` hata olsa
+  bile `finally` ile **mutlaka** çalışır.
 - Gerçek cihaz (salt-okunur ölçüm): hedefe bağlantı 0.28 sn; erişilemez
   adreste `deneme=1` → 3.0 sn, `deneme=2` → 6.3 sn (tekrar deneme çalışıyor).
 - `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin
