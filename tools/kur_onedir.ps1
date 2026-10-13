@@ -20,14 +20,107 @@ $ErrorActionPreference = 'Stop'
 $kok = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $Kaynak) { $Kaynak = Join-Path $kok 'dist-onedir\MiBoxKonsol' }
 if (-not $Hedef)  { $Hedef  = Join-Path $env:LOCALAPPDATA 'MiBoxKonsol' }
+function Yaz($metin) { Write-Host $metin }
+
+function Normalize-Path([string]$path) {
+    $full = [IO.Path]::GetFullPath($path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ($full.Length -gt $root.Length) {
+        $full = $full.TrimEnd([char]'\', [char]'/')
+    }
+    return $full
+}
+
+function Test-PathWithin([string]$path, [string]$base) {
+    $candidate = Normalize-Path $path
+    $parent = Normalize-Path $base
+    if ([string]::Equals($candidate, $parent,
+            [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = $parent.TrimEnd([char]'\', [char]'/') + '\'
+    return $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+try {
+    $Kaynak = Normalize-Path $Kaynak
+    $Hedef = Normalize-Path $Hedef
+} catch {
+    Yaz "[HATA] Kaynak/hedef yolu gecersiz: $($_.Exception.Message)"
+    exit 1
+}
+
+# /veri kaldirma hedef klasorunun tamamini siler. Disk kokleri, kullanici ve
+# sistem klasorleri hedef olamaz; kaynak/hedefin ic ice gecmesi de kopyalamayi
+# kendi kendine yinelemeye ve veri kaybina yol acar.
+$kokYolu = [IO.Path]::GetPathRoot($Hedef)
+if ([string]::Equals((Normalize-Path $Hedef), (Normalize-Path $kokYolu),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    Yaz "[HATA] Disk kok dizini kurulum hedefi olamaz: $Hedef"
+    exit 1
+}
+if ($env:WINDIR -and (Test-PathWithin $Hedef $env:WINDIR)) {
+    Yaz "[HATA] Windows klasorune kurulum yapilamaz: $Hedef"
+    exit 1
+}
+$korunanYollar = @(
+    $env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:WINDIR,
+    $env:ProgramFiles, ${env:ProgramFiles(x86)},
+    [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('MyDocuments')
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$kaynakKok = [IO.Path]::GetPathRoot($Kaynak)
+if ([string]::Equals((Normalize-Path $Kaynak), (Normalize-Path $kaynakKok),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    Yaz "[HATA] Disk kok dizini paket kaynagi olamaz: $Kaynak"
+    exit 1
+}
+foreach ($korunan in $korunanYollar) {
+    if (Test-PathWithin $korunan $Kaynak) {
+        Yaz "[HATA] Kullanici/sistem agacinin tamami paket kaynagi olamaz: $Kaynak"
+        exit 1
+    }
+}
+if ($env:WINDIR -and (Test-PathWithin $Kaynak $env:WINDIR)) {
+    Yaz "[HATA] Windows klasoru paket kaynagi olamaz: $Kaynak"
+    exit 1
+}
+foreach ($korunan in $korunanYollar) {
+    if (Test-PathWithin $korunan $Hedef) {
+        Yaz "[HATA] Korunan bir kullanici/sistem klasoru kurulum hedefi olamaz: $Hedef"
+        exit 1
+    }
+}
+$kaynakIcinde = Test-PathWithin $Kaynak $Hedef
+$hedefIcinde = Test-PathWithin $Hedef $Kaynak
+if ($kaynakIcinde -or $hedefIcinde) {
+    Yaz "[HATA] Kaynak ve hedef klasorleri birbiriyle ic ice olamaz."
+    exit 1
+}
+if (Test-Path -LiteralPath $Hedef -PathType Leaf) {
+    Yaz "[HATA] Kurulum hedefi bir dosya: $Hedef"
+    exit 1
+}
+
+# Var olan bir junction/symlink uzerinden kopyalama veya /veri silme yapma.
+$probe = $Hedef
+while ($probe) {
+    if (Test-Path -LiteralPath $probe) {
+        $entry = Get-Item -LiteralPath $probe -Force
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Yaz "[HATA] Kurulum yolu baglantili (junction/symlink) klasor iceriyor: $probe"
+            exit 1
+        }
+    }
+    $parent = Split-Path -Parent $probe
+    if (-not $parent -or [string]::Equals($parent, $probe,
+            [StringComparison]::OrdinalIgnoreCase)) { break }
+    $probe = $parent
+}
 
 # Kullanici verisi: kurulum sirasinda DOKUNULMAZ
 $veriDosyalari = @('mibox-ayarlar.json', 'MiBox-ayarlar.json',
                    'mibox-islem-gecmisi.jsonl', 'debloat-kullanici.json',
                    'mibox-bilinen-uygulamalar.json')
 $veriKlasorleri = @('logs', 'snapshots', 'ekran-goruntuleri', 'apk-yedekleri')
-
-function Yaz($metin) { Write-Host $metin }
 
 if (-not (Test-Path (Join-Path $Kaynak 'MiBoxKonsol.exe'))) {
     Yaz "[HATA] Paket bulunamadi: $Kaynak"
@@ -104,20 +197,71 @@ if (-not $KisayolYok) {
 
 # 4) Kaldirma betigi (kisayollari siler; veriyi istege bagli temizler)
 $kaldir = Join-Path $Hedef 'kaldir.bat'
+$hedefBase64 = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($Hedef))
+$silmeScript = @'
+$ErrorActionPreference = 'Stop'
+$target = [IO.Path]::GetFullPath([Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String('__TARGET__')))
+$root = [IO.Path]::GetPathRoot($target)
+$target = $target.TrimEnd([char]'\', [char]'/')
+$root = $root.TrimEnd([char]'\', [char]'/')
+if ([string]::Equals($target, $root, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Disk kok dizini silinemez.'
+}
+$protected = @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA,
+    $env:WINDIR, $env:ProgramFiles, ${env:ProgramFiles(x86)},
+    [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('MyDocuments')) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+foreach ($path in $protected) {
+    $base = [IO.Path]::GetFullPath($path).TrimEnd([char]'\', [char]'/')
+    if ([string]::Equals($target, $base, [StringComparison]::OrdinalIgnoreCase) -or
+        $base.StartsWith($target.TrimEnd([char]'\', [char]'/') + '\',
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Korunan klasor silinemez: $target"
+    }
+}
+if ($env:WINDIR -and $target.StartsWith(
+        [IO.Path]::GetFullPath($env:WINDIR).TrimEnd([char]'\', [char]'/') + '\',
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Windows klasoru silinemez: $target"
+}
+$probe = $target
+while ($probe) {
+    if (Test-Path -LiteralPath $probe) {
+        $entry = Get-Item -LiteralPath $probe -Force
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Baglantili klasor silinemez: $probe"
+        }
+    }
+    $parent = Split-Path -Parent $probe
+    if (-not $parent -or [string]::Equals($parent, $probe,
+            [StringComparison]::OrdinalIgnoreCase)) { break }
+    $probe = $parent
+}
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $target) {
+    Remove-Item -LiteralPath $target -Recurse -Force
+}
+'@.Replace('__TARGET__', $hedefBase64)
+$silmeKomutu = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($silmeScript))
 @"
 @echo off
 REM MiBox Konsol kaldirma: kisayollari siler. Veriyi silmek icin /veri ekleyin.
 setlocal
-set "HEDEF=$Hedef"
 del "%USERPROFILE%\Desktop\MiBox Konsol.lnk" 2>nul
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\MiBox Konsol.lnk" 2>nul
 del "%USERPROFILE%\Desktop\MiBox Konsol.bat" 2>nul
 if /I "%~1"=="/veri" (
   echo Kullanici verisi de siliniyor...
-  rmdir /s /q "%HEDEF%"
+  cd /d "%TEMP%"
+  start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $silmeKomutu
+  echo Program klasoru ve veriler kapandiktan sonra silinecek.
+  exit /b 0
 ) else (
   echo Kisayollar silindi. Program klasoru ve veriler korundu:
-  echo   %HEDEF%
   echo Veriyi de silmek icin: kaldir.bat /veri
 )
 pause
@@ -135,25 +279,69 @@ foreach ($ad in @('mibox-ayarlar.json', 'logs', 'snapshots', 'mibox-selftest-ok.
 }
 $env:QT_QPA_PLATFORM = 'offscreen'
 $surumDosya = Join-Path $env:TEMP ('mibox-kurulum-' + [guid]::NewGuid().ToString('N') + '.txt')
-$p = Start-Process -FilePath $exeYolu -ArgumentList '--version' -RedirectStandardOutput $surumDosya -PassThru
-$p.WaitForExit(120000) | Out-Null
+$versionOk = $false
+$surumKod = 'baslatma hatasi'
+$p = $null
+try {
+    $p = Start-Process -FilePath $exeYolu -ArgumentList '--version' `
+        -RedirectStandardOutput $surumDosya -PassThru -ErrorAction Stop
+    if ($p.WaitForExit(120000)) {
+        $surumKod = $p.ExitCode
+        $versionOk = ($p.ExitCode -eq 0)
+    } else {
+        $surumKod = 'zaman asimi'
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        $p.WaitForExit(5000) | Out-Null
+    }
+} catch {
+    Yaz ("--version hata: {0}" -f $_.Exception.Message)
+}
 $satirlar = Get-Content $surumDosya -ErrorAction SilentlyContinue
 $surum = $satirlar | Select-Object -First 1
 $mod = $satirlar | Where-Object { $_ -match '^Paket modu' } | Select-Object -First 1
-$surumKod = if ($p.HasExited) { $p.ExitCode } else { 'zaman asimi' }
 Remove-Item $surumDosya -ErrorAction SilentlyContinue
 Yaz ("--version : {0} (exit {1})" -f $surum, $surumKod)
 if ($mod) { Yaz ("            {0}" -f $mod.Trim()) }
+if (-not $versionOk) { Yaz "[HATA] --version dogrulamasi basarisiz." }
 
 $isaret = Join-Path $Hedef 'mibox-selftest-ok.txt'
 Remove-Item $isaret -ErrorAction SilentlyContinue
-$p2 = Start-Process -FilePath $exeYolu -ArgumentList '--selftest' -PassThru
-if (-not $p2.WaitForExit(180000)) { Stop-Process -Id $p2.Id -Force; $p2 = $null }
-$selftestOk = [bool]($p2 -and (Test-Path $isaret))
-if ($selftestOk) {
-    Yaz ("--selftest: {0} (exit {1})" -f (Get-Content $isaret), $p2.ExitCode)
+$markerReady = -not (Test-Path $isaret)
+$selftestCompleted = $false
+$selftestTimeout = $false
+$p2 = $null
+try {
+    $p2 = Start-Process -FilePath $exeYolu -ArgumentList '--selftest' `
+        -PassThru -ErrorAction Stop
+    $selftestCompleted = [bool]$p2.WaitForExit(180000)
+    if (-not $selftestCompleted) {
+        $selftestTimeout = $true
+        Stop-Process -Id $p2.Id -Force -ErrorAction SilentlyContinue
+        $p2.WaitForExit(5000) | Out-Null
+    }
+} catch {
+    Yaz ("--selftest hata: {0}" -f $_.Exception.Message)
+}
+$markerContent = ''
+if ($markerReady -and (Test-Path $isaret)) {
+    $markerContent = Get-Content $isaret -Raw -ErrorAction SilentlyContinue
+    if ($null -ne $markerContent) { $markerContent = $markerContent.Trim() }
+}
+$selftestKod = if ($selftestCompleted -and $p2) {
+    $p2.ExitCode
+} elseif ($selftestTimeout) {
+    'zaman asimi'
 } else {
-    Yaz "[UYARI] selftest isaretcisi yazilmadi; exe'yi elle deneyin:"
+    'baslatma hatasi'
+}
+$selftestOk = [bool]($selftestCompleted -and $p2 -and $p2.HasExited `
+    -and $p2.ExitCode -eq 0 -and $markerReady -and $markerContent -eq 'SELFTEST_OK')
+if ($selftestOk) {
+    Yaz ("--selftest: {0} (exit {1})" -f $markerContent, $selftestKod)
+} else {
+    Yaz ("[HATA] --selftest basarisiz (exit {0}, isaretci: {1})." -f `
+        $selftestKod, $(if (Test-Path $isaret) { $markerContent } else { 'yok' }))
+    Yaz "        exe'yi elle deneyin:"
     Yaz "        $exeYolu"
 }
 
@@ -178,8 +366,9 @@ if ($silinen.Count -gt 0) {
     Yaz ("Temizlenen dogrulama artiklari: {0}" -f ($silinen -join ', '))
 }
 Yaz ""
-if ($selftestOk) {
+if ($versionOk -and $selftestOk) {
     Yaz "TAMAM: MiBox Konsol kuruldu."
 } else {
-    Yaz "KURULUM TAMAM (selftest uyarisi var)."
+    Yaz "KURULUM BASARISIZ: dogrulama tamamlanmadi."
+    exit 1
 }

@@ -36,8 +36,10 @@ def _path():
     return os.path.join(BASE_DIR, 'mibox-islem-gecmisi.jsonl')
 
 
-def append(target, action, package, method='', ok=True):
+def append(target, action, package, method='', ok=True, user_id=0):
     """Tek kayıt ekler. Hata verirse sessizce geçer (kritik yol değil)."""
+    if type(user_id) is not int or not 0 <= user_id <= 21474:
+        raise ValueError('Geçersiz kullanıcı kimliği.')
     rec = {
         'ts': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'target': target or '',
@@ -45,6 +47,7 @@ def append(target, action, package, method='', ok=True):
         'package': package,
         'method': method or '',
         'ok': bool(ok),
+        'user_id': user_id,
     }
     line = json.dumps(rec, ensure_ascii=False) + '\n'
     try:
@@ -59,16 +62,28 @@ def append(target, action, package, method='', ok=True):
         pass
 
 
-def append_many(target, action, details):
-    """Worker details listesini toplu yazar: [(pkg, ok, msg), ...]."""
-    for pkg, ok, msg in details:
+def append_many(target, action, details, user_id=0):
+    """Worker ayrıntılarını toplu yazar.
+
+    Eski biçim `(pkg, ok, msg)` her kayıt için ortak `action` kullanır.
+    `(action, pkg, ok, msg)` biçimi işlem sahnelerinde paket başına doğru
+    geri alma türünü korur.
+    """
+    for detail in details:
+        if len(detail) == 4:
+            record_action, pkg, ok, msg = detail
+        else:
+            pkg, ok, msg = detail
+            record_action = action
         method = ''
         if isinstance(msg, str):
             if msg.startswith('disable ile'):
                 method = 'disable'
             elif msg.startswith('uninstall ile'):
                 method = 'uninstall'
-        append(target, action, pkg, method, ok)
+        if not method and record_action in ('disable', 'uninstall'):
+            method = record_action
+        append(target, record_action, pkg, method, ok, user_id=user_id)
 
 
 def read_all(limit=500):

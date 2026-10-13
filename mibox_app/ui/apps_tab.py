@@ -1,63 +1,44 @@
 # -*- coding: utf-8 -*-
-"""Uygulamalar sekmesi: liste, filtre, kisitla/serbest, paket islemleri."""
+"""Uygulamalar sekmesi: uygulama listesi, filtreler ve paket islemleri."""
 import csv
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidgetItem, QLineEdit, QComboBox, QPushButton,
-    QLabel, QHeaderView, QMenu, QMessageBox,
+    QLabel, QHeaderView, QMenu, QMessageBox, QToolButton,
     QFileDialog, QDialog, QDialogButtonBox, QTextEdit,
 )
 
 from ..config import APK_DIR
-from ..debloat_db import package_to_category, CAT_LABELS, CAT_COLORS
-from ..workers import AppScanWorker, BulkActionWorker, PackageActionWorker, ApkBackupWorker, Worker
+from ..workers import AppScanWorker, PackageActionWorker, ApkBackupWorker, Worker
 from . import kit
 from .flowlayout import FlowLayout
-from .theme import cat_colors_for
 
 COL_CHECK = 0
 COL_NAME = 1
 COL_PKG = 2
-COL_STATUS = 3
-COL_RUNNING = 4
-COL_DEBLOAT = 5
-COL_ENABLED = 6
+COL_STATE = 3
+# Kept as an alias for callers that used the old enabled-state column name.
+COL_ENABLED = COL_STATE
 
-# Durum filtresi: eskiden ayri duran "Calisan / Kaldirilmis / Sistem"
-# kutularinin islevi artik bu TEK acilir listenin icinde toplanmistir.
-#
-# ONEMLI: ekranda gorunen ETIKET ile karsilastirilan VERI ayridir.
-# Filtre karsilastirmalari HER ZAMAN veri (currentData) ile yapilir; boylece
-# "Kisitli" -> "Kısıtlı" gibi yazim duzeltmeleri filtreyi sessizce bozamaz.
+# Filter values are independent from their visible labels.
 STATUS_ALL = 'all'
-STATUS_RESTRICTED = 'restricted'
-STATUS_FREE = 'free'
+STATUS_ACTIVE = 'active'
 STATUS_DISABLED = 'disabled'
 STATUS_REMOVED = 'removed'
 STATUS_RUNNING = 'running'
 STATUS_SYSTEM = 'system'
 STATUS_ITEMS = [
     ('Tümü', STATUS_ALL),
-    ('Kısıtlı', STATUS_RESTRICTED),
-    ('Serbest', STATUS_FREE),
+    ('Etkin', STATUS_ACTIVE),
     ('Devre dışı', STATUS_DISABLED),
     ('Kaldırılmış', STATUS_REMOVED),
-    ('Çalışan', STATUS_RUNNING),
-    ('Sistem', STATUS_SYSTEM),
+    ('Çalışan süreç', STATUS_RUNNING),
 ]
-# Motorun urettigi VERI degerleri (adb_engine.app_status / workers) — etiket degil.
-DATA_RESTRICTED = 'Kisitli'
-DATA_FREE = 'Serbest'
 DATA_RUNNING = 'Evet'
-DEBLOAT_ALL_LABEL = 'Debloat: Tümü'
-# Durum sutununda GOSTERILEN metin (veri ASCII kalir; ceviri burada yapilir).
-DISPLAY_STATUS = {
-    DATA_RESTRICTED: 'Kısıtlı',
-    DATA_FREE: 'Serbest',
-}
 
 
 class AppsTab(QWidget):
@@ -67,8 +48,10 @@ class AppsTab(QWidget):
         self.window = window
         self._apps = []
         self._presence = set()
+        self._last_scan_at = None
         self._in_item_changed = False  # ozyineleme kilidi (stack overflow korumasi)
         self._busy = False
+        self._scan_generation = 0
         # Son tarama sistem paketlerini kapsadi mi? ('Sistem' filtresi icin)
         self._scanned_with_system = bool(getattr(core.config, 'include_system', False))
         self._filter_timer = QTimer(self)
@@ -76,19 +59,33 @@ class AppsTab(QWidget):
         self._filter_timer.setInterval(250)
         self._filter_timer.timeout.connect(self._apply_filter_now)
         self._build()
+        self.core.connection_changed.connect(self._connection_changed)
+
+    def _connection_changed(self, connected, _target):
+        if not connected:
+            self._scan_generation += 1
+            self._apps = []
+            self._presence.clear()
+            self._last_scan_at = None
+            self._apply_filter_now()
+            try:
+                self._remote_tab().populate_apps([])
+                self.window.tab_debloat.set_present(set())
+            except (AttributeError, RuntimeError):
+                pass
+            self.lbl_summary.setText('Bağlı cihaz yok. Cihaza bağlanıp listeyi yenileyin.')
 
     def _build(self):
         root = kit.page(self)
 
-        # --- Araclar satir 1: arama + durum filtresi + debloat + CSV ---
-        row1 = QHBoxLayout()
-        row1.setSpacing(kit.SPACING)
+        # Arama, filtreler ve yenileme tek bir araç çubuğunda kalır.
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(kit.SPACING)
         self.txt_search = QLineEdit()
         self.txt_search.setPlaceholderText('Ara: ad veya paket...')
-        self.txt_search.setMinimumWidth(220)
+        self.txt_search.setMinimumWidth(200)
         self.txt_search.textChanged.connect(lambda: self._filter_timer.start())
-        # Durum filtresi: Tümü / Kısıtlı / Serbest / Devre dışı / Kaldırılmış /
-        # Çalışan / Sistem. (Eskiden ayri duran 3 kutu artik burada.)
+        # Uygulama durumu ve süreç filtresi.
         self.cmb_status = QComboBox()
         for etiket, veri in STATUS_ITEMS:
             self.cmb_status.addItem(etiket, veri)
@@ -96,47 +93,39 @@ class AppsTab(QWidget):
         # kadar genis olsun; secenekler kirpilmasin.
         self.cmb_status.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.cmb_status.setMinimumWidth(110)
+        self.cmb_status.setAccessibleName('Durum filtresi')
         self.cmb_status.setToolTip(
-            'Duruma gore filtrele — Tümü: hepsi, Kaldırılmış: user 0\'dan '
-            'kaldirilanlar (geri yuklenebilir), Çalışan: su an açık olanlar, '
-            'Sistem: ROM uygulamaları (tarama sistem paketlerini de kapsar)')
+            'Etkin/devre dışı/kaldırılmış uygulamalara göre filtrele. '
+            'Çalışan süreç, ADB tarafından çalışan olarak raporlanan işlemdir; '
+            'uygulamanın ön planda olduğu anlamına gelmez. '
+            'Sistem düğmesi ROM uygulamalarının görünürlüğünü değiştirir.')
         self.cmb_status.currentIndexChanged.connect(self._on_status_combo)
         self._restore_status_from_config()
-        self.cmb_debloat = QComboBox()
-        self.cmb_debloat.addItem(DEBLOAT_ALL_LABEL, '')
-        for etiket in CAT_LABELS.values():
-            self.cmb_debloat.addItem(etiket, etiket)
-        self.cmb_debloat.currentIndexChanged.connect(self._apply_filter_now)
-        self.btn_export = QPushButton('CSV')
-        self.btn_export.setToolTip('Listeyi CSV olarak aktar')
-        self.btn_export.clicked.connect(self._export_csv)
-        row1.addWidget(self.txt_search, 1)
-        row1.addWidget(self.cmb_status)
-        row1.addWidget(self.cmb_debloat)
-        row1.addWidget(self.btn_export)
-        root.addLayout(row1)
-
-        # --- Araclar satir 2: yenile ---
-        row2 = QHBoxLayout()
-        row2.setSpacing(4)
+        self.btn_system = QPushButton('Sistem')
+        self.btn_system.setCheckable(True)
+        self.btn_system.setChecked(True)
+        self.btn_system.setToolTip('Sistem uygulamalarını listeye dahil et. Kapalıyken yalnızca kullanıcı uygulamaları gösterilir.')
+        self.btn_system.toggled.connect(self._apply_filter_now)
         self.btn_refresh = QPushButton('Yenile')
         self.btn_refresh.setProperty('accent', True)
         self.btn_refresh.clicked.connect(self.refresh)
-        row2.addWidget(self.btn_refresh)
-        row2.addStretch()
-        root.addLayout(row2)
+        self.btn_export = QPushButton('CSV')
+        self.btn_export.setToolTip('Listeyi CSV olarak aktar')
+        self.btn_export.clicked.connect(self._export_csv)
+        toolbar.addWidget(self.txt_search, 1)
+        toolbar.addWidget(self.cmb_status)
+        toolbar.addWidget(self.btn_system)
+        toolbar.addWidget(self.btn_refresh)
+        toolbar.addWidget(self.btn_export)
+        root.addLayout(toolbar)
 
         # --- Tablo (esnek, pencereyle buyur/kucuk) ---
-        self.grid = kit.make_table(7, ['Seç', 'Uygulama', 'Paket', 'Durum',
-                                       'Çalışıyor', 'Debloat', 'Aktif'])
+        self.grid = kit.make_table(4, ['Seç', 'Uygulama', 'Paket', 'Durum'])
         hdr = self.grid.horizontalHeader()
         hdr.setSectionResizeMode(COL_PKG, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_CHECK, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(COL_STATUS, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(COL_RUNNING, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(COL_DEBLOAT, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(COL_ENABLED, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(COL_STATE, QHeaderView.ResizeToContents)
         hdr.setSortIndicatorShown(True)
         hdr.sortIndicatorChanged.connect(self._sort_by)
         self.grid.setSortingEnabled(False)
@@ -149,30 +138,22 @@ class AppsTab(QWidget):
         self.grid.itemSelectionChanged.connect(self._update_sel_count)
         root.addWidget(self.grid, 1)
 
-        # --- Islem cubuklari (FlowLayout: dar ekranda alt satira kayar) ---
-        # Sec basligi tiklanabilir: 3 durum (bos -> tumu -> ters) + sayac.
-        # Ayri buton YOK: tek tik, tek Birak.
-        flow1 = FlowLayout()
+        # Sık kullanılan işler görünür; daha seyrek paket işleri menüdedir.
+        actions = FlowLayout(hspacing=4, vspacing=4)
         self.chk_inv = QPushButton('Ters Çevir')
         self.chk_inv.clicked.connect(self._invert_all)
         self.lbl_sel = QLabel('')
+        self.lbl_sel.setAlignment(Qt.AlignCenter)
+        self.lbl_sel.setMinimumWidth(90)
         self.lbl_sel.setStyleSheet(kit.faint(kit.dark_from(self)))
-        self.btn_restrict = QPushButton('Kısıtla')
-        self.btn_restrict.setProperty('danger', True)
-        self.btn_restrict.clicked.connect(lambda: self._bulk_restrict(True))
-        self.btn_unrestrict = QPushButton('Serbest Bırak')
-        self.btn_unrestrict.setProperty('accent', True)
-        self.btn_unrestrict.clicked.connect(lambda: self._bulk_restrict(False))
-        for b in (self.chk_inv, self.btn_restrict, self.btn_unrestrict):
-            flow1.addWidget(b)
-        flow1.addWidget(self.lbl_sel)
-        kit.fit_buttons(self.chk_inv)
-        root.addLayout(flow1)
+        self.btn_launch = QPushButton('Aç')
+        self.btn_launch.clicked.connect(lambda: self._pkg_action('launch'))
 
-        flow2 = kit.action_bar()
-        self.btn_stop = QPushButton('Force Stop')
+        self.btn_stop = QPushButton('Zorla durdur')
         self.btn_stop.clicked.connect(lambda: self._pkg_action('stop'))
         self.btn_clear = QPushButton('Veriyi Sil')
+        self.btn_clear.setProperty('danger', True)
+        self.btn_clear.setToolTip('Uygulama verilerini kalıcı olarak siler')
         self.btn_clear.clicked.connect(lambda: self._pkg_action('clear'))
         self.btn_disable = QPushButton('Devre dışı')
         self.btn_disable.clicked.connect(lambda: self._pkg_action('disable'))
@@ -183,20 +164,46 @@ class AppsTab(QWidget):
         self.btn_uninstall.clicked.connect(lambda: self._pkg_action('uninstall'))
         self.btn_restore = QPushButton('Geri Yükle')
         self.btn_restore.clicked.connect(lambda: self._pkg_action('restore'))
-        self.btn_launch = QPushButton('Aç')
-        self.btn_launch.clicked.connect(lambda: self._pkg_action('launch'))
         self.btn_apk = QPushButton('APK Yedekle')
         self.btn_apk.clicked.connect(self._backup_apk)
-        for b in (self.btn_stop, self.btn_clear, self.btn_disable, self.btn_enable,
-                  self.btn_uninstall, self.btn_restore, self.btn_launch, self.btn_apk):
-            flow2.addWidget(b)
-        kit.fit_buttons(self.btn_stop, self.btn_clear, self.btn_disable, self.btn_enable,
-                        self.btn_uninstall, self.btn_restore, self.btn_launch, self.btn_apk)
-        root.addLayout(flow2)
 
-        # --- Ozet ---
+        self.btn_other = QToolButton()
+        self.btn_other.setText('Diğer işlemler')
+        self.btn_other.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(self.btn_other)
+        menu.addSection('Paket işlemleri')
+        for button in (self.btn_stop, self.btn_disable, self.btn_enable,
+                       self.btn_restore, self.btn_apk):
+            action = menu.addAction(button.text())
+            action.setToolTip(button.toolTip())
+            action.triggered.connect(
+                lambda _checked=False, target=button: target.click())
+        menu.addSeparator()
+        for button in (self.btn_clear, self.btn_uninstall):
+            action = menu.addAction(button.text())
+            action.setToolTip(button.toolTip())
+            action.triggered.connect(
+                lambda _checked=False, target=button: target.click())
+        self.btn_other.setMenu(menu)
+        # Keep the existing QPushButton API and clicked signals available to
+        # callers while exposing their actions through the compact menu.
+        for button in (self.btn_stop, self.btn_clear, self.btn_disable,
+                       self.btn_enable, self.btn_uninstall, self.btn_restore,
+                       self.btn_apk):
+            button.setParent(self)
+            button.hide()
+
+        actions.addWidget(self.chk_inv)
+        actions.addWidget(self.lbl_sel)
+        actions.addWidget(self.btn_launch)
+        actions.addWidget(self.btn_other)
+        root.addLayout(actions)
+
+        # --- Özet ve başlangıç durumu ---
         self.lbl_summary = kit.status_label('Liste boş. "Yenile" ile başlayın.')
         root.addWidget(self.lbl_summary)
+        kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
+                        'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
 
     def _remote_tab(self):
         inner = getattr(self.window, 'tab_remote_inner', None)
@@ -222,11 +229,7 @@ class AppsTab(QWidget):
                 pass
 
     def _on_status_combo(self):
-        """Durum filtresi: 'Kaldirilmis' gorunurlugu + 'Sistem' taramasi burada.
-
-        Eskiden ayri iki kutu (Kaldirilmis / Sistem) ile yonetiliyordu; artik
-        tek acilir liste hem filtre hem de tarama kapsamini belirler.
-        """
+        """Durum filtresini uygula; sistem görünürlüğü ayrı düğmeden yönetilir."""
         try:
             veri = self.cmb_status.currentData()
         except RuntimeError:
@@ -239,34 +242,10 @@ class AppsTab(QWidget):
                 self.core.config.save()
         except Exception:
             pass
-        # 'Sistem' secilince tarama sistem paketlerini de kapsar (kalici);
-        # eldeki liste sistem paketleri olmadan tarandiysa tazele.
-        if veri == STATUS_SYSTEM:
-            need_scan = False
-            try:
-                if not self.core.config.include_system:
-                    self.core.config.include_system = True
-                    self.core.config.save()
-                    need_scan = True
-            except Exception:
-                pass
-            if need_scan or not getattr(self, '_scanned_with_system', False):
-                try:
-                    self.window.append_log(
-                        'Sistem filtresi: sistem uygulamaları da taranacak.', 'INFO')
-                except Exception:
-                    pass
-                self.refresh()
-                # Tarama basladiysa filtre bitince uygulanir; tarama zaten
-                # suruyorsa (refresh erken dondu) eldeki listeyi hemen filtrele.
-                self._apply_filter_now()
-                return
         self._apply_filter_now()
 
     def _sort_by(self, col, order):
-        keys = {COL_NAME: 'name', COL_PKG: 'package', COL_STATUS: 'status',
-                COL_RUNNING: 'running', COL_DEBLOAT: 'debloat',
-                COL_ENABLED: 'enabled'}
+        keys = {COL_NAME: 'name', COL_PKG: 'package', COL_STATE: 'enabled'}
         key = keys.get(col)
         if not key:
             return
@@ -275,34 +254,55 @@ class AppsTab(QWidget):
         self._apply_filter_now()
 
     # ------------------------------------------------------------------
-    def refresh(self):
+    def refresh(self, on_done=None, on_fail=None):
         if getattr(self, '_busy', False):
             self.lbl_summary.setText('Tarama zaten suruyor; bitmesini bekleyin.')
-            return
+            return False
         try:
             engine = self.core.engine
         except Exception as e:
             self.lbl_summary.setText('Tarama başarısız: ' + str(e))
-            return
+            if on_fail:
+                on_fail(str(e))
+            return False
         self.lbl_summary.setText('Taraniyor...')
         # Tarama kapsami: 'Sistem' filtresi icin bu bayrak kullanilir.
-        self._scanned_with_system = bool(self.core.config.include_system)
-        w = AppScanWorker(engine, self.core.target, self.core.config.include_system)
-        w.progress.connect(self._on_progress)
-        w.finished_ok.connect(self._on_scan_done)
-        w.failed.connect(self._on_scan_fail)
-        w.presence.connect(self._on_presence)
+        self._scanned_with_system = True
+        self._scan_generation += 1
+        generation, target = self._scan_generation, self.core.target
+        w = AppScanWorker(engine, self.core.target, True)
+        current = lambda: generation == self._scan_generation and target == self.core.target
+        w.progress.connect(lambda *args: self._on_progress(*args) if current() else None)
+
+        def scan_done(apps):
+            if not current():
+                return
+            self._on_scan_done(apps)
+            if on_done:
+                on_done(apps)
+
+        def scan_failed(error):
+            if not current():
+                self._set_busy(False)
+                return
+            self._on_scan_fail(error)
+            if on_fail:
+                on_fail(str(error))
+
+        w.finished_ok.connect(scan_done)
+        w.failed.connect(scan_failed)
+        w.presence.connect(lambda pkgs: self._on_presence(pkgs) if current() else None)
         self.window._run(w, on_ok=lambda _: self._set_busy(False),
                            desc='Uygulamalar Yenile: {} taraniyor'.format(self.core.target))
         self._set_busy(True)
+        return True
 
     def _set_busy(self, busy):
         # Ayni anda ikinci worker baslatma: tik/crash ve eski veri yarisi biter.
         self._busy = bool(busy)
-        kit.set_busy((self.btn_refresh, self.btn_restrict, self.btn_unrestrict,
-                      self.btn_stop, self.btn_clear, self.btn_disable,
+        kit.set_busy((self.btn_refresh, self.btn_stop, self.btn_clear, self.btn_disable,
                       self.btn_enable, self.btn_uninstall, self.btn_restore,
-                      self.btn_launch, self.btn_apk), busy)
+                      self.btn_launch, self.btn_apk, self.btn_other), busy)
         kit.set_busy((self.chk_inv,), busy)
         if not busy:
             self.grid.setEnabled(True)
@@ -323,13 +323,12 @@ class AppsTab(QWidget):
 
     def _on_scan_done(self, apps):
         self._apps = apps
+        self._last_scan_at = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')
         for a in apps:
-            # Once cihazdan gelen GERCEK ad; yoksa paket adi.
-            # (Bilinen-uygulama listesi kaldirildi: sistem ne derse o.)
-            a['name'] = a.get('label') or a['package']
-            cat = package_to_category(a['package'])
-            a['debloat_cat'] = cat
-            a['debloat'] = CAT_LABELS.get(cat, '')
+            # Cihaz etiketi birincil kaynaktır; bilinen dost adları, ROM'un
+            # uygulama etiketini ADB üzerinden vermediği durumlarda kullanılır.
+            a['name'] = (a.get('label') or
+                         self.core.config.friendly_name(a['package']))
         try:
             self._remote_tab().populate_apps(apps)
         except Exception:
@@ -376,10 +375,12 @@ class AppsTab(QWidget):
                 return out
             for r in rows:
                 try:
+                    check = self.grid.item(r, COL_CHECK)
                     pkg = self.grid.item(r, COL_PKG)
                 except RuntimeError:
                     continue
-                if pkg and pkg.text() not in out:
+                if (check and (check.flags() & Qt.ItemIsUserCheckable)
+                        and pkg and pkg.text() not in out):
                     out.append(pkg.text())
         return out
 
@@ -402,18 +403,15 @@ class AppsTab(QWidget):
     def _apply_filter_now(self):
         q = self.txt_search.text().strip().lower()
         sf = self.cmb_status.currentData()      # etiket degil, VERI
-        df = self.cmb_debloat.currentData()     # '' = tum kategoriler
-        # Tek acilir liste: durum + calisan + kaldirilmis + sistem filtreleri.
+        # Durum + süreç + sistem filtreleri tek listede.
         only_removed = (sf == STATUS_REMOVED)
         only_run = (sf == STATUS_RUNNING)
-        only_system = (sf == STATUS_SYSTEM)
+        include_system = self.btn_system.isChecked()
         self.grid.blockSignals(True)
         self.grid.setRowCount(0)
-        free = 0
-        lim = 0
-        bloat = 0
         removed = 0
         removed_hidden = 0
+        shown_system = 0
         for a in self._apps:
             is_removed = not a.get('installed_user0', True)
             if is_removed:
@@ -427,18 +425,17 @@ class AppsTab(QWidget):
             hay = (a['name'] + ' ' + a['package']).lower()
             if q and q not in hay:
                 continue
-            if sf == STATUS_RESTRICTED and a['status'] != DATA_RESTRICTED:
+            enabled = bool(a.get('enabled', True))
+            if sf == STATUS_ACTIVE and (not enabled or is_removed):
                 continue
-            if sf == STATUS_FREE and a['status'] != DATA_FREE:
+            if sf == STATUS_DISABLED and (enabled or is_removed):
                 continue
-            if sf == STATUS_DISABLED and (a.get('enabled', True) or is_removed):
+            if not include_system and a.get('system'):
                 continue
-            if only_system and not a.get('system'):
+            if only_run and (not enabled or is_removed
+                             or a.get('running') != DATA_RUNNING):
                 continue
-            if df and a['debloat'] != df:
-                continue
-            if only_run and a['running'] != DATA_RUNNING:
-                continue
+            shown_system += int(bool(a.get('system')))
             r = self.grid.rowCount()
             self.grid.insertRow(r)
             chk = QTableWidgetItem()
@@ -448,47 +445,27 @@ class AppsTab(QWidget):
             name = QTableWidgetItem(a['name'])
             name.setData(Qt.UserRole, a['package'])
             pkg = QTableWidgetItem(a['package'])
-            db = QTableWidgetItem(a['debloat'] or '')
-            dark = kit.dark_from(self)
             pal = kit.colors(self)
-            cat_pal = cat_colors_for(dark)
-            if a['debloat_cat']:
-                db.setForeground(QBrush(QColor(cat_pal.get(a['debloat_cat'], CAT_COLORS.get(a['debloat_cat'], pal['accent'])))))
-                f = db.font()
-                f.setBold(True)
-                db.setFont(f)
-                bloat += 1
-            st = QTableWidgetItem(DISPLAY_STATUS.get(a['status'], a['status']))
-            run = QTableWidgetItem(a['running'])
             removed_u0 = not a.get('installed_user0', True)
             disabled = removed_u0 or not a.get('enabled', True)
             if removed_u0:
-                en = QTableWidgetItem('Kaldirilmis')
+                state = QTableWidgetItem('Kaldırılmış')
             else:
-                en = QTableWidgetItem('Evet' if a.get('enabled', True) else 'Hayir')
+                state = QTableWidgetItem('Devre dışı' if not enabled else 'Etkin')
             if removed_u0:
-                en.setForeground(QBrush(QColor(pal['accent'])))
-                f_en = en.font()
-                f_en.setBold(True)
-                en.setFont(f_en)
-                en.setToolTip('user 0 için kaldırılmış; sağ tık > Geri Yükle ile döndürülebilir')
-            elif not a.get('enabled', True):
-                en.setForeground(QBrush(QColor(pal['warning'])))
+                state.setToolTip('user 0 için kaldırılmış; sağ tık > Geri Yükle ile döndürülebilir')
+                state_color = pal['accent']
+            elif not enabled:
+                state_color = pal['warning']
+            else:
+                state_color = pal['success']
+            state.setForeground(QBrush(QColor(state_color)))
             prot = self.core.config.is_protected(a['package'])
             if prot:
-                for it in (name, pkg, db, st, run, en):
+                for it in (name, pkg, state):
                     it.setForeground(QBrush(QColor(pal['warning'])))
                 name.setToolTip('Koruma listesinde (işlem için secilemez)')
                 chk.setToolTip('Koruma listesinde (işlem için secilemez)')
-            if a['status'] == DATA_RESTRICTED:
-                st.setForeground(QBrush(QColor(pal['danger'])))
-                f = st.font()
-                f.setBold(True)
-                st.setFont(f)
-                lim += 1
-            else:
-                st.setForeground(QBrush(QColor(pal['success'])))
-                free += 1
             if disabled:
                 # Kaldirilmis / devre disi: ad + paket satiri ustu cizili ve soluk
                 for it in (name, pkg):
@@ -498,21 +475,52 @@ class AppsTab(QWidget):
                     it.setForeground(QBrush(QColor(pal['faint'])))
                 name.setToolTip('Kaldırılmış: {} — sağ tık > Geri Yükle ile döndürülebilir'.format(
                     a['package']) if removed_u0 else 'Devre dışı: {}'.format(a['package']))
-            for it in (name, pkg, db, st, run, en):
+            for it in (name, pkg, state):
                 it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.grid.setItem(r, COL_CHECK, chk)
             self.grid.setItem(r, COL_NAME, name)
             self.grid.setItem(r, COL_PKG, pkg)
-            self.grid.setItem(r, COL_STATUS, st)
-            self.grid.setItem(r, COL_RUNNING, run)
-            self.grid.setItem(r, COL_DEBLOAT, db)
-            self.grid.setItem(r, COL_ENABLED, en)
+            self.grid.setItem(r, COL_STATE, state)
         self.grid.blockSignals(False)
-        suffix = ('  |  ({} kaldırılmış gizli — "Kaldırılmış" secenegiyle göster)'.format(
+        suffix = ('  |  ({} kaldırılmış gizli — "Kaldırılmış" seçeneğiyle göster)'.format(
             removed_hidden) if removed_hidden else '')
+        scan_time = ('  |  Son tarama: {}'.format(self._last_scan_at)
+                     if self._last_scan_at else '')
         self.lbl_summary.setText(
-            'Gösterilen: {}  |  Serbest: {}  |  Kısıtlı: {}  |  Kaldırılmış: {}  |  Debloat DB de: {}{}'.format(
-                self.grid.rowCount(), free, lim, removed, bloat, suffix))
+            'Gösterilen: {}  |  Kullanıcı: {}  |  Sistem: {}{}{}'.format(
+                self.grid.rowCount(), self.grid.rowCount() - shown_system, shown_system, suffix, scan_time))
+        self.btn_system.setText('Sistem ({})'.format(sum(
+            bool(a.get('system')) and a.get('installed_user0', True) for a in self._apps)))
+        if self._apps and not self.grid.rowCount():
+            if only_run:
+                eligible = [a for a in self._apps
+                            if a.get('enabled', True) and a.get('installed_user0', True)
+                            and (not q or q in (a['name'] + ' ' + a['package']).lower())
+                            and (include_system or not a.get('system'))]
+                if not eligible:
+                    title = 'Eşleşen uygulama yok'
+                    description = (
+                        'Bu arama ve süreç filtresiyle eşleşen etkin, kurulu uygulama yok.')
+                elif any(a.get('running') not in ('Evet', 'Hayır', 'Hayir')
+                         for a in eligible):
+                    title = 'Çalışma durumu bilinmiyor'
+                    description = (
+                        'ADB süreç bilgisi alınamadı. Son tarama: {}. '
+                        'Bu filtre süreçleri gösterir; ön plandaki uygulamayı belirtmez.'
+                    ).format(self._last_scan_at or 'henüz tarama yapılmadı')
+                else:
+                    title = 'Çalışan süreç yok'
+                    description = (
+                        'Son tarama: {}. Etkin ve kurulu uygulamalardan hiçbiri için '
+                        'çalışan süreç bildirilmedi; bu, ön plandaki uygulamayı belirtmez.'
+                    ).format(self._last_scan_at or 'henüz tarama yapılmadı')
+                kit.empty_state(self.grid, title, description)
+            else:
+                kit.empty_state(self.grid, 'Eşleşen uygulama yok',
+                                'Arama metnini veya durum filtresini değiştirin.')
+        else:
+            kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
+                            'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
         self._update_sel_count()
 
     def _on_item_changed(self, item):
@@ -600,7 +608,9 @@ class AppsTab(QWidget):
                        for _it in [self.grid.item(row, COL_CHECK)]
                        if _it is not None and (_it.flags() & Qt.ItemIsUserCheckable)
                        and _it.checkState() == Qt.Checked}
-            selected = {ix.row() for ix in self.grid.selectedIndexes()}
+            selected = {ix.row() for ix in self.grid.selectedIndexes()
+                        if self.grid.item(ix.row(), COL_CHECK) is not None
+                        and self.grid.item(ix.row(), COL_CHECK).flags() & Qt.ItemIsUserCheckable}
             rows = checked or selected
             self.lbl_sel.setText('Seçili: {}/{}{}'.format(
                 len(rows), self.grid.rowCount(),
@@ -609,54 +619,6 @@ class AppsTab(QWidget):
             pass
 
     # ------------------------------------------------------------------
-    def _bulk_restrict(self, restrict):
-        from .dialogs import confirm_action
-        pkgs = self._selected_packages()
-        if not pkgs:
-            QMessageBox.information(self, 'Seçim', 'Önce uygulamaları seçin (satir secimi de olur).')
-            return
-        prot = [p for p in pkgs if self.core.config.is_protected(p)]
-        if prot and len(prot) == len(pkgs):
-            names = '\n'.join(u'• {}'.format(self.core.config.friendly_name(p)) for p in prot[:10])
-            QMessageBox.warning(
-                self, 'Koruma',
-                u'Seçilenlerin TAMAMI koruma listesinde; işlem yapılmadı:\n\n{}'.format(names))
-            return
-        if not confirm_action(self, 'restrict' if restrict else 'unrestrict',
-                              pkgs, self.core.config.friendly_name):
-            return
-        w = BulkActionWorker(self.core.engine, self.core.target, pkgs,
-                             restrict, self.core.config.protected)
-        w.progress.connect(self._on_progress)
-        w.finished_ok.connect(self._on_bulk_done)
-        try:
-            self.window.set_last_action(
-                '{} uygulamaya {}: {} paket'.format(
-                    len(pkgs), 'Kısıtla' if restrict else 'Serbest Bırak',
-                    ', '.join(pkgs[:3]) + ('…' if len(pkgs) > 3 else '')))
-        except Exception:
-            pass
-        self.window._run(w, on_ok=lambda _: self.refresh())
-
-    def _on_bulk_done(self, res):
-        if isinstance(res, dict):
-            details = res.get('details', [])
-            lines = ['{} başarılı, {} atlandı.'.format(res.get('ok', 0), res.get('skip', 0))]
-            for pkg, good, msg in details[:60]:
-                name = self.core.config.friendly_name(pkg)
-                disp = '{} ({})'.format(name, pkg) if name != pkg else pkg
-                lines.append('{} {}: {}'.format('+' if good else 'X', disp, msg))
-            if len(details) > 60:
-                lines.append('… {} uygulama daha.'.format(len(details) - 60))
-            QMessageBox.information(self, 'Tamam', '\n'.join(lines))
-        else:
-            try:
-                ok, skip = res
-            except Exception:
-                ok, skip = res, '?'
-            QMessageBox.information(self, 'Tamam',
-                                    '{} başarılı, {} atlandı.'.format(ok, skip))
-
     def _pkg_action(self, action):
         from .dialogs import confirm_action
         pkgs = self._selected_packages()
@@ -721,11 +683,10 @@ class AppsTab(QWidget):
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
-                w.writerow(['Ad', 'Paket', 'Durum', 'Çalışıyor', 'Debloat', 'Aktif'])
+                w.writerow(['Ad', 'Paket', 'Durum'])
                 for row in range(self.grid.rowCount()):
                     w.writerow([self.grid.item(row, c).text() if self.grid.item(row, c) else ''
-                                for c in (COL_NAME, COL_PKG, COL_STATUS, COL_RUNNING,
-                                          COL_DEBLOAT, COL_ENABLED)])
+                                for c in (COL_NAME, COL_PKG, COL_STATE)])
             QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:
             QMessageBox.critical(self, 'Hata', str(e))
@@ -810,8 +771,8 @@ class AppsTab(QWidget):
         menu = QMenu(self)
         # kaldirilmis mi? (user 0 listesinde yoksa)
         removed = False
-        en_cell = self.grid.item(row, COL_ENABLED)
-        if en_cell and en_cell.text() == 'Kaldirilmis':
+        state_cell = self.grid.item(row, COL_STATE)
+        if state_cell and state_cell.text() == 'Kaldırılmış':
             removed = True
         if removed:
             act = menu.addAction('Geri Yükle (önerilen)')
@@ -820,34 +781,16 @@ class AppsTab(QWidget):
             act.setFont(f)
             act.triggered.connect(lambda: self._pkg_action_single('restore', p))
             menu.addSeparator()
-        menu.addAction('Kısıtla', lambda: self._ctx_action([p], 'restrict'))
-        menu.addAction('Serbest Bırak', lambda: self._ctx_action([p], 'unrestrict'))
-        menu.addSeparator()
         menu.addAction('Detay', lambda: self._show_detail(p))
         menu.addAction('Aç', lambda: self._pkg_action_single('launch', p))
-        menu.addAction('Force Stop', lambda: self._pkg_action_single('stop', p))
+        menu.addAction('Zorla durdur', lambda: self._pkg_action_single('stop', p))
         menu.addAction('Veriyi Sil', lambda: self._pkg_action_single('clear', p))
         menu.addAction('Devre dışı bırak', lambda: self._pkg_action_single('disable', p))
         menu.addAction('Aktif et', lambda: self._pkg_action_single('enable', p))
         menu.addAction('Kaldır (user)', lambda: self._pkg_action_single('uninstall', p))
         menu.addAction('Geri Yükle', lambda: self._pkg_action_single('restore', p))
         menu.addAction('APK Yedekle', lambda: self._backup_apk())
-        menu.addAction('Favorilere Ekle (Debloat)', lambda: self._add_favorite(p))
         menu.exec(self.grid.viewport().mapToGlobal(pos))
-
-    def _add_favorite(self, pkg):
-        from ..debloat_db import add_user_entry
-        # cihazdan gelen ad; yoksa paket (bilinen-liste yok)
-        name = next((a.get('name', '') for a in self._apps
-                     if a['package'] == pkg), '') or pkg
-        if add_user_entry(pkg, name, 'Kullanıcı favorisi'):
-            QMessageBox.information(self, 'Favori', pkg + ' favorilere eklendi.')
-            try:
-                self.window.tab_debloat.reload()
-            except Exception:
-                pass
-        else:
-            QMessageBox.information(self, 'Favori', pkg + ' zaten listede.')
 
     def _pkg_action_single(self, action, pkg):
         from .dialogs import confirm_action
@@ -858,11 +801,4 @@ class AppsTab(QWidget):
         w = PackageActionWorker(self.core.engine, self.core.target, [pkg],
                                 action, self.core.config.protected)
         w.finished_ok.connect(self._on_pkg_done)
-        self.window._run(w, on_ok=lambda _: self.refresh())
-
-    def _ctx_action(self, pkgs, kind):
-        w = BulkActionWorker(self.core.engine, self.core.target, pkgs,
-                             kind == 'restrict', self.core.config.protected)
-        w.progress.connect(self._on_progress)
-        w.finished_ok.connect(self._on_bulk_done)
         self.window._run(w, on_ok=lambda _: self.refresh())

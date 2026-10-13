@@ -4,22 +4,24 @@ import datetime
 import os
 import re
 import threading
+import ipaddress
 
 from collections import deque
 
-from PySide6.QtCore import Qt, QTimer, QObject, QMutex
-from PySide6.QtGui import QGuiApplication, QTextCursor
+from PySide6.QtCore import Qt, QTimer, QObject, QMutex, QSize
+from PySide6.QtGui import QGuiApplication, QTextCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QComboBox, QTabWidget,
-    QPlainTextEdit, QMessageBox, QStatusBar, QCheckBox,
-    QSplitter, QScrollArea,
+    QPlainTextEdit, QMessageBox, QStatusBar,
+    QSplitter, QScrollArea, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy,
 )
 
 from .. import APP_NAME, __version__
 from ..adb_engine import watchdog_interval
 from ..config import LOG_DIR
 from ..workers import Worker
+from . import kit
 from .apps_tab import AppsTab
 from .debloat_tab import DebloatTab
 from .flowlayout import FlowLayout
@@ -32,6 +34,8 @@ from .network_tab import NetworkTab
 from .remote_tab import RemoteTab
 from .settings_tab import SettingsTab
 from .theme import qss_for, level_colors_for, colors_for, conn_style
+from .icons import line_icon
+from .actions_dialog import ActionsDialog
 
 IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d+$')
 # VERBOSE: probe/yoklama satirlari (pidof negatif vb). Varsayilan KAPALI,
@@ -53,7 +57,7 @@ class LogBus(QObject):
     def __init__(self, capacity=LOG_CAPACITY):
         super().__init__()
         self._mutex = QMutex()
-        self._pending = deque()
+        self._pending = deque(maxlen=capacity)
         self._store = deque(maxlen=capacity)
 
     def enqueue(self, msg, level):
@@ -121,7 +125,7 @@ class LogBus(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, core):
+    def __init__(self, core, selftest=False):
         super().__init__()
         self.core = core
         self.setWindowTitle('{} v{}'.format(APP_NAME, __version__))
@@ -134,12 +138,22 @@ class MainWindow(QMainWindow):
             self.move(avail.center() - self.rect().center())
         except Exception:
             self.resize(1360, 860)
-        self.setMinimumSize(1024, 640)
+        self.setMinimumSize(900, 600)
         self._level_colors = level_colors_for(self.core.config.dark_mode)
         self._palette = colors_for(self.core.config.dark_mode)
         self._workers = []
+        self._activity = {}
+        self._error_text = ''
         self._closing = False
-        self._selftest = False  # main.py --selftest modunda True: watchdog is uretmez
+        self._close_pending = False
+        self._close_scheduled = False
+        self._reconnect_target = None
+        self._connection_busy = False
+        self._watchdog_generation = 0
+        self._watchdog_worker = None
+        self._disconnect_pending = False
+        self._disconnect_in_progress = False
+        self._selftest = bool(selftest)  # kurulum selftest'inde watchdog is uretmez
         self._log_filter = set(LEVELS)
         self._logbus = LogBus()
         # Gunluk log dosyasi: yol + gun onbellek (her satirda makedirs yok)
@@ -162,6 +176,9 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(qss_for(dark))
         self._level_colors = level_colors_for(dark)
         self._palette = colors_for(dark)
+        if hasattr(self, '_page_details'):
+            for index, (_, _, icon_name) in enumerate(self._page_details):
+                self.navigation.item(index).setIcon(line_icon(icon_name, self._palette['muted']))
         # baglanti gostergelerini yeni palete gecir (durumu koru)
         try:
             self._set_link(self.core.connected)
@@ -184,29 +201,98 @@ class MainWindow(QMainWindow):
     def _build(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        shell = QHBoxLayout(central)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        sidebar = QWidget()
+        sidebar.setObjectName('sidebar')
+        sidebar.setFixedWidth(188)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(12, 20, 12, 14)
+        side.setSpacing(8)
+        brand = QLabel('MiBox')
+        brand.setObjectName('brandTitle')
+        side.addWidget(brand)
+        tagline = QLabel('TV yönetim merkezi')
+        tagline.setObjectName('brandSubtitle')
+        side.addWidget(tagline)
+        side.addSpacing(14)
+        self.navigation = QListWidget()
+        self.navigation.setObjectName('navigation')
+        self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.navigation.setAccessibleName('Sayfalar')
+        self.navigation.setIconSize(QSize(19, 19))
+        self.navigation.setSpacing(2)
+        side.addWidget(self.navigation, 1)
+        self.btn_log_toggle = QPushButton('Log')
+        self.btn_log_toggle.setToolTip('İşlem günlüğünü aç / kapat')
+        self.btn_log_toggle.setCheckable(True)
+        self.btn_log_toggle.toggled.connect(self._toggle_log_panel)
+        side.addWidget(self.btn_log_toggle)
+        footer = QLabel('MiBox Konsol  ·  v{}'.format(__version__))
+        footer.setObjectName('brandSubtitle')
+        side.addWidget(footer)
+        shell.addWidget(sidebar)
+        workspace = QWidget()
+        workspace.setObjectName('workspace')
+        root = QVBoxLayout(workspace)
+        root.setContentsMargins(22, 20, 22, 14)
+        root.setSpacing(10)
+        shell.addWidget(workspace, 1)
+        self.page_title = QLabel('Uygulamalar')
+        self.page_title.setObjectName('pageTitle')
+        self.page_subtitle = QLabel('Uygulamalarınızı inceleyin, düzenleyin ve yönetin.')
+        self.page_subtitle.setObjectName('pageSubtitle')
+        self.page_subtitle.setWordWrap(True)
+        heading = QHBoxLayout()
+        heading.addWidget(self.page_title, 1)
+        self.btn_quick = QPushButton('Hızlı erişim  ·  Ctrl+K')
+        self.btn_quick.setProperty('role', 'quiet')
+        self.btn_quick.clicked.connect(self.open_quick_actions)
+        heading.addWidget(self.btn_quick)
+        root.addLayout(heading)
+        root.addWidget(self.page_subtitle)
 
         # --- Baglanti cubugu (tek satir: hedef + baglan + durum) ---
         conn = QWidget()
-        conn_layout = QHBoxLayout(conn)
-        conn_layout.setContentsMargins(6, 6, 6, 6)
-        conn_layout.setSpacing(6)
+        conn.setObjectName('connectionCard')
+        connection_root = QHBoxLayout(conn)
+        connection_root.setContentsMargins(10, 10, 10, 10)
+        connection_root.setSpacing(12)
+        conn_controls = QWidget()
+        conn_layout = FlowLayout(conn_controls, hspacing=7, vspacing=6)
+        connection_root.addWidget(conn_controls, 1)
         self.lbl_conn_dot = QLabel('●')
         self.lbl_conn_dot.setStyleSheet(
             'color: {}; font-size: 14pt;'.format(colors_for(self.core.config.dark_mode)['danger']))
         self.lbl_conn_dot.setToolTip('Bağlantı durumu')
-        self.txt_target = QLineEdit(self.core.target or '')
-        self.txt_target.setPlaceholderText('IP:PORT  ornek: 192.0.2.1:5555')
-        self.txt_target.setMinimumWidth(170)
-        self.txt_target.setMaximumWidth(220)
+        initial_target = self.core.target or ''
+        address, separator, initial_port = initial_target.rpartition(':')
+        if not separator:
+            address, initial_port = initial_target, '5555'
+        if address.endswith('.x'):
+            address = ''
+            self.core.target = ''
+            self.core.config.last_target = ''
+            self.core.config.save()
+        self.txt_target = QLineEdit(address)
+        self.txt_target.setPlaceholderText('IP adresi')
+        self.txt_target.setAccessibleName('Cihaz IP adresi')
+        self.txt_target.setMinimumWidth(150)
+        self.txt_target.setMaximumWidth(190)
+        self.txt_port = QLineEdit(initial_port or '5555')
+        self.txt_port.setAccessibleName('ADB bağlantı portu')
+        self.txt_port.setMaximumWidth(68)
+        self.txt_port.setMaxLength(5)
+        self.txt_port.setPlaceholderText('5555')
         self.btn_connect = QPushButton('Bağlan')
         self.btn_connect.setProperty('accent', True)
-        self.btn_disconnect = QPushButton('Kopar')
-        self.btn_disconnect.setProperty('danger', True)
+        self.btn_disconnect = QPushButton('Bağlantıyı kes')
+        self.btn_disconnect.setProperty('role', 'quiet')
         self.btn_disconnect.setEnabled(False)
-        self.lbl_status = QLabel('Bağlı degil')
+        self.lbl_status = QLabel('Bağlı değil')
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setMinimumWidth(112)
         self.lbl_status.setStyleSheet(conn_style(self.core.config.dark_mode, False))
         self.cmb_devices = QComboBox()
         self.cmb_devices.setPlaceholderText('Cihaz')
@@ -219,14 +305,72 @@ class MainWindow(QMainWindow):
         self.cmb_history.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         conn_layout.addWidget(self.lbl_conn_dot)
         conn_layout.addWidget(self.txt_target)
+        conn_layout.addWidget(QLabel(':'))
+        conn_layout.addWidget(self.txt_port)
         conn_layout.addWidget(self.btn_connect)
         conn_layout.addWidget(self.btn_disconnect)
         conn_layout.addWidget(self.lbl_status)
-        conn_layout.addWidget(QLabel('Cihaz:'))
-        conn_layout.addWidget(self.cmb_devices, 1)
-        conn_layout.addWidget(QLabel('Geçmiş:'))
-        conn_layout.addWidget(self.cmb_history, 1)
+        self.btn_device_options = QPushButton('Cihaz seç')
+        self.btn_device_options.setProperty('role', 'quiet')
+        self.btn_device_options.setCheckable(True)
+        self.btn_device_options.setToolTip('Bağlı cihazlar ve önceki adresler')
+        conn_layout.addWidget(self.btn_device_options)
+        self.device_options = QWidget()
+        self.device_options.setMaximumWidth(470)
+        options_layout = QHBoxLayout(self.device_options)
+        options_layout.setContentsMargins(0, 0, 0, 0)
+        options_layout.setSpacing(8)
+        for title, combo in (('Bağlı cihazlar', self.cmb_devices),
+                             ('Son adresler', self.cmb_history)):
+            group = QWidget()
+            group_layout = QVBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(3)
+            group_layout.addWidget(QLabel(title))
+            combo.setMinimumWidth(175)
+            combo.setMaximumWidth(215)
+            combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            group_layout.addWidget(combo)
+            options_layout.addWidget(group, 1)
+        self.device_options.hide()
+        self.btn_device_options.toggled.connect(self.device_options.setVisible)
+        connection_root.addWidget(self.device_options, 0, Qt.AlignVCenter)
         root.addWidget(conn)
+
+        self.activity_box = QWidget()
+        self.activity_box.setObjectName('connectionCard')
+        activity_layout = QHBoxLayout(self.activity_box)
+        activity_layout.setContentsMargins(10, 7, 10, 7)
+        self.lbl_activity = QLabel()
+        self.lbl_activity.setTextFormat(Qt.PlainText)
+        self.lbl_activity.setMinimumWidth(0)
+        self.lbl_activity.setWordWrap(True)
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setMaximumWidth(150)
+        self.activity_progress.setRange(0, 0)
+        self.activity_progress.setTextVisible(False)
+        activity_layout.addWidget(self.lbl_activity, 1)
+        activity_layout.addWidget(self.activity_progress)
+        self.activity_box.hide()
+        root.addWidget(self.activity_box)
+
+        self.error_box = QWidget()
+        self.error_box.setObjectName('errorBanner')
+        error_layout = QHBoxLayout(self.error_box)
+        error_layout.setContentsMargins(10, 7, 10, 7)
+        self.lbl_error = QLabel()
+        self.lbl_error.setWordWrap(True)
+        self.lbl_error.setTextFormat(Qt.PlainText)
+        self.lbl_error.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        error_layout.addWidget(self.lbl_error, 1)
+        details = QPushButton('Günlüğü aç')
+        details.clicked.connect(lambda: self._toggle_log_panel(True))
+        error_layout.addWidget(details)
+        dismiss = QPushButton('Kapat')
+        dismiss.clicked.connect(self.error_box.hide)
+        error_layout.addWidget(dismiss)
+        self.error_box.hide()
+        root.addWidget(self.error_box)
 
         # --- Sekmeler + log (splitter: log paneli kapatilabilir) ---
         self.splitter = QSplitter(Qt.Vertical)
@@ -235,6 +379,7 @@ class MainWindow(QMainWindow):
         self.tab_remote = self._scroll_wrap(RemoteTab(self.core, self))
         self.tab_remote_inner = self.tab_remote.widget()
         self.tab_debloat = DebloatTab(self.core, self)
+        self.tab_debloat_page = self._scroll_wrap(self.tab_debloat)
         self.tab_network = self._scroll_wrap(NetworkTab(self.core, self))
         self.tab_network_inner = self.tab_network.widget()
         self.tab_settings = self._scroll_wrap(SettingsTab(self.core, self))
@@ -249,7 +394,7 @@ class MainWindow(QMainWindow):
         self.tab_install_inner = self.tab_install.widget()
         self.tabs.addTab(self.tab_apps, u'▦ Uygulamalar')
         self.tabs.addTab(self.tab_remote, u'▣ Kumanda')
-        self.tabs.addTab(self.tab_debloat, u'🧹 Debloat')
+        self.tabs.addTab(self.tab_debloat_page, 'Debloat')
         self.tabs.addTab(self.tab_health, u'♥ Sağlık')
         self.tabs.addTab(self.tab_history, u'🕘 Geçmiş')
         self.tabs.addTab(self.tab_logcat, u'≡ Logcat')
@@ -257,17 +402,50 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_install, u'⭳ Kurulum')
         self.tabs.addTab(self.tab_network, u'🌐 Ağ')
         self.tabs.addTab(self.tab_settings, u'⚙ Ayarlar')
+        self.tabs.tabBar().hide()
+        self._page_details = [
+            ('Uygulamalar', 'TV uygulamalarınızı tek yerden yönetin.', 'apps'),
+            ('Kumanda', 'Gezinme, ses ve oynatma kontrolleri.', 'remote'),
+            ('Debloat', 'Gereksiz paketleri inceleyin, güvenlik düzeyine göre karar verin.', 'cleanup'),
+            ('Sağlık', 'Cihaz durumu, performans ve arka plan yönetimi.', 'health'),
+            ('Geçmiş', 'İşlem kayıtları ve geri dönüş noktaları.', 'history'),
+            ('Logcat', 'Canlı cihaz günlükleri ve filtreler.', 'logs'),
+            ('Dosyalar', 'TV dosyalarına göz atın ve aktarın.', 'files'),
+            ('Kurulum', 'Tek APK veya çoklu paket yükleme ve ana ekran seçimi.', 'install'),
+            ('Ağ', 'Cihaz keşfi ve bağlantı araçları.', 'network'),
+            ('Ayarlar', 'Görünüm, korumalar ve tercihler.', 'settings'),
+        ]
+        for index, (title, subtitle, icon) in enumerate(self._page_details):
+            item = QListWidgetItem(line_icon(icon, self._palette['muted']), title)
+            item.setSizeHint(QSize(160, 34))
+            item.setToolTip(subtitle)
+            self.navigation.addItem(item)
+            shortcut = QShortcut(QKeySequence('Ctrl+{}'.format((index + 1) % 10)), self)
+            shortcut.activated.connect(lambda i=index: self.tabs.setCurrentIndex(i))
+        self.navigation.currentRowChanged.connect(self.tabs.setCurrentIndex)
+        self.tabs.currentChanged.connect(self._page_changed)
+        self.navigation.setCurrentRow(0)
+        self._page_changed(0)
+        shortcut = QShortcut(QKeySequence('Ctrl+Shift+O'), self)
+        shortcut.activated.connect(self.open_performance)
+        for key, callback in (('Ctrl+K', self.open_quick_actions),
+                              ('F5', self.refresh_current_page),
+                              ('Ctrl+L', self.focus_target)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(callback)
         self.splitter.addWidget(self.tabs)
 
         # --- Canli log (collapsible) ---
         log_box = QWidget()
+        log_box.setObjectName('logCard')
         log_v = QVBoxLayout(log_box)
         log_v.setContentsMargins(6, 6, 6, 6)
         log_v.setSpacing(4)
-        self.lbl_log_title = QLabel('Canli Log')
+        self.lbl_log_title = QLabel('İşlem günlüğü')
         self.lbl_log_title.setStyleSheet('font-weight: bold;')
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
+        self.txt_log.setMaximumBlockCount(LOG_CAPACITY)
         self.txt_log.setMinimumHeight(60)
         self.txt_log.setMaximumHeight(160)
         self.btn_clear_log = QPushButton('Temizle')
@@ -282,16 +460,16 @@ class MainWindow(QMainWindow):
         self.btn_hide_log.setCheckable(True)
         self.btn_hide_log.setChecked(True)  # acilista log KAPALI
         self.btn_hide_log.toggled.connect(self._toggle_log)
-        self.chk_info = QCheckBox('INFO')
+        self.chk_info = kit.CheckBox('INFO')
         self.chk_info.setChecked(True)
-        self.chk_warn = QCheckBox('WARN')
+        self.chk_warn = kit.CheckBox('WARN')
         self.chk_warn.setChecked(True)
-        self.chk_err = QCheckBox('ERROR')
+        self.chk_err = kit.CheckBox('ERROR')
         self.chk_err.setChecked(True)
-        self.chk_adb = QCheckBox('ADB')
+        self.chk_adb = kit.CheckBox('ADB')
         self.chk_adb.setChecked(True)
         self.chk_adb.setToolTip('Her calistirilan ADB komutunu göster (suruculu, sureli)')
-        self.chk_verbose = QCheckBox('Ayrıntı')
+        self.chk_verbose = kit.CheckBox('Ayrıntı')
         self.chk_verbose.setChecked(False)
         self.chk_verbose.setToolTip('Yoklama satirlari (pidof negatif vb). Acinca gürültü artar.')
         self.chk_info.toggled.connect(lambda on: self._toggle_level('INFO', on))
@@ -329,20 +507,13 @@ class MainWindow(QMainWindow):
             pass
         root.addWidget(self.splitter, 1)
 
-        # --- Log ac/kapa dugmesi (baglanti cubugunda, hep gorunur) ---
-        self.btn_log_toggle = QPushButton('Log')
-        self.btn_log_toggle.setToolTip('Canli Log panelini ac/kapa')
-        self.btn_log_toggle.setCheckable(True)
-        self.btn_log_toggle.setChecked(False)
-        self.btn_log_toggle.setMaximumWidth(70)
-        self.btn_log_toggle.toggled.connect(self._toggle_log_panel)
-        conn_layout.addWidget(self.btn_log_toggle)
         # --- Durdur: calisan arka plan islerini iptal et (Faz 3) ---
         self.btn_stop = QPushButton('Durdur')
         self.btn_stop.setToolTip('Çalışan arka plan islerini durdur')
-        self.btn_stop.setProperty('danger', True)
-        self.btn_stop.setMaximumWidth(70)
+        self.btn_stop.setProperty('role', 'secondary')
+        self.btn_stop.setMinimumWidth(80)
         self.btn_stop.setEnabled(False)
+        self.btn_stop.hide()
         self.btn_stop.clicked.connect(self.cancel_workers)
         conn_layout.addWidget(self.btn_stop)
 
@@ -354,12 +525,11 @@ class MainWindow(QMainWindow):
         self.status.addWidget(self.lbl_last_action, 1)
         self.lbl_clock = QLabel('')
         self.status.addPermanentWidget(self.lbl_clock)
-        self.lbl_adb = QLabel('ADB: ' + (self.core.adb_path or 'bulunamadı'))
+        self.lbl_adb = QLabel('ADB hazır' if self.core.adb_path else 'ADB bulunamadı')
         self.lbl_adb.setToolTip(self.core.adb_path or '')
         self.lbl_target = QLabel('Hedef: ' + (self.core.target or '-'))
         self.lbl_link = QLabel(u'● Çevrimdışı')
         self.lbl_link.setStyleSheet(conn_style(self.core.config.dark_mode, False))
-        self.status.showMessage('Hazır')
         self.status.addPermanentWidget(self.lbl_adb)
         self.status.addPermanentWidget(self.lbl_target)
         self.status.addPermanentWidget(self.lbl_link)
@@ -372,12 +542,18 @@ class MainWindow(QMainWindow):
         # Bağlantı bekçisi: 15 sn'de bir sessiz yoklama, kopmuşsa yeniden bağlan.
         self._watch = QTimer(self)
         self._watch.timeout.connect(self._watchdog)
-        self._watch.start(WATCHDOG_BASE_MS)
+        if not self._selftest:
+            self._watch.start(WATCHDOG_BASE_MS)
         self._watch_fail = 0
-        QTimer.singleShot(3000, self._watchdog)
+        if not self._selftest:
+            QTimer.singleShot(3000, self._watchdog)
         # append_log hem tamponu hem gunluk dosyasini besler; burada ikinci
         # kez _write_log_line cagrilmasi baslangic satirini duplike ediyordu.
         self.append_log('{} v{} başlatıldı.'.format(APP_NAME, __version__), 'INFO')
+        config_warning = getattr(self.core.config, 'load_warning', '')
+        if config_warning:
+            self.append_log('Ayar kurtarma: ' + config_warning.replace('\n', ' · '), 'WARN')
+            self._show_error('Ayar kurtarma', config_warning)
         if not self.core.adb_path:
             QMessageBox.warning(self, 'ADB', self.core.engine_error or 'ADB bulunamadı.')
         # NOT: acilis OTOMATIK BAGLANTI YOK (v8.3). Kullanici Baglan'a basar.
@@ -404,16 +580,109 @@ class MainWindow(QMainWindow):
             pass
         # ust cubuktaki Log dugmesiyle senkron tut
         try:
-            if self.btn_log_toggle.isChecked() != bool(hidden):
+            if self.btn_log_toggle.isChecked() != (not hidden):
                 self.btn_log_toggle.blockSignals(True)
-                self.btn_log_toggle.setChecked(bool(hidden))
+                self.btn_log_toggle.setChecked(not hidden)
                 self.btn_log_toggle.blockSignals(False)
         except (RuntimeError, AttributeError):
             pass
 
+    def _page_changed(self, index):
+        if not 0 <= index < len(self._page_details):
+            return
+        title, subtitle, _ = self._page_details[index]
+        self.page_title.setText(title)
+        self.page_subtitle.setText(subtitle)
+        if self.navigation.currentRow() != index:
+            self.navigation.setCurrentRow(index)
+
+    def focus_target(self):
+        if self.txt_target.isEnabled():
+            self.txt_target.setFocus()
+            self.txt_target.selectAll()
+
+    def _refresh_action(self):
+        page = self.tabs.currentWidget()
+        if isinstance(page, QScrollArea):
+            page = page.widget()
+        for name in ('refresh', '_refresh_info', '_refresh_list'):
+            callback = getattr(page, name, None)
+            if callable(callback):
+                return callback
+        return None
+
+    def refresh_current_page(self):
+        callback = self._refresh_action()
+        if callback is None:
+            self.status.showMessage('Bu sayfada yenilenecek liste yok.', 4000)
+            return
+        if self.tabs.currentIndex() in (0, 3, 6) and not self.core.connected:
+            self.status.showMessage('Yenilemek için önce cihaza bağlanın.', 4000)
+            self.focus_target()
+            return
+        page = self.tabs.currentWidget()
+        if isinstance(page, QScrollArea):
+            page = page.widget()
+        if not getattr(page, '_busy', False):
+            callback()
+
+    def open_quick_actions(self):
+        actions = []
+        for index, (title, subtitle, _) in enumerate(self._page_details):
+            actions.append((title, subtitle,
+                            lambda i=index: self.tabs.setCurrentIndex(i), lambda: True))
+        actions.extend([
+            ('Performans ve bakım', 'Sağlık içindeki bakım araçları · Ctrl+Shift+O',
+             self.open_performance, lambda: True),
+            ('Sayfayı yenile', 'Geçerli sayfanın listesini yenile · F5',
+             self.refresh_current_page, lambda: self._refresh_action() is not None),
+            ('Cihaz adresine git', 'Bağlanılacak adresi düzenle · Ctrl+L',
+             self.focus_target, lambda: self.txt_target.isEnabled()),
+            ('İşlem günlüğü', 'Son işlemleri ve hataları görüntüle',
+             lambda: self._toggle_log_panel(True), lambda: True),
+        ])
+        dialog = ActionsDialog(self, actions)
+        dialog.setStyleSheet(self.styleSheet())
+        dialog.exec()
+
+    def open_performance(self):
+        self.tabs.setCurrentWidget(self.tab_health)
+        self.tab_health_inner.sections.setCurrentIndex(1)
+
+    def _show_error(self, label, error):
+        if self._closing:
+            return
+        self._error_text = '{}: {}'.format(label, error)
+        self.lbl_error.setText(self._error_text[:360] + ('…' if len(self._error_text) > 360 else ''))
+        self.lbl_error.setToolTip(self._error_text)
+        self.error_box.show()
+
+    def _on_persistence_error(self, error):
+        if self._closing:
+            return
+        self.append_log('Ayarlar kaydedilemedi: ' + str(error), 'ERROR')
+        self._show_error('Ayarlar kaydedilemedi', error)
+
+    def _update_activity(self):
+        active = list(self._activity.values())
+        self.activity_box.setVisible(bool(active) and not self._closing)
+        if not active:
+            return
+        label, current, total = active[-1]
+        extra = ' · {} işlem çalışıyor'.format(len(active)) if len(active) > 1 else ''
+        self.lbl_activity.setText(label + extra)
+        if total > 0:
+            self.activity_progress.setRange(0, total)
+            self.activity_progress.setValue(min(current, total))
+        else:
+            self.activity_progress.setRange(0, 0)
+
     def _toggle_log_panel(self, show):
         """Baglanti cubugundaki Log dugmesi: acildiginda tam paneli goster."""
         try:
+            self.btn_log_toggle.blockSignals(True)
+            self.btn_log_toggle.setChecked(bool(show))
+            self.btn_log_toggle.blockSignals(False)
             self.log_box.setVisible(bool(show))
             self.btn_hide_log.setText('Gizle' if show else 'Göster')
             self.btn_hide_log.blockSignals(True)
@@ -534,6 +803,7 @@ class MainWindow(QMainWindow):
         self.btn_connect.clicked.connect(self.on_connect)
         self.btn_disconnect.clicked.connect(self.on_disconnect)
         self.txt_target.editingFinished.connect(self._sync_target)
+        self.txt_port.editingFinished.connect(self._sync_target)
         self.btn_clear_log.clicked.connect(self._clear_log_view)
         self.btn_save_log.clicked.connect(self.save_log_to_file)
         self.cmb_devices.currentIndexChanged.connect(self._on_device_picked)
@@ -541,30 +811,81 @@ class MainWindow(QMainWindow):
         self.core.log.connect(self.append_log)
         self.core.connection_changed.connect(self.on_connection_changed)
         try:
+            self.core.persistence_error.connect(self._on_persistence_error)
+        except Exception:
+            pass
+        try:
             self.core.adb_trace.connect(self._on_adb_trace)
         except Exception:
             pass
 
     # ------------------------------------------------------------------
     def _sync_target(self):
-        t = self.txt_target.text().strip()
-        if IP_RE.match(t):
-            self.core.set_target(t)
-            self.lbl_target.setText('Hedef: ' + t)
+        t = self._target_from_fields()
+        if self._valid_target(t):
+            if not self.core.connected and not self._connection_busy and not self._workers:
+                self.core.set_target(t)
+                self.lbl_target.setText('Hedef: ' + t)
+            elif t != self.core.target:
+                self.status.showMessage('Yeni adres hazır. Geçiş için Bağlan düğmesine basın.', 5000)
         elif t:
-            self.lbl_target.setText('Hedef: (geçersiz)')
+            self.status.showMessage('Geçerli bir IP adresi ve port yazın.', 5000)
+
+    def _target_from_fields(self):
+        """Read separate IP/port fields and accept a pasted legacy IP:port."""
+        address = self.txt_target.text().strip()
+        port = self.txt_port.text().strip()
+        if ':' in address:
+            host, _separator, pasted_port = address.rpartition(':')
+            if pasted_port:
+                address, port = host, pasted_port
+                self.txt_target.setText(address)
+                self.txt_port.setText(port)
+        return '{}:{}'.format(address, port) if address else ''
+
+    def _set_target_fields(self, target):
+        address, separator, port = str(target or '').strip().rpartition(':')
+        if not separator:
+            address, port = str(target or '').strip(), '5555'
+        if address.endswith('.x'):
+            address = ''
+        self.txt_target.setText(address)
+        self.txt_port.setText(port or '5555')
+
+    @staticmethod
+    def _valid_target(target):
+        if not IP_RE.fullmatch(target):
+            return False
+        address, port = target.rsplit(':', 1)
+        try:
+            return ipaddress.ip_address(address).version == 4 and 1 <= int(port) <= 65535
+        except ValueError:
+            return False
 
     def on_connect(self):
-        t = self.txt_target.text().strip()
-        if not IP_RE.match(t):
+        if self._connection_busy:
+            return
+        t = self._target_from_fields()
+        if not self._valid_target(t):
             QMessageBox.warning(self, 'Hedef', 'Adres IP:PORT biciminde olmali.\nOrnek: 192.0.2.1:5555')
             return
+        if t != self.core.target and self._workers:
+            self._show_error('Cihaz değiştirilemedi', 'Çalışan işlemlerin bitmesini bekleyin veya Durdur düğmesini kullanın.')
+            return
+        if t != self.core.target:
+            self._reconnect_target = None
         self.core.set_target(t)
         self.core.config.push_history(t)
         self.refresh_history_combo()
+        self._connection_busy = True
         self.btn_connect.setEnabled(False)
+        self.btn_disconnect.setEnabled(False)
+        self.txt_target.setEnabled(False)
+        self.txt_port.setEnabled(False)
+        self.cmb_devices.setEnabled(False)
+        self.cmb_history.setEnabled(False)
         self.append_log('Bağlantı deneniyor: ' + t, 'INFO')
-        self._run(Worker(lambda: self.core.connect()),
+        self._run(Worker(lambda: self.core.connect(t)),
                    on_ok=self._after_connect, on_fail=self._after_connect_fail)
 
     def _auto_refresh_after_connect(self, why='baglanti kuruldu'):
@@ -573,7 +894,6 @@ class MainWindow(QMainWindow):
             if getattr(self.tab_apps, '_busy', False):
                 self.append_log('Otomatik yenileme atlandı ({}, tarama suruyor).'.format(why), 'WARN')
                 return
-            self.tabs.setCurrentWidget(self.tab_apps)
             self.tab_apps.refresh()
             # Debloat da yalnizca-cihaz varligini tazelesin
             try:
@@ -584,6 +904,8 @@ class MainWindow(QMainWindow):
             self.append_log('Otomatik yenileme baslatilamadi: {}'.format(e), 'WARN')
 
     def _after_connect(self, _):
+        self._finish_connection_request()
+        self._reconnect_target = self.core.target
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(True)
         self.refresh_device_combo()
@@ -591,19 +913,102 @@ class MainWindow(QMainWindow):
         # Baglanti sonrasi Uygulamalar sekmesini otomatik yenile
         self._auto_refresh_after_connect('baglanti kuruldu')
 
-    def _after_connect_fail(self, err):
+    def _after_connect_fail(self, _err):
+        self._finish_connection_request()
         self.btn_connect.setEnabled(True)
-        self.append_log('Bağlantı hatasi: ' + err, 'ERROR')
-        QMessageBox.critical(self, 'Bağlantı', err)
 
     def on_disconnect(self):
-        self._run(Worker(lambda: self.core.disconnect()),
-                  on_ok=lambda _: self.append_log('Bağlantı kesildi.', 'INFO'),
-                  on_fail=self.append_log)
+        if self._connection_busy:
+            return
+        self._reconnect_target = None
+        self._watchdog_generation += 1
+        self._disconnect_pending = True
+        self._disconnect_in_progress = True
+        self._connection_busy = True
+        # Stop device jobs before dispatching the disconnect request, so a
+        # queued scan or a multi-package action cannot reconnect afterwards.
+        # cancel() cannot stop an ADB subprocess already in flight; wait for
+        # every tracked worker before disconnecting the shared ADB target.
+        for worker in list(self._workers):
+            try:
+                worker.cancel()
+            except (AttributeError, RuntimeError):
+                pass
+            try:
+                worker.finished.connect(self._watchdog_worker_finished)
+            except (AttributeError, RuntimeError):
+                pass
+        self.btn_connect.setEnabled(False)
+        self.btn_disconnect.setEnabled(False)
+        self.txt_target.setEnabled(False)
+        self.txt_port.setEnabled(False)
+        self.cmb_devices.setEnabled(False)
+        self.cmb_history.setEnabled(False)
+        if self._device_workers_running():
+            return
+        self._start_disconnect()
+
+    def _device_workers_running(self):
+        for worker in list(self._workers):
+            try:
+                if worker.isRunning():
+                    return True
+            except RuntimeError:
+                continue
+        return False
+
+    def _watchdog_is_running(self):
+        worker = self._watchdog_worker
+        if worker is None:
+            return False
+        try:
+            return worker.isRunning()
+        except RuntimeError:
+            self._watchdog_worker = None
+            return False
+
+    def _watchdog_worker_finished(self):
+        if not self._watchdog_is_running():
+            self._watchdog_worker = None
+        if self._disconnect_pending and not self._device_workers_running():
+            self._start_disconnect()
+
+    def _start_disconnect(self):
+        if not self._disconnect_pending or self._closing:
+            return
+        if self._device_workers_running():
+            return
+        self._disconnect_pending = False
+        worker = Worker(lambda: self.core.disconnect())
+        worker._allow_during_disconnect = True
+        self._run(worker,
+                  on_ok=self._after_disconnect,
+                  on_fail=self._after_disconnect_fail)
+
+    def _finish_connection_request(self):
+        self._connection_busy = False
+        self.btn_connect.setEnabled(True)
+        self.btn_disconnect.setEnabled(self.core.connected)
+        self.txt_target.setEnabled(True)
+        self.txt_port.setEnabled(True)
+        self.cmb_devices.setEnabled(True)
+        self.cmb_history.setEnabled(True)
+        self.tab_files_inner._update_action_buttons()
+
+    def _after_disconnect(self, _):
+        self._disconnect_in_progress = False
+        self._finish_connection_request()
+        self.append_log('Bağlantı kesildi.', 'INFO')
+
+    def _after_disconnect_fail(self, err):
+        self._disconnect_in_progress = False
+        self._finish_connection_request()
 
     def on_connection_changed(self, connected, target):
-        self.btn_disconnect.setEnabled(connected)
-        self.lbl_status.setText('Bağlı: ' + target if connected else 'Bağlı degil')
+        if target != self._reconnect_target and not connected:
+            self._reconnect_target = None
+        self.btn_disconnect.setEnabled(connected and not self._connection_busy)
+        self.lbl_status.setText('Bağlı: ' + target if connected else 'Bağlı değil')
         dark = self.core.config.dark_mode
         self.lbl_status.setStyleSheet(conn_style(dark, bool(connected)))
         self.lbl_target.setText('Hedef: ' + target)
@@ -613,7 +1018,7 @@ class MainWindow(QMainWindow):
         # baglanti noktasi + durum etiketi birlikte guncellenir
         dark = self.core.config.dark_mode
         pal = colors_for(dark)
-        dot = pal['success'] if online else pal['danger']
+        dot = pal['success'] if online else pal['faint']
         try:
             self.lbl_conn_dot.setStyleSheet(
                 'color: {}; font-size: 14pt;'.format(dot))
@@ -632,8 +1037,10 @@ class MainWindow(QMainWindow):
         if self._closing or getattr(self, '_selftest', False):
             return
         target = (self.core.target or '').strip()
-        if not target or any(w.isRunning() for w in self._workers):
+        if (not target or target != self._reconnect_target
+                or any(w.isRunning() for w in self._workers)):
             return
+        generation = self._watchdog_generation
 
         def do():
             try:
@@ -644,7 +1051,8 @@ class MainWindow(QMainWindow):
                 return False
 
         def done(ok):
-            if self._closing:
+            if (self._closing or generation != self._watchdog_generation
+                    or target != self._reconnect_target or target != self.core.target):
                 return
             if ok:
                 self._watch_fail = 0
@@ -675,12 +1083,14 @@ class MainWindow(QMainWindow):
                     self.append_log('Bekçi: bağlantı koptu, yeniden deneniyor: ' + target, 'WARN')
 
         w = Worker(do)
+        self._watchdog_worker = w
         w.finished_ok.connect(done)
+        w.finished.connect(self._watchdog_worker_finished)
         self._run(w)
 
     # ------------------------------------------------------------------
     def refresh_history_combo(self):
-        cur = self.txt_target.text().strip()
+        cur = self._target_from_fields()
         self.cmb_history.blockSignals(True)
         self.cmb_history.clear()
         self.cmb_history.addItem('Geçmiş...', '')
@@ -696,7 +1106,7 @@ class MainWindow(QMainWindow):
     def _on_history_picked(self, idx):
         d = self.cmb_history.itemData(idx)
         if d:
-            self.txt_target.setText(d)
+            self._set_target_fields(d)
             self._sync_target()
 
     def refresh_device_combo(self):
@@ -715,7 +1125,7 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         try:
-            cur = self.txt_target.text().strip()
+            cur = self._target_from_fields()
         except (RuntimeError, AttributeError):
             return
         self.cmb_devices.blockSignals(True)
@@ -733,7 +1143,7 @@ class MainWindow(QMainWindow):
     def _on_device_picked(self, idx):
         d = self.cmb_devices.itemData(idx)
         if d:
-            self.txt_target.setText(d)
+            self._set_target_fields(d)
             self._sync_target()
 
     # ------------------------------------------------------------------
@@ -789,7 +1199,7 @@ class MainWindow(QMainWindow):
                         pal['text'], self._esc(msg)))
             if html:
                 # tek appendHtml: 147 satirlik tik degisiminde bile tek duzen
-                self.txt_log.appendHtml('<br>'.join(html))
+                self.txt_log.appendHtml(''.join('<p>{}</p>'.format(line) for line in html))
                 self.txt_log.moveCursor(QTextCursor.End)
             self._last_drawn = total
         except RuntimeError:
@@ -832,7 +1242,7 @@ class MainWindow(QMainWindow):
                         pal['faint'], self._esc(str(ts)), color, self._esc(level),
                         pal['text'], self._esc(msg)))
             if html:
-                self.txt_log.appendHtml('<br>'.join(html))
+                self.txt_log.appendHtml(''.join('<p>{}</p>'.format(line) for line in html))
                 self.txt_log.moveCursor(QTextCursor.End)
             self._last_drawn = len(records)
         except RuntimeError:
@@ -882,6 +1292,7 @@ class MainWindow(QMainWindow):
         Worker'lar faz gecislerinde check_cancel()/isInterruptionRequested
         gorur; iptal edilen is 'kullanici durdurdu' raporu uretir.
         """
+        self.tab_remote_inner._stop_hold()
         running = [w for w in list(self._workers) if w.isRunning()]
         if not running:
             return
@@ -897,6 +1308,7 @@ class MainWindow(QMainWindow):
                     w.requestInterruption()
             except Exception:
                 pass
+        self.lbl_activity.setText('İşlemler durduruluyor…')
 
     def _run(self, worker, on_ok=None, on_fail=None, desc=None):
         """Worker'i baslatir ve sonuclerini baglar. Worker'i bellekte tutar.
@@ -904,40 +1316,70 @@ class MainWindow(QMainWindow):
         desc: Canli Log'a yazilacak insan-dili aciklama
               (örn: 'Uygulamalar taraniyor'). Verilmezse job_name kullanilir.
         """
-        if self._closing:
+        if self._closing or self._close_pending:
             # thread baslamadi; deleteLater yeterli (QThread-destroyed yok)
             try:
                 worker.deleteLater()
             except Exception:
                 pass
             return
+        if (self._disconnect_in_progress
+                and not getattr(worker, '_allow_during_disconnect', False)):
+            # A queued refresh/action can arrive after on_disconnect() has
+            # captured its worker list. Make it sticky-cancelled and include
+            # its completion in the disconnect barrier before it can connect.
+            try:
+                worker.cancel()
+                worker.finished.connect(self._watchdog_worker_finished)
+            except (AttributeError, RuntimeError):
+                pass
+        label = desc or getattr(worker, 'job_name', None) or type(worker).__name__
+        track = not str(label).startswith('Tus: ')
+        token = id(worker)
+        if track:
+            self._activity[token] = (str(label), 0, 0)
+            QTimer.singleShot(250, self, lambda: self._update_activity() if token in self._activity else None)
         try:
-            label = desc or getattr(worker, 'job_name', None) or type(worker).__name__
             self.append_log(u'▶ İstek: {}'.format(label), 'INFO')
         except Exception:
             pass
         if on_ok:
             worker.finished_ok.connect(on_ok)
+        worker.finished_ok.connect(lambda _result: self.status.showMessage('{} tamamlandı.'.format(label), 4000)
+                                   if not self._closing and track else None)
 
         def _handle_fail(err):
-            self.append_log(str(err), 'ERROR')
+            self.append_log('✘ {} başarısız: {}'.format(label, str(err)), 'ERROR')
+            if 'kullanıcı durdurdu' not in str(err).lower():
+                self._show_error(label, str(err))
             if on_fail:
                 on_fail(str(err))
         worker.failed.connect(_handle_fail)
         if hasattr(worker, 'log'):
             try:
-                worker.log.connect(lambda m: self.append_log(m, 'INFO'))
+                def _worker_log(message):
+                    # BaseWorker emits the failure summary immediately before
+                    # failed; the common handler below records the same error
+                    # once at ERROR level with the operation label.
+                    if str(message).startswith('✘ '):
+                        return
+                    self.append_log(message, 'INFO')
+                worker.log.connect(_worker_log)
             except Exception:
                 pass
         if hasattr(worker, 'progress'):
             try:
-                worker.progress.connect(
-                    lambda cur, total: self.status.showMessage(
-                        'İşlem: {}/{}'.format(cur, total), 3000))
+                def _progress(cur, total):
+                    if token in self._activity and not self._closing:
+                        self._activity[token] = (str(label), max(0, int(cur)), max(0, int(total)))
+                        self._update_activity()
+                worker.progress.connect(_progress)
             except Exception:
                 pass
 
         def _cleanup(_=None):
+            self._activity.pop(token, None)
+            self._update_activity()
             if worker in self._workers:
                 self._workers.remove(worker)
             try:
@@ -948,6 +1390,7 @@ class MainWindow(QMainWindow):
                 alive = any(w.isRunning() for w in self._workers)
                 if not alive and hasattr(self, 'btn_stop'):
                     self.btn_stop.setEnabled(False)
+                    self.btn_stop.hide()
             except Exception:
                 pass
         try:
@@ -958,14 +1401,78 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, 'btn_stop'):
                 self.btn_stop.setEnabled(True)
+                self.btn_stop.show()
         except Exception:
             pass
         worker.start()
+
+    def _finish_close_when_workers_stop(self):
+        if not self._close_pending or self._close_scheduled:
+            return
+        try:
+            if any(w.isRunning() for w in self._workers):
+                return
+        except RuntimeError:
+            pass
+        self._close_scheduled = True
+        QTimer.singleShot(0, self, self.close)
 
     def closeEvent(self, e):
         if self._closing:
             e.accept()
             return
+        running = []
+        for worker in list(self._workers):
+            try:
+                if worker.isRunning():
+                    running.append(worker)
+            except RuntimeError:
+                pass
+        if running:
+            if not self._close_pending:
+                self._close_pending = True
+                self.status.showMessage(
+                    'Çalışan işler durduruluyor; tamamlanınca pencere kapanacak.')
+                try:
+                    self.append_log(
+                        'Kapanış istendi; çalışan işler iptal ediliyor.', 'WARN')
+                except Exception:
+                    pass
+                try:
+                    self.tab_remote_inner._stop_hold()
+                except Exception:
+                    pass
+                for worker in running:
+                    try:
+                        # Closing suppresses new UI flows (including chained
+                        # work) while worker log messages remain visible.
+                        worker.finished_ok.disconnect()
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
+                    try:
+                        worker.failed.disconnect()
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
+                    try:
+                        if hasattr(worker, 'cancel'):
+                            worker.cancel()
+                        else:
+                            worker.requestInterruption()
+                    except (AttributeError, RuntimeError):
+                        pass
+                    try:
+                        worker.finished.connect(self._finish_close_when_workers_stop)
+                    except (AttributeError, RuntimeError):
+                        pass
+                # Cover the race where a worker finished just before the
+                # finished signal was connected above.
+                QTimer.singleShot(50, self, self._finish_close_when_workers_stop)
+                self.setEnabled(False)
+            e.ignore()
+            return
+
+        self._close_pending = False
+        self._close_scheduled = False
         self._closing = True
         # timer'lari durdur (kapanis sirasinda panele/sinyale dokunulmasin)
         for _t in (getattr(self, '_log_timer', None),
@@ -974,33 +1481,6 @@ class MainWindow(QMainWindow):
             try:
                 if _t is not None:
                     _t.stop()
-            except Exception:
-                pass
-        # worker'lari durdur ve bitmelerini bekle (sinyal/widget yarisi olmasin)
-        for w in list(self._workers):
-            try:
-                if w.isRunning():
-                    w.requestInterruption()
-            except Exception:
-                pass
-        for w in list(self._workers):
-            try:
-                if w.isRunning():
-                    w.wait(3000)
-            except Exception:
-                pass
-        # Son savunma: hala ayakta kalan thread varsa zorla durdur.
-        # 'QThread: Destroyed while thread is still running' -> process
-        # C0000409 ile coker; kapanista asla paylasilmamali.
-        for w in list(self._workers):
-            try:
-                if w.isRunning():
-                    w.requestInterruption()
-                    if not w.wait(2000):
-                        w.terminate()
-                        w.wait(1000)
-            except RuntimeError:
-                pass  # zaten yok edilmis
             except Exception:
                 pass
         # ADB ve Core sinyallerini kapat (kapanis sirasinda yeni UI isi

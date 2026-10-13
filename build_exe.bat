@@ -2,6 +2,10 @@
 REM MiBox Konsol - optimize tek dosya .exe olusturur.
 REM Kullanim: build_exe.bat
 setlocal
+set "MIBOX_DIR_PUSHED=0"
+pushd "%~dp0"
+if errorlevel 1 goto :fail
+set "MIBOX_DIR_PUSHED=1"
 
 where pyinstaller >nul 2>nul
 if errorlevel 1 goto :need_pyinstaller
@@ -40,9 +44,11 @@ for %%F in (dist\MiBoxKonsol.exe) do echo Boyut: %%~zF bayt
 echo TAMAM: dist\MiBoxKonsol.exe
 echo Not: adb.exe dosyasini exe yanina kopyalayin.
 pause
+popd
 exit /b 0
 
 :fail
 echo Derleme basarisiz.
 pause
+if "%MIBOX_DIR_PUSHED%"=="1" popd
 exit /b 1

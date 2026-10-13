@@ -21,10 +21,11 @@ class Core(QObject):
 
     log = Signal(str, str)          # (mesaj, seviye)
     connection_changed = Signal(bool, str)  # (bagli mi, hedef)
+    persistence_error = Signal(str)  # ayar dosyasi diske yazilamadi
 
     def __init__(self):
         super().__init__()
-        self.config = Config()
+        self.config = Config(on_persistence_error=self.persistence_error.emit)
         self.target = self.config.last_target
         self.connected = False
         self._engine = None
@@ -78,9 +79,13 @@ class Core(QObject):
 
     # ------------------------------------------------------------------
     def set_target(self, target):
+        changed = target != self.target
         self.target = target
         self.config.last_target = target
         self.config.save()
+        if changed:
+            self.connected = False
+            self.connection_changed.emit(False, target)
 
     def connect(self, target=None, timeout=30):
         """Baglanti kurar. Hata durumunda AdbError atar. UI thread disinda cagirin."""

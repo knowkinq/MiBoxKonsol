@@ -4,7 +4,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPlainTextEdit, QPushButton,
-    QLabel, QComboBox, QLineEdit, QMessageBox, QFileDialog, QCheckBox,
+    QLabel, QComboBox, QLineEdit, QMessageBox, QFileDialog,
 )
 
 from . import kit
@@ -47,46 +47,55 @@ class LogcatTab(QWidget):
     def _build(self):
         root = kit.page(self)
 
-        row = QHBoxLayout()
-        row.setSpacing(4)
+        filters = QHBoxLayout()
+        filters.setSpacing(kit.SPACING)
         self.cmb_level = QComboBox()
         self.cmb_level.addItems(['Tümü (V)', 'Debug (D)', 'Info (I)', 'Uyarı (W)', 'Hata (E)', 'Fatal (F)'])
         self.cmb_level.setCurrentIndex(2)
+        self.cmb_level.setAccessibleName('Log seviyesi')
         self.txt_tag = QLineEdit()
         self.txt_tag.setPlaceholderText('Etiket filtresi (örn: AndroidRuntime)...')
-        self.txt_tag.setMaximumWidth(200)
+        self.txt_tag.setMinimumWidth(180)
+        self.txt_tag.setAccessibleName('Log etiketi filtresi')
         self.btn_start = QPushButton('Başlat')
         self.btn_start.setProperty('accent', True)
         self.btn_start.clicked.connect(self._toggle)
+        self.chk_follow = kit.CheckBox('Takip')
+        self.chk_follow.setChecked(True)
+        filters.addWidget(QLabel('Seviye'))
+        filters.addWidget(self.cmb_level)
+        filters.addWidget(self.txt_tag, 1)
+        filters.addWidget(self.chk_follow)
+        filters.addWidget(self.btn_start)
+        root.addLayout(filters)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(kit.SPACING)
         self.btn_crash = QPushButton('Çökme Avcısı')
         self.btn_crash.setToolTip('Son FATAL/AndroidRuntime izlerini getirir')
         self.btn_crash.clicked.connect(self._crash)
         self.btn_clear_dev = QPushButton('Logu Temizle')
+        self.btn_clear_dev.setProperty('danger', True)
         self.btn_clear_dev.setToolTip('Cihaz log tamponunu temizle')
         self.btn_clear_dev.clicked.connect(self._clear_device)
-        self.chk_follow = QCheckBox('Takip')
-        self.chk_follow.setChecked(True)
         self.btn_save = QPushButton('Kaydet')
         self.btn_save.clicked.connect(self._save)
-        row.addWidget(QLabel('Seviye:'))
-        row.addWidget(self.cmb_level)
-        row.addWidget(self.txt_tag)
-        row.addWidget(self.btn_start)
-        row.addWidget(self.btn_crash)
-        row.addWidget(self.btn_clear_dev)
-        row.addWidget(self.chk_follow)
-        row.addStretch()
-        row.addWidget(self.btn_save)
-        root.addLayout(row)
+        tools.addWidget(self.btn_crash)
+        tools.addWidget(self.btn_clear_dev)
+        tools.addStretch(1)
+        tools.addWidget(self.btn_save)
+        root.addLayout(tools)
 
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
+        self.txt_log.setPlaceholderText(
+            'Canlı log henüz yok. Başlat ile izlemeyi açın veya Çökme Avcısı ile son izleri görüntüleyin.')
         self.txt_log.setMaximumBlockCount(3000)
         self.txt_log.setStyleSheet(kit.mono_style())
         self._level_colors = logcat_colors_for(kit.dark_from(self))
         root.addWidget(self.txt_log, 1)
 
-        self.lbl_status = QLabel('Hazır. Başlat ile canlı izle (3 sn aralık).')
+        self.lbl_status = kit.status_label('Hazır. Canlı izleme 3 saniyede bir yenilenir.')
         root.addWidget(self.lbl_status)
 
     def _level(self):

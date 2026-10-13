@@ -5,15 +5,15 @@ import re
 import socket
 import time
 
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QTableWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QLineEdit,
     QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy,
 )
 
 from ..workers import Worker
 from . import kit
-from .flowlayout import FlowLayout
 
 COL_IP = 0
 COL_STATE = 1
@@ -46,76 +46,115 @@ class NetworkTab(QWidget):
 
     def _build(self):
         root = kit.page(self)
+        root.setSpacing(8)
+        self._root_layout = root
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(4)
+        self.scan_card = QGroupBox()
+        self.scan_card.setObjectName('compactCard')
+        self.scan_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        scan_layout = QVBoxLayout(self.scan_card)
+        scan_layout.setContentsMargins(12, 8, 12, 8)
+        scan_layout.setSpacing(5)
+        self.scan_header = QWidget(self.scan_card)
+        self.scan_header.setObjectName('networkScanHeader')
+        header_row = QHBoxLayout(self.scan_header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(10)
+        self.lbl_scan_title = QLabel('LAN taraması')
+        self.lbl_scan_title.setObjectName('cardTitle')
+        self.lbl_scan_hint = kit.hint_label(
+            'Ağ önekini ve adres aralığını seçerek açık ADB portlarını bulun.')
+        self.lbl_scan_hint.setWordWrap(True)
+        header_row.addWidget(self.lbl_scan_title)
+        header_row.addWidget(self.lbl_scan_hint, 1)
+        scan_layout.addWidget(self.scan_header)
+
+        network_row = QHBoxLayout()
+        network_row.setSpacing(8)
         self.txt_subnet = QLineEdit(local_subnet_guess())
-        self.txt_subnet.setPlaceholderText('Subnet (orn: 192.168.1.)')
+        self.txt_subnet.setPlaceholderText('Örnek: 192.168.1.')
         self.spn_port = QSpinBox()
         self.spn_port.setRange(1, 65535)
         self.spn_port.setValue(5555)
-        self.spn_port.setPrefix('port: ')
-        self.spn_port.setMinimumWidth(198)
-        self.spn_port.setMaximumWidth(198)
+        self.spn_port.setPrefix('Port: ')
+        self.spn_port.setMaximumWidth(132)
         self.spn_port.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        row1.addWidget(QLabel('Subnet:'))
-        row1.addWidget(self.txt_subnet, 1)
-        row1.addWidget(self.spn_port, 0)
-        root.addLayout(row1)
+        network_row.addWidget(QLabel('Ağ öneki'))
+        network_row.addWidget(self.txt_subnet, 1)
+        network_row.addWidget(self.spn_port)
+        scan_layout.addLayout(network_row)
 
-        row2 = QHBoxLayout()
-        row2.setSpacing(4)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        toolbar.addWidget(QLabel('Adres aralığı'))
         self.spn_from = QSpinBox()
         self.spn_from.setRange(1, 254)
         self.spn_from.setValue(1)
-        self.spn_from.setPrefix('ilk: ')
-        self.spn_from.setMinimumWidth(159)
-        self.spn_from.setMaximumWidth(159)
+        self.spn_from.setPrefix('İlk: ')
+        self.spn_from.setMinimumWidth(92)
+        self.spn_from.setMaximumWidth(118)
         self.spn_to = QSpinBox()
         self.spn_to.setRange(1, 254)
         self.spn_to.setValue(254)
-        self.spn_to.setPrefix('son: ')
-        self.spn_to.setMinimumWidth(159)
-        self.spn_to.setMaximumWidth(159)
+        self.spn_to.setPrefix('Son: ')
+        self.spn_to.setMinimumWidth(92)
+        self.spn_to.setMaximumWidth(118)
         self.btn_scan = QPushButton('Tara')
-        self.btn_scan.setProperty('accent', True)
+        self.btn_scan.setProperty('role', 'primary')
         self.btn_scan.clicked.connect(self.scan)
         self.btn_stop = QPushButton('Durdur')
+        self.btn_stop.setProperty('role', 'secondary')
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop_scan)
-        row2.addWidget(self.spn_from)
-        row2.addWidget(self.spn_to)
-        row2.addWidget(self.btn_scan)
-        row2.addWidget(self.btn_stop)
-        row2.addStretch()
-        root.addLayout(row2)
+        toolbar.addWidget(self.spn_from)
+        toolbar.addWidget(self.spn_to)
+        toolbar.addStretch(1)
+        toolbar.addWidget(self.btn_scan)
+        toolbar.addWidget(self.btn_stop)
+        scan_layout.addLayout(toolbar)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setMaximumHeight(14)
-        root.addWidget(self.progress)
+        self.progress.setMaximumHeight(12)
+        scan_layout.addWidget(self.progress)
+        root.addWidget(self.scan_card)
 
+        results_card = QGroupBox()
+        results_card.setObjectName('compactCard')
+        results_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.results_card = results_card
+        results_layout = QVBoxLayout(results_card)
+        results_layout.setSpacing(8)
+        results_title = QLabel('Bulunan cihazlar')
+        results_title.setObjectName('cardTitle')
+        results_layout.addWidget(results_title)
         self.grid = kit.single_table(3, ['IP', 'Durum', 'Gecikme (ms)'])
+        self.grid.setFixedHeight(130)
+        kit.empty_state(self.grid, 'Ağdaki cihazları keşfedin',
+                        'Adres aralığını seçin ve Tara düğmesine basın.')
         self.grid.horizontalHeader().setSectionResizeMode(COL_IP, QHeaderView.Stretch)
         self.grid.horizontalHeader().setSectionResizeMode(COL_STATE, QHeaderView.ResizeToContents)
         self.grid.horizontalHeader().setSectionResizeMode(COL_LATENCY, QHeaderView.ResizeToContents)
         self.grid.doubleClicked.connect(self._on_double_click)
-        root.addWidget(self.grid, 1)
+        results_layout.addWidget(self.grid, 1)
 
-        flow = FlowLayout()
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.lbl_summary = kit.status_label(
+            'Sonuçları çift tıklayarak veya seçip hedef yaparak bağlanın.')
+        actions.addWidget(self.lbl_summary, 1)
         self.btn_pair = QPushButton('Kablosuz Eşleştir')
+        self.btn_pair.setProperty('role', 'secondary')
         self.btn_pair.clicked.connect(self._pair)
         self.btn_use = QPushButton('Seçiliyi Hedef Yap')
-        self.btn_use.setProperty('accent', True)
+        self.btn_use.setProperty('role', 'primary')
         self.btn_use.clicked.connect(self._use_selected)
-        flow.addWidget(self.btn_pair)
-        flow.addWidget(self.btn_use)
-        root.addLayout(flow)
-
-        self.lbl_summary = QLabel("Tara: LAN'da ADB portu açık cihazları bulur. Cift tiklama hedef yapar.")
-        self.lbl_summary.setWordWrap(True)
-        root.addWidget(self.lbl_summary)
+        actions.addWidget(self.btn_pair)
+        actions.addWidget(self.btn_use)
+        results_layout.addLayout(actions)
+        root.addWidget(results_card)
+        root.addStretch(1)
         self._stop_flag = False
 
     def _stop_scan(self):
@@ -136,9 +175,12 @@ class NetworkTab(QWidget):
         self.btn_stop.setEnabled(True)
         self.progress.setValue(0)
         self._stop_flag = False
+        worker_ref = {'worker': None}
+        total = end - start + 1
 
         def do():
             found = []
+            completed = 0
 
             def probe(last):
                 if self._stop_flag:
@@ -167,6 +209,10 @@ class NetworkTab(QWidget):
                     res = fut.result()
                     if res:
                         found.append(res)
+                    completed += 1
+                    worker = worker_ref['worker']
+                    if worker is not None:
+                        worker.progress.emit(completed, total)
             found.sort(key=lambda x: int(x[-1]))
             return found
 
@@ -176,11 +222,21 @@ class NetworkTab(QWidget):
             self.btn_stop.setEnabled(False)
 
         w = Worker(do)
+        worker_ref['worker'] = w
         w.job_name = 'LAN tarama'
+        w.progress.connect(self._update_scan_progress)
         w.finished_ok.connect(show)
         w.failed.connect(lambda e: (self.btn_scan.setEnabled(True), self.btn_stop.setEnabled(False)))
         self.window._run(w, on_ok=lambda _: None,
                          desc='Ag: {}{}-{} taraniyor'.format(prefix, start, end))
+
+    @Slot(int, int)
+    def _update_scan_progress(self, completed, total):
+        if total <= 0:
+            return
+        self.progress.setValue(min(100, int(completed * 100 / total)))
+        self.lbl_summary.setText(
+            'Taranıyor: {} / {} adres'.format(completed, total))
 
     def _show_results(self, found):
         self._found = found
@@ -191,6 +247,19 @@ class NetworkTab(QWidget):
             self.grid.setItem(r, COL_IP, QTableWidgetItem(ip))
             self.grid.setItem(r, COL_STATE, QTableWidgetItem(state))
             self.grid.setItem(r, COL_LATENCY, QTableWidgetItem(lat))
+        row_height = self.grid.verticalHeader().defaultSectionSize()
+        header_height = self.grid.horizontalHeader().height()
+        desired_height = header_height + len(found) * row_height + 8
+        if found:
+            self.grid.setFixedHeight(min(420, max(120, desired_height)))
+        else:
+            self.grid.setFixedHeight(130)
+        results_layout = self.results_card.layout()
+        results_layout.invalidate()
+        self.results_card.updateGeometry()
+        root_layout = self.layout()
+        root_layout.invalidate()
+        root_layout.activate()
         self.progress.setValue(100)
         self.lbl_summary.setText('{} cihaz bulundu (port açık).'.format(len(found)))
 
@@ -214,7 +283,7 @@ class NetworkTab(QWidget):
             self._set_target(ip.text() + ':' + str(self.spn_port.value()))
 
     def _set_target(self, target):
-        self.window.txt_target.setText(target)
+        self.window._set_target_fields(target)
         self.window._sync_target()
         self.core.config.push_history(target)
         try:

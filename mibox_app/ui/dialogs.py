@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QMessageBox
 MAX_LIST = 8
 
 ACTION_TR = {
-    'stop': 'Force stop',
+    'stop': 'Zorla durdurma',
     'clear': 'Veri silme',
     'enable': 'Aktif etme',
     'disable': 'Devre dışı bırakma',
@@ -51,6 +51,8 @@ def confirm_action(parent, action, pkgs, name_of, extra=''):
         body = u'{}\n\n{}'.format(label, '\n'.join(lines))
     else:
         body = u'{} uygulama — {}:\n\n{}'.format(len(pkgs), label, '\n'.join(lines))
+    if action == 'clear':
+        body += '\n\nUygulama verileri kalıcı olarak silinir. Durum kaydı bu verileri geri getirmez.'
     if extra:
         body += u'\n\n' + extra
     ret = QMessageBox.question(parent, u'Onay — ' + label, body,

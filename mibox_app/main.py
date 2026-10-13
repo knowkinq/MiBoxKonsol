@@ -19,9 +19,7 @@ def _print_info():
     .exe penceresiz derlendigi icin ciktiyi gormek uzere yonlendirin:
         MiBoxKonsol.exe --version > bilgi.txt
 
-    Not: burada print() BILEREK kullanilir (CLI ciktisi, GUI log'u degil);
-    tools/kalite_tara.py bu dosyada print() uyarisi uretmez:
-    kalite_tara: print-serbest
+    Not: burada print() CLI ciktisi icin bilerek kullanilir; GUI log'u degildir.
     """
     from . import diagnostics
     print(diagnostics.metin())
@@ -48,6 +46,38 @@ def _selftest_path():
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, 'mibox-selftest-ok.txt')
+
+
+def _shutdown_selftest_window(win, app):
+    """Selftest penceresini worker'lari zorla sonlandirmadan kapat."""
+    workers = list(getattr(win, '_workers', []))
+    for worker in workers:
+        try:
+            if worker.isRunning():
+                if hasattr(worker, 'cancel'):
+                    worker.cancel()
+                else:
+                    worker.requestInterruption()
+        except RuntimeError:
+            continue
+    # wait() burada timeout'suz kullanilir: QThread.terminate() is parcacigini
+    # bellek/ADB islemi ortasinda kesip sureci kararsiz birakabilir. Selftest
+    # baslangicinda otomatik cihaz isi baslatmaz; bekleyen bir worker varsa
+    # kendi iptal kontrolune ulasmasi beklenir.
+    for worker in workers:
+        try:
+            if worker.isRunning() and not worker.wait():
+                return False
+        except RuntimeError:
+            continue
+    app.processEvents()
+    if any(worker.isRunning() for worker in workers):
+        return False
+    if not win.close():
+        return False
+    app.processEvents()
+    return bool(getattr(win, '_closing', False)) and not any(
+        worker.isRunning() for worker in list(getattr(win, '_workers', [])))
 
 
 def _prune_empty_crash_logs(logdir, keep=20):
@@ -102,10 +132,9 @@ def _install_crash_traps():
     Qt mesajlarini gunluk dosyasina isler. Boylece 'tik crash' sonrasi
     logs/crash-*.log'da iz olur.
 
-    Faz 1 duzeltmesi: dosya TEMBEL acilir — normal calismada hic crash
-    dosyasi olusmaz (eski kod her acilista bos dosya birakiyordu).
-    Temiz cikista iceriksiz dosya kalirsa silinir. Qt Warning (örn. zararsiz
-    'Cannot find font directory') dosyaya yazilmaz; yalnizca Critical/Fatal.
+    faulthandler ilk Qt/UI importundan once etkinlestirilir. Temiz cikista
+    iceriksiz dosya silinir. Qt Warning (örn. zararsiz 'Cannot find font
+    directory') dosyaya yazilmaz; yalnizca Critical/Fatal.
     """
     import atexit
     import datetime
@@ -113,14 +142,24 @@ def _install_crash_traps():
     import traceback
 
     try:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        logdir = os.path.join(base, 'logs')
+        try:
+            from . import config
+        except ImportError:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            from mibox_app import config
+        logdir = config.LOG_DIR
         os.makedirs(logdir, exist_ok=True)
         _prune_empty_crash_logs(logdir)
     except Exception:
         return None
 
-    state = {'fh': None, 'path': None}
+    state = {
+        'fh': None, 'path': None, 'fh_enabled': False,
+        'hook': None, 'orig_hook': sys.excepthook,
+        'qt_installed': False, 'qt_restore': None,
+    }
 
     def _open():
         if state['fh'] is not None:
@@ -136,6 +175,7 @@ def _install_crash_traps():
             state['path'] = path
             try:
                 faulthandler.enable(file=fh)
+                state['fh_enabled'] = True
             except Exception:
                 pass
             return fh
@@ -143,11 +183,32 @@ def _install_crash_traps():
             return None
 
     def _cleanup_empty():
-        # temiz cikis: gercek icerik yoksa dosyayi kaldirma
+        # Handler'lari dosya kapanmadan once kaldir.
+        if state['qt_installed']:
+            try:
+                from PySide6.QtCore import qInstallMessageHandler
+                qInstallMessageHandler(state['qt_restore'])
+                state['qt_installed'] = False
+            except Exception:
+                pass
+        if state['qt_installed']:
+            # The Qt callback may still use the file, so leave both alive.
+            return
+        if state['hook'] is not None and sys.excepthook is state['hook']:
+            sys.excepthook = state['orig_hook']
+
         fh = state['fh']
         path = state['path']
         if fh is None or path is None:
             return
+        if state['fh_enabled']:
+            try:
+                faulthandler.disable()
+                state['fh_enabled'] = False
+            except Exception:
+                # Keep the stream alive if the native handler could not be
+                # disabled safely.
+                return
         try:
             fh.flush()
         except Exception:
@@ -178,6 +239,10 @@ def _install_crash_traps():
     except Exception:
         pass
 
+    # Native faults during the upcoming Qt/UI imports need an already-open
+    # stream; a lazy open would miss the first fault entirely.
+    _open()
+
     try:
         def _hook(etype, value, tb):
             try:
@@ -190,11 +255,11 @@ def _install_crash_traps():
             except Exception:
                 pass
             try:
-                orig_hook(etype, value, tb)
+                state['orig_hook'](etype, value, tb)
             except Exception:
                 pass
-        orig_hook = sys.excepthook
         sys.excepthook = _hook
+        state['hook'] = _hook
 
         try:
             from PySide6.QtCore import qInstallMessageHandler, QtMsgType
@@ -213,7 +278,8 @@ def _install_crash_traps():
                                 logged['n'] += 1
                     except Exception:
                         pass
-            qInstallMessageHandler(_qtmsg)
+            state['qt_restore'] = qInstallMessageHandler(_qtmsg)
+            state['qt_installed'] = True
         except Exception:
             pass
         return True
@@ -222,55 +288,24 @@ def _install_crash_traps():
 
 
 def run(selftest=False):
+    _install_crash_traps()
     from PySide6.QtWidgets import QApplication
 
     Core, MainWindow = _import_pkg()
-    _install_crash_traps()
     app = QApplication(sys.argv)
     app.setApplicationName('MiBox Konsol')
     core = Core()
-    win = MainWindow(core)
-    if selftest:
-        # Selftest: hicbir otomatik is baslamasın (watchdog connect worker'i
-        # 8 sn surebilir; process bu beklemede takilir/cura kapatir).
-        try:
-            win._selftest = True
-            win._watch.stop()
-        except Exception:
-            pass
+    win = MainWindow(core, selftest=selftest)
     win.show()
     if selftest:
         app.processEvents()
-        # acilista baslayan worker'lari bekle (QThread-destroyed uyarisi olmasin)
-        try:
-            for w in list(getattr(win, '_workers', [])):
-                if w.isRunning():
-                    w.wait(8000)
-            app.processEvents()
-        except Exception:
-            pass
+        if not _shutdown_selftest_window(win, app):
+            return 2
         try:
             with open(_selftest_path(), 'w', encoding='utf-8') as f:
                 f.write('SELFTEST_OK')
         except OSError:
-            pass
-        try:
-            win.close()
-            app.processEvents()
-        except Exception:
-            pass
-        # closeEvent sonrasinda da hala ayakta kalan worker kalmis mi?
-        # kalmissa bekle; 'QThread Destroyed' -> C0000409 crash onlenir.
-        try:
-            pending = [w for w in list(getattr(win, '_workers', []))
-                       if w.isRunning()]
-            for w in pending:
-                w.requestInterruption()
-                if not w.wait(5000):
-                    w.terminate()
-                    w.wait(2000)
-        except Exception:
-            pass
+            return 2
         return 0
     return app.exec()
 

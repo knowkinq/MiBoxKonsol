@@ -1,2 +1,2 @@
-__version__ = '8.5.0'
+__version__ = '1.0.0'
 APP_NAME = 'MiBox Konsol'

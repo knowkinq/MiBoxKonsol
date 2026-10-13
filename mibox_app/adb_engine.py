@@ -9,12 +9,16 @@ yazma islemi onbelligi iptal ederse, o sirada biten taramanin bayati verisi
 tekrar onbellige yazilmaz.
 """
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import unicodedata
+from types import SimpleNamespace
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -37,8 +41,8 @@ def _repair_png(data):
     """
     if not data:
         return None
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return data  # zaten saglikli
+    if png_is_valid(data):
+        return data
     # Windows text-mode stdout her LF'den once CR ekleyebilir: orijinal
     # CRLF -> CR CR LF olur. Cift-CR'yi tekle; imza VE IEND kuyrugu
     # saglamsa kabul et (govdedeki yalniz-LF bozulmasi kurtarilamaz,
@@ -50,13 +54,59 @@ def _repair_png(data):
 
 
 def png_is_valid(data):
-    """Gercek PNG mi? (imza + IEND kuyrugu kontrolu)."""
-    if not data or len(data) < 24:
+    """PNG chunk yapisini ve CRC'lerini dogrula; bozuk/yarim veriyi reddet."""
+    if not data or len(data) < 45 or data[:8] != b'\x89PNG\r\n\x1a\n':
         return False
-    if data[:8] != b'\x89PNG\r\n\x1a\n':
-        return False
-    tail = data.rstrip(b'\r\n').rstrip(b'\n')
-    return tail.endswith(b'\x00\x00\x00\x00IEND\xaeB`\x82')
+    import zlib
+
+    offset = 8
+    chunk_index = 0
+    saw_idat = False
+    ended_idat = False
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], 'big')
+        kind = data[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            return False
+        payload = data[offset + 8:offset + 8 + length]
+        crc = int.from_bytes(data[offset + 8 + length:end], 'big')
+        if (zlib.crc32(kind + payload) & 0xffffffff) != crc:
+            return False
+        if chunk_index == 0:
+            if kind != b'IHDR' or length != 13:
+                return False
+            width = int.from_bytes(payload[:4], 'big')
+            height = int.from_bytes(payload[4:8], 'big')
+            bit_depth, color_type = payload[8], payload[9]
+            valid_depths = {
+                0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8),
+                4: (8, 16), 6: (8, 16),
+            }
+            if (not width or not height or bit_depth not in valid_depths.get(color_type, ())
+                    or payload[10:12] != b'\x00\x00' or payload[12] not in (0, 1)):
+                return False
+        elif kind == b'IHDR':
+            return False
+        if kind == b'IDAT':
+            if ended_idat:
+                return False
+            saw_idat = True
+        elif saw_idat and kind != b'IEND':
+            ended_idat = True
+        if kind == b'IEND':
+            if length != 0 or not saw_idat:
+                return False
+            tail = data[end:]
+            if tail.strip(b'\r\n'):
+                return False
+            # Correct chunk CRCs alone do not guarantee a decodable pixel
+            # stream. QImage is safe in workers and needs no QApplication.
+            from PySide6.QtGui import QImage
+            return not QImage.fromData(data, 'PNG').isNull()
+        offset = end
+        chunk_index += 1
+    return False
 
 
 def _base_dir():
@@ -159,6 +209,12 @@ _TRANSIENT_CONNECT_RE = re.compile(
 WATCHDOG_BASE_S = 15
 WATCHDOG_MAX_S = 60
 
+# Kumanda tus kodlari (TEK KAYNAK: baglanti bekcisi + Kumanda sekmesi).
+# Uyku modundaki Android TV'ye KEYCODE_WAKEUP gonderilerek ekran uyandirilir.
+KEYCODE_POWER = 26
+KEYCODE_SLEEP = 223
+KEYCODE_WAKEUP = 224
+
 
 def is_transient_connect_error(text):
     """Baglanti hatasi gecici mi? (tekrar denemeye deger)"""
@@ -195,37 +251,40 @@ def check_user_id(user_id):
         n = int(user_id)
     except (TypeError, ValueError):
         raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
-    if not 0 <= n <= 100:
+    if not 0 <= n <= 21474:
         raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
     return n
 
 
 def safe_remote_path(path):
-    """Cihazdaki dosya yolu icin guvenli bicim uretir.
+    """Validate a device path without rewriting its filename characters.
 
-    - Bosluk ve shell metakarakterlerini atar (arguman listesi olarak
-      gecirilse de bazi Android surumleri shell'de yorumlayabilir).
-    - Yalnizca mutlak yol kabul edilir (relative kacinma onlenir).
+    Shell callers must pass the result through _quoted_remote_path (or
+    shlex.quote); pull/push pass it as an argv element directly.
     """
-    p = (path or '').strip().replace('\\', '/')
+    p = str(path or '')
+    if any(unicodedata.category(ch) == 'Cc' for ch in p):
+        raise AdbError('Uzak yol kontrol karakteri içeremez.')
     if not p.startswith('/'):
         p = '/' + p
-    out = []
-    for ch in p:
-        if ch.isalnum() or ch in '/._-:@+':
-            out.append(ch)
-        else:
-            out.append('_')
-    p = ''.join(out) or '/'
-    # '..' ile disari kacinma onlenir
-    parts = [seg for seg in p.split('/') if seg not in ('', '.')]
+    parts = p.split('/')
     if '..' in parts:
-        parts = [seg for seg in parts if seg != '..']
+        raise AdbError('Uzak yol üst dizine çıkamaz.')
+    parts = [seg for seg in parts if seg not in ('', '.')]
     return '/' + '/'.join(parts) if parts else '/'
+
+
+def _quoted_remote_path(path):
+    """Return a validated path as one safely quoted Android shell word."""
+    return shlex.quote(safe_remote_path(path))
 
 
 class AdbError(Exception):
     """ADB isleminde basarisizlik."""
+
+
+class PackageStateUnknownError(AdbError):
+    """A package state could not be read reliably; callers must not escalate."""
 
 
 class AdbResult:
@@ -273,16 +332,22 @@ class AdbEngine:
             return
         try:
             shown = list(args)
+            private_values = []
             for i, a in enumerate(shown):
                 # 'adb pair HOST:PORT KOD' -> host ve kodun TAMAMI maskelenir
                 if str(a).lower() in self._MASK_ARGS:
                     for j in range(i + 1, len(shown)):
+                        if shown[j]:
+                            private_values.append(str(shown[j]))
                         shown[j] = '******'
+            safe_err = str(err or '')
+            for value in private_values:
+                safe_err = safe_err.replace(value, '******')
             try:
-                cb(shown, ok, ms, (err or '')[:200], bool(probe))
+                cb(shown, ok, ms, safe_err[:200], bool(probe))
             except TypeError:
                 # eski imzali callback (4 arg) uyumlulugu
-                cb(shown, ok, ms, (err or '')[:200])
+                cb(shown, ok, ms, safe_err[:200])
         except Exception:
             pass
 
@@ -300,7 +365,8 @@ class AdbEngine:
         return shutil.which('adb') or shutil.which('adb.exe')
 
     # ------------------------------------------------------------------
-    def run(self, args, timeout=30, binary=False, quiet_first=False):
+    def run(self, args, timeout=30, binary=False, quiet_first=False,
+            preserve_output_whitespace=False, cancel_check=None):
         """quiet_first: exit!=0 'yoklama negatif sonucu' sayilir.
 
         trace_cb imzasi genisledi: (cmd, ok, ms, err, probe).
@@ -313,16 +379,70 @@ class AdbEngine:
             kwargs['creationflags'] = CREATE_NO_WINDOW
         t0 = _time.time()
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+            if cancel_check is None:
+                r = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+            else:
+                if cancel_check():
+                    self._trace(args, False, 0, 'kullanıcı durdurdu')
+                    raise AdbError('ADB işlemi kullanıcı tarafından durduruldu')
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+                deadline = _time.monotonic() + max(0.0, float(timeout))
+                while True:
+                    if cancel_check():
+                        if proc.poll() is None:
+                            try:
+                                proc.terminate()
+                            except OSError:
+                                try:
+                                    proc.kill()
+                                except OSError:
+                                    pass
+                        try:
+                            proc.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass
+                            proc.communicate()
+                        self._trace(args, False,
+                                    int((_time.time() - t0) * 1000),
+                                    'kullanıcı durdurdu')
+                        raise AdbError('ADB işlemi kullanıcı tarafından durduruldu')
+                    remaining = deadline - _time.monotonic()
+                    if remaining <= 0:
+                        if proc.poll() is None:
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass
+                        proc.communicate()
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    try:
+                        stdout, stderr = proc.communicate(
+                            timeout=min(0.2, remaining))
+                        r = SimpleNamespace(returncode=proc.returncode,
+                                            stdout=stdout, stderr=stderr)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         except subprocess.TimeoutExpired:
             self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman aşımı')
-            raise AdbError('ADB zaman aşımı ({} sn): adb {}'.format(timeout, ' '.join(str(a) for a in args)))
+            shown = list(args)
+            for i, arg in enumerate(shown):
+                if str(arg).lower() in self._MASK_ARGS:
+                    for j in range(i + 1, len(shown)):
+                        shown[j] = '******'
+            raise AdbError('ADB zaman aşımı ({} sn): adb {}'.format(
+                timeout, ' '.join(str(a) for a in shown)))
         except OSError as e:
             self._trace(args, False, int((_time.time() - t0) * 1000), str(e)[:120])
             raise AdbError('ADB calistirilamadi: {}'.format(e))
         out, err = r.stdout, r.stderr
         if not binary:
-            out = out.decode('utf-8', 'replace').strip()
+            out = out.decode('utf-8', 'replace')
+            out = out.rstrip('\r\n') if preserve_output_whitespace else out.strip()
             err = err.decode('utf-8', 'replace').strip()
         else:
             out, err = out or b'', (err or b'').decode('utf-8', 'replace').strip()
@@ -388,6 +508,8 @@ class AdbEngine:
         """Android 11+ kablosuz eslestirme (adb pair host:port kod)."""
         r = self.run(['pair', host_port, str(code)], timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
+        if str(code):
+            text = text.replace(str(code), '******')
         if r.exit_code != 0 or re.search(r'failed|error|wrong|incorrect', text, re.I):
             raise AdbError('Eşleştirme başarısız: {}'.format(text.strip()))
         return text.strip()
@@ -414,9 +536,15 @@ class AdbEngine:
     # pidof (calismiyor), pm path (yok), dumpsys kismi, get (bos deger).
     QUIET_FIRST = {'pidof', 'pm', 'dumpsys', 'getprop', 'settings'}
 
-    def shell(self, target, *cmd, timeout=30, quiet=False):
-        return self.run(['-s', target, 'shell'] + list(cmd), timeout=timeout,
-                        quiet_first=quiet and bool(cmd) and str(cmd[0]) in self.QUIET_FIRST)
+    def shell(self, target, *cmd, timeout=30, quiet=False,
+              preserve_output_whitespace=False):
+        options = {
+            'timeout': timeout,
+            'quiet_first': quiet and bool(cmd) and str(cmd[0]) in self.QUIET_FIRST,
+        }
+        if preserve_output_whitespace:
+            options['preserve_output_whitespace'] = True
+        return self.run(['-s', target, 'shell'] + list(cmd), **options)
 
     def getprop(self, target, prop):
         return self.shell(target, 'getprop', prop).output.strip()
@@ -427,32 +555,59 @@ class AdbEngine:
     def list_packages(self, target, include_system=False):
         flag = '-a' if include_system else '-3'
         r = self.shell(target, 'pm', 'list', 'packages', flag)
+        if r.exit_code != 0:
+            raise AdbError('Paket listesi okunamadı: {}'.format(
+                (r.error or r.output or 'pm list packages başarısız').strip()))
+        packages = self._parse_package_list(r.output)
+        if include_system and not packages:
+            raise AdbError('Sistem paket listesi boş; sonuç doğrulanamadı.')
+        return packages
+
+    @staticmethod
+    def _parse_package_list(output):
         pkgs = []
-        for line in r.output.splitlines():
+        for line in (output or '').splitlines():
             line = line.strip()
-            if line.startswith('package:'):
-                pkgs.append(line[len('package:'):].strip())
+            if not line:
+                continue
+            if not line.startswith('package:'):
+                if re.fullmatch(r'no packages(?: found)?\.?', line, re.I):
+                    continue
+                raise AdbError('Paket listesi çözümlenemedi: ' + line[:200])
+            pkg = line[len('package:'):].strip()
+            if not is_valid_package(pkg) or ':' in pkg:
+                raise AdbError('Paket listesi bozuk kayıt içeriyor: ' + line[:200])
+            if pkg not in pkgs:
+                pkgs.append(pkg)
         return pkgs
 
-    def list_packages_user0(self, target, timeout=30):
-        """user 0 icin GERCEKTEN kurulu paketler (kaldirilanlar haric).
+    def list_packages_user0(self, target, timeout=30, user_id=0):
+        """Seçilen kullanıcı için GERÇEKTEN kurulu paketler.
 
-        'pm list packages --user 0' sadece bu kullanicida gorunur
-        paketleri dondurur; '--user 0' ile kaldirilmis sistem
+        Tarihsel metot adı korunur. '--user ID' sadece o kullanicida gorunur
+        paketleri dondurur; o kullanıcıdan kaldirilmis sistem
         uygulamalari listede CIKMAZ.
         """
+        uid = check_user_id(user_id)
         try:
-            r = self.shell(target, 'pm', 'list', 'packages', '--user', '0', timeout=timeout)
+            r = self.shell(target, 'pm', 'list', 'packages', '--user', str(uid),
+                           timeout=timeout)
         except AdbError:
             return None
-        pkgs = set()
-        for line in (r.output or '').splitlines():
-            line = line.strip()
-            if line.startswith('package:'):
-                pkgs.add(line[len('package:'):].strip())
+        if r.exit_code != 0:
+            return None
+        try:
+            pkgs = set(self._parse_package_list(r.output))
+        except AdbError:
+            return None
+        if re.search(r'\b(error|exception|denied|not allowed|invalid|usage|unknown|failed|failure)\b',
+                     r.error or '', re.I):
+            return None
+        # An empty set is a valid result for a newly created user. Keep None
+        # reserved for a failed or unparsable query so callers can fail closed.
         return pkgs
 
-    # Paket listesi önbelleği: {(target, include_system): (zaman, veri)}
+    # Paket listesi önbelleği: {(target, include_system, user_id): (zaman, veri)}
     # Coklu worker thread erisimine karsi kilit + uretim sayaci (generation):
     # invalidate -> generation artar; bayat okumayla baslayan tarama eski
     # generation ile yazar, put() sayac uyusmadigi icin reddedilir.
@@ -461,9 +616,9 @@ class AdbEngine:
     _pkg_cache_gen = 0
     _pkg_cache_lock = threading.Lock()
 
-    def _pkg_cache_get(self, target, include_system):
+    def _pkg_cache_get(self, target, include_system, user_id=0):
         """(veri, generation) dondurur; miss ise (None, generation)."""
-        key = (target, bool(include_system))
+        key = (target, bool(include_system), check_user_id(user_id))
         with self._pkg_cache_lock:
             gen = self._pkg_cache_gen
             hit = self._pkg_cache.get(key)
@@ -471,12 +626,12 @@ class AdbEngine:
                 return hit[1], gen
             return None, gen
 
-    def _pkg_cache_put(self, target, include_system, data, gen=None):
+    def _pkg_cache_put(self, target, include_system, data, gen=None, user_id=0):
         """Onbellige yazar. gen verilmis ve bayattiysa yazmaz (yarisma onlenir).
 
         Donus: True = yazildi, False = bayat/iptal edilmis yazma reddedildi.
         """
-        key = (target, bool(include_system))
+        key = (target, bool(include_system), check_user_id(user_id))
         with self._pkg_cache_lock:
             if gen is not None and gen != self._pkg_cache_gen:
                 return False
@@ -504,75 +659,124 @@ class AdbEngine:
             cls._pkg_cache.clear()
             cls._pkg_cache_gen += 1
 
-    def list_packages_detailed(self, target, include_system=False, use_cache=True):
+    def list_packages_detailed(self, target, include_system=False, use_cache=True,
+                               user_id=0):
         """Paket + APK yolu + kurulum/devre disi/user0 durumu (hizli).
 
-        Donus: [{'package':, 'apk':, 'enabled': bool, 'installed_user0': bool}]
+        Donus: [{'package':, 'apk':, 'enabled': bool, 'installed_user0': bool}].
+        Eski installed_user0 alanı geriye uyumluluk için korunur; user_id
+        verildiğinde seçilen kullanıcının kurulum durumunu taşır.
 
         Not: Android 8+ APK yolu '.../base.apk=com.pkg' biciminde ve yolun
         kendisi '==' icerebilir (ornegin
         /data/app/~~XXXX==/com.pkg-YYYY==/base.apk=com.pkg). Bu yuzden
         sondaki SON '=' isaretinden bolunur (rpartition).
 
-        Not: '--user 0' ile kaldirilmis sistem uygulamalari '-a' listesinde
-        HALA gorunur. 'installed_user0=False' olanlar listede rozetli
-        gosterilir, sag tiktan geri yuklenebilir.
+        Not: '--user ID' ile kaldirilmis sistem uygulamalari '-a' listesinde
+        HALA gorunur. 'installed_user0=False' olanlar rozetli gosterilir ve
+        geri yuklenebilir; mevcut kullanıcı id'si installed_user0 alaninda
+        taşınır.
 
         use_cache=True ise 60 sn onbellek kullanilir (tarama hizi).
         Yazma islemleri sonrasi invalidate_pkg_cache() cagrilmalidir.
         """
+        uid = check_user_id(user_id)
         gen = None
         if use_cache:
-            hit, gen = self._pkg_cache_get(target, include_system)
+            hit, gen = self._pkg_cache_get(target, include_system, uid)
             if hit is not None:
                 return [dict(e) for e in hit]
         flag = '-a' if include_system else '-3'
-        r = self.shell(target, 'pm', 'list', 'packages', '-f', flag, timeout=60)
+        r = self.shell(target, 'pm', 'list', 'packages', '-f', flag, '-u',
+                       '--user', str(uid), timeout=60)
+        if r.exit_code != 0:
+            raise AdbError('Paket listesi okunamadı: {}'.format(
+                (r.error or r.output or 'pm list packages başarısız').strip()))
         out = []
-        for line in r.output.splitlines():
+        for line in (r.output or '').splitlines():
             line = line.strip()
             if not line.startswith('package:'):
+                if line and not re.fullmatch(r'no packages(?: found)?\.?', line, re.I):
+                    raise AdbError('Paket listesi çözümlenemedi: ' + line[:200])
                 continue
             body = line[len('package:'):].strip()
             # SON '=' ayirici: sol APK yolu, sag paket adi.
             apk, sep, pkg = body.rpartition('=')
             pkg = pkg.strip()
             apk = apk.strip()
-            if not sep or not pkg or ' ' in pkg:
-                continue
+            if not sep or not apk or not is_valid_package(pkg) or ':' in pkg:
+                raise AdbError('Paket listesi bozuk kayıt içeriyor: ' + line[:200])
             out.append({'package': pkg, 'apk': apk, 'enabled': True,
                         'installed_user0': True})
+        if include_system and not out:
+            raise AdbError('Sistem paket listesi boş; sonuç doğrulanamadı.')
         # user 0'da gercekten kurulu olanlar (kaldirilanlari isaretle)
-        user0 = self.list_packages_user0(target)
-        if user0 is not None:
-            for e in out:
-                e['installed_user0'] = e['package'] in user0
+        user0 = self.list_packages_user0(target, user_id=uid)
+        if user0 is None:
+            raise PackageStateUnknownError(
+                'user {} paket listesi okunamadı; paket durumları doğrulanamadı.'.format(uid))
+        for e in out:
+            e['installed_user0'] = e['package'] in user0
         # devre disi olanlari isaretle (pm list packages -d)
         try:
-            rd = self.shell(target, 'pm', 'list', 'packages', '-d', timeout=30)
-            disabled = set()
-            for line in rd.output.splitlines():
-                line = line.strip()
-                if line.startswith('package:'):
-                    disabled.add(line[len('package:'):].strip())
-            for e in out:
-                if e['package'] in disabled:
-                    e['enabled'] = False
-        except AdbError:
-            pass
+            rd = self.shell(target, 'pm', 'list', 'packages', '--user', str(uid),
+                            '-d', timeout=30)
+        except AdbError as exc:
+            raise PackageStateUnknownError(
+                'Devre dışı paket listesi okunamadı: {}'.format(exc)) from exc
+        if rd.exit_code != 0:
+            raise PackageStateUnknownError('Devre dışı paket listesi okunamadı: {}'.format(
+                (rd.error or rd.output or 'pm list packages -d başarısız').strip()))
+        if re.search(r'\b(error|exception|denied|not allowed|invalid|usage|unknown|failed|failure)\b',
+                     rd.error or '', re.I):
+            raise PackageStateUnknownError(
+                'Devre dışı paket listesi okunamadı: ' + (rd.error or '').strip())
+        try:
+            disabled = set(self._parse_package_list(rd.output))
+        except AdbError as exc:
+            raise PackageStateUnknownError(
+                'Devre dışı paket listesi çözümlenemedi: {}'.format(exc)) from exc
+        for e in out:
+            if e['package'] in disabled:
+                e['enabled'] = False
         if use_cache:
             # gen: bayat olani yazma (islem sirasinda invalidate olmus olabilir)
             self._pkg_cache_put(target, include_system,
-                                [dict(e) for e in out], gen)
+                                [dict(e) for e in out], gen, user_id=uid)
         return out
 
     def running_processes(self, target):
-        """Calisan process adlarini dondurur (ps -A -o NAME)."""
-        r = self.shell(target, 'ps', '-A', '-o', 'NAME')
-        if r.output.strip():
-            return r.output
-        # eski cihazlarda -o destegi yoksa tam ps ciktisi
-        return self.shell(target, 'ps', '-A').output
+        """Cihazdan taze bir ps snapshot'i oku; okunamiyorsa hata ver."""
+        first = self.shell(target, 'ps', '-A', '-o', 'NAME')
+        if first.exit_code == 0 and self._has_process_rows(first.output):
+            return first.output
+        # Eski Android surumlerinde -o NAME desteklenmez.
+        fallback = self.shell(target, 'ps', '-A')
+        if fallback.exit_code == 0 and self._has_process_rows(fallback.output):
+            return fallback.output
+        reason = (fallback.error or fallback.output or first.error or first.output or '').strip()
+        raise AdbError('Çalışan süreçler okunamadı{}.'.format(
+            ': ' + reason[:200] if reason else ''))
+
+    @staticmethod
+    def _has_process_rows(output):
+        """Bos veya ps hata metnini basarili bir process snapshot'i sanma."""
+        lines = [line.strip() for line in (output or '').splitlines() if line.strip()]
+        if not lines:
+            return False
+        if any(re.search(r'\b(?:not found|unknown option|bad option|usage:)\b', line, re.I)
+               or re.match(r'^(?:error|ps:|toybox:|busybox:)', line, re.I)
+               for line in lines):
+            return False
+        rows = [line for line in lines if not re.match(
+            r'^(?:USER\b|LABEL\b|NAME\b|PID\b)', line, re.I)]
+        if not rows:
+            return False
+        # NAME-only output has one process name per row. Full ps output has
+        # numeric process columns; arbitrary diagnostics must not become a
+        # clean negative running result.
+        return any(len(line.split()) == 1 or any(
+            part.isdigit() for part in line.split()[:3]) for line in rows)
 
     @staticmethod
     def parse_running_packages(ps_output, known_packages=None):
@@ -585,6 +789,7 @@ class AdbEngine:
         - known_packages yoksa nokta iceren gecerli process adlari alinir.
         """
         running = set()
+        known_supplied = known_packages is not None
         known = set(known_packages or [])
         for line in (ps_output or '').splitlines():
             line = line.strip()
@@ -602,7 +807,7 @@ class AdbEngine:
                 name = line
             # 'com.example.app' veya 'com.example.app:service' bicimi
             name = name.split(':')[0]
-            if known:
+            if known_supplied:
                 if name in known:
                     running.add(name)
             elif '.' in name and re.match(r'^[a-zA-Z][\w\.]+$', name):
@@ -633,165 +838,358 @@ class AdbEngine:
             r = self.shell(target, 'dumpsys', 'package', timeout=timeout)
         except AdbError:
             return {}
+        # `application-label:` is also used by aapt, while package-manager
+        # dumps vary by Android/OEM version. Prefer the unlocalized label,
+        # then accept localized labels and the fields printed by some TV ROMs.
         labels = {}
+        priorities = {}
         cur = None
-        for line in (r.output or '').splitlines():
-            s = line.strip()
-            if s.startswith('Package ['):
-                end = s.find(']')
-                cur = s[len('Package ['):end].strip() if end > 0 else None
+        package_header = re.compile(
+            r'^(?:Package\s*\[\s*([^\]]+?)\s*\]'
+            r'|Package\s*:\s*([A-Za-z][A-Za-z0-9_.]+)'
+            r'|Package\s+([A-Za-z][A-Za-z0-9_.]+)\s*[:{]'
+            r'|Package\s*\{\s*[0-9a-fA-F]+\s+([A-Za-z][A-Za-z0-9_.]+)\s*\})', re.I)
+        label_line = re.compile(
+            r'^(?:application-label(?:-([A-Za-z0-9_-]+))?'
+            r'|application[\s_-]+label|app(?:lication)?Label)\s*(?::|=|\s)\s*(.*?)\s*$',
+            re.I)
+        nonlocalized_label = re.compile(
+            r'\bnonLocalizedLabel\s*=\s*(null|"(?:\\.|[^"\\])*"|'
+            r"'(?:\\.|[^'\\])*'|.*?)(?=\s+(?:icon|banner|labelRes|name|packageName)=|$)", re.I)
+
+        def record_label(package, value, priority):
+            if not package or not is_valid_package(package) or ':' in package:
+                return
+            label = (value or '').strip()
+            if len(label) >= 2 and label[0] == label[-1] and label[0] in '\'"':
+                label = label[1:-1].strip()
+            label = re.sub(r'\s+', ' ', label)
+            if (not label or label.casefold() in ('null', 'none', '(null)', 'unknown')
+                    or label.casefold() == package.casefold()
+                    or ('.' in label and is_valid_package(label))
+                    or re.fullmatch(r'@?0x[0-9a-f]{6,}', label, re.I)):
+                return
+            if package not in priorities or priority < priorities[package]:
+                labels[package] = label
+                priorities[package] = priority
+
+        for raw_line in (r.output or '').splitlines():
+            s = raw_line.strip()
+            if not s:
+                continue
+            header = package_header.match(s)
+            if header:
+                cur = next((part.strip() for part in header.groups() if part), None)
+                continue
+            if s.lower().startswith('package '):
+                # Do not let a vendor-specific, unrecognized section header
+                # attach its metadata to the preceding package.
+                cur = None
                 continue
             if cur is None:
                 continue
-            if s.startswith('application-label:') or s.startswith('application-label '):
-                body = s.split(':', 1)[1] if ':' in s else s.split(None, 1)[1]
-                label = body.strip().strip('\'"')
-                if label and label != cur:
-                    labels[cur] = label
-                cur = None
+
+            match = label_line.match(s)
+            if match:
+                locale = match.group(1)
+                record_label(cur, match.group(2), 1 if locale else 0)
+                continue
+
+            # A few dumps include PackageItemInfo/ApplicationInfo fields
+            # instead of application-label lines. A resource ID alone is not
+            # a display name, so only nonLocalizedLabel can supply a value.
+            match = nonlocalized_label.search(s)
+            if match:
+                record_label(cur, match.group(1), 2)
+                continue
+
+            # Accept the compact badging-style form when a ROM embeds it in
+            # its package dump (the stock dumpsys format does not).
+            match = re.search(r"\bapplication:\s*label\s*=\s*(['\"])(.*?)\1", s, re.I)
+            if match:
+                record_label(cur, match.group(2), 0)
         return labels
 
-    def bulk_restricted(self, target):
-        """RUN_IN_BACKGROUND/RUN_ANY_IN_BACKGROUND=ignore olanlari TEK'ER cagri ile alir.
+    def bulk_restricted(self, target, user_id=0):
+        """Kısıtlı arka plan modundaki paketleri iki AppOp için topluca bul.
 
-        `cmd appops query-op ... ignore` kullanir; iki op'un birlesimini doner
-        (restrict() ikisini de 'ignore' yaptigi icin tek op yetmezdi).
-        Donus: paket seti. Cihaz komutu desteklemiyorsa None doner.
-        (Desteklenen ama bos durumda bos set doner.)
+        ignore, deny ve foreground modları kısıtlı sayılır. Sorgulardan biri
+        başarısızsa kısmi sonuçla paketleri yanlışlıkla Serbest göstermemek
+        için None döner.
         """
+        uid = check_user_id(user_id)
         out = set()
-        supported = False
+        modes = ('ignore', 'deny', 'foreground')
         for op in ('RUN_IN_BACKGROUND', 'RUN_ANY_IN_BACKGROUND'):
-            r = self.shell(target, 'cmd', 'appops', 'query-op', op, 'ignore', timeout=60)
-            if r.exit_code != 0 or re.search(r'(?im)^\s*(error|unknown)', r.output):
-                continue
-            supported = True
-            for line in r.output.splitlines():
-                line = line.strip()
-                # 'No operations.' gibi bilgi satirlarini ele (paket degil):
-                # gecerli paket adinda bosluk olmaz, 'No ' ile baslamaz.
-                if line and ' ' not in line and not line.lower().startswith('no '):
+            for mode in modes:
+                r = self.shell(target, 'cmd', 'appops', 'query-op', '--user',
+                               str(uid), op, mode, timeout=60)
+                text = '{} {}'.format(r.output or '', r.error or '')
+                if (r.exit_code != 0 or re.search(
+                        r'\b(error|unknown|exception|denied|not allowed|not supported|'
+                        r'not found|invalid|usage)\b',
+                        text, re.I)):
+                    return None
+                for line in (r.output or '').splitlines():
+                    line = line.strip()
+                    if not line or re.fullmatch(r'no operations(?: found)?\.?', line, re.I):
+                        continue
+                    if not is_valid_package(line) or ':' in line:
+                        return None
                     out.add(line)
-        return out if supported else None
+        return out
 
-    def app_status_fallback(self, target, pkg):
+    def app_status_fallback(self, target, pkg, user_id=0):
         """Bulk cagrisi bos donerse tek paket icin kullanim.
 
-        Donus: 'Kisitli' | 'Serbest'
+        Dönüş: 'Kisitli' | 'Serbest' | 'Bilinmiyor'
         """
-        try:
-            r = self.shell(target, 'cmd', 'appops', 'get', pkg, 'RUN_IN_BACKGROUND', timeout=10)
-            if 'ignore' in r.output:
-                return 'Kisitli'
-        except AdbError:
-            pass
-        return 'Serbest'
+        modes = []
+        for op in ('RUN_IN_BACKGROUND', 'RUN_ANY_IN_BACKGROUND'):
+            try:
+                modes.append(self._background_mode(target, pkg, op, user_id=user_id))
+            except AdbError:
+                modes.append(None)
+        return self._classify_background_modes(modes)
+
+    @staticmethod
+    def _classify_background_modes(modes):
+        if any(mode in ('ignore', 'deny', 'errored', 'foreground') for mode in modes):
+            return 'Kisitli'
+        if len(modes) == 2 and all(mode is not None for mode in modes):
+            return 'Serbest'
+        return 'Bilinmiyor'
+
+    def _background_mode(self, target, pkg, op, user_id=0):
+        uid = check_user_id(user_id)
+        result = self.shell(target, 'cmd', 'appops', 'get', '--user', str(uid),
+                            pkg, op, timeout=10)
+        text = '{} {}'.format(result.output, result.error).strip()
+        if result.exit_code != 0 or re.search(r'error|exception|unknown|denied', text, re.I):
+            raise AdbError('Arka plan izni okunamadı ({}): {}'.format(pkg, text))
+        match = re.search(
+            re.escape(op) + r'\s*:\s*(allow|ignore|default|deny|errored|foreground)\b',
+            result.output, re.I)
+        if match:
+            mode = match.group(1).lower()
+            return 'deny' if mode == 'errored' else mode
+        if re.search(r'No operations', result.output, re.I):
+            return 'default'
+        raise AdbError('Arka plan izni doğrulanamadı: ' + pkg)
 
     @staticmethod
     def app_status(restricted, pkg):
-        if restricted is not None and pkg in restricted:
-            return 'Kisitli'
-        return 'Serbest'
+        if restricted is None:
+            return 'Bilinmiyor'
+        return 'Kisitli' if pkg in restricted else 'Serbest'
 
-    def restrict(self, target, pkg):
+    def restrict(self, target, pkg, user_id=0):
+        return self._set_background_state(target, pkg, True, user_id=user_id)
+
+    def unrestrict(self, target, pkg, user_id=0):
+        return self._set_background_state(target, pkg, False, user_id=user_id)
+
+    def _set_background_state(self, target, pkg, restrict, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_IN_BACKGROUND', 'ignore')
-        self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_ANY_IN_BACKGROUND', 'ignore')
-        self.shell(target, 'am', 'set-standby-bucket', pkg, 'restricted')
+        uid = check_user_id(user_id)
+        api_level = self._android_api_level(target)
+        required_api = 30 if restrict else 28
+        bucket = 'restricted' if restrict else 'active'
+        use_bucket = api_level >= required_api
 
-    def unrestrict(self, target, pkg):
+        ops = ('RUN_IN_BACKGROUND', 'RUN_ANY_IN_BACKGROUND')
+        previous = {op: self._background_mode(target, pkg, op, user_id=uid) for op in ops}
+        previous_bucket = self._standby_bucket(target, pkg, user_id=uid) if use_bucket else None
+        mode = 'ignore' if restrict else 'allow'
+        attempted = []
+        bucket_attempted = False
+        try:
+            for op in ops:
+                # A command can change state even when it returns an error.
+                attempted.append(op)
+                result = self.shell(target, 'cmd', 'appops', 'set', '--user',
+                                    str(uid), pkg, op, mode)
+                text = '{} {}'.format(result.output or '', result.error or '').strip()
+                if result.exit_code != 0 or re.search(
+                        r'error|exception|unknown|denied|not allowed', text, re.I):
+                    raise AdbError(text or 'Komut reddedildi.')
+
+            if use_bucket:
+                # A failed shell status may still follow a state change.
+                bucket_attempted = True
+                result = self.shell(target, 'am', 'set-standby-bucket', '--user',
+                                    str(uid), pkg, bucket)
+                text = '{} {}'.format(result.output or '', result.error or '').strip()
+                if result.exit_code != 0 or re.search(
+                        r'error|exception|unknown|denied|not allowed', text, re.I):
+                    raise AdbError(text or 'Standby bucket komutu reddedildi.')
+                expected_bucket = '45' if restrict else '10'
+                if self._standby_bucket(target, pkg, user_id=uid) != expected_bucket:
+                    raise AdbError('Standby bucket istenen duruma geçmedi.')
+
+            if any(self._background_mode(target, pkg, op, user_id=uid) != mode
+                   for op in ops):
+                raise AdbError('Komut çalıştı ancak arka plan izinleri doğrulanamadı.')
+            return True
+        except Exception as exc:
+            rollback_errors = []
+            if bucket_attempted:
+                try:
+                    result = self.shell(target, 'am', 'set-standby-bucket', '--user',
+                                        str(uid), pkg, previous_bucket)
+                    text = '{} {}'.format(result.output or '', result.error or '').strip()
+                    if result.exit_code != 0 or re.search(
+                            r'error|exception|unknown|denied|not allowed', text, re.I):
+                        raise AdbError(text or 'Standby bucket geri alma komutu reddedildi.')
+                    if self._standby_bucket(target, pkg, user_id=uid) != previous_bucket:
+                        raise AdbError('Standby bucket geri yüklemesi doğrulanamadı.')
+                except Exception as rollback_error:
+                    rollback_errors.append('standby bucket: {}'.format(rollback_error))
+            for op in reversed(attempted):
+                old_mode = previous[op]
+                try:
+                    result = self.shell(target, 'cmd', 'appops', 'set', '--user',
+                                        str(uid), pkg, op, old_mode)
+                    text = '{} {}'.format(result.output or '', result.error or '').strip()
+                    if result.exit_code != 0 or re.search(
+                            r'error|exception|unknown|denied|not allowed', text, re.I):
+                        raise AdbError(text or 'Geri alma komutu reddedildi.')
+                    if self._background_mode(target, pkg, op, user_id=uid) != old_mode:
+                        raise AdbError('Geri yükleme doğrulanamadı.')
+                except Exception as rollback_error:
+                    rollback_errors.append('{}: {}'.format(op, rollback_error))
+            if rollback_errors:
+                raise AdbError(
+                    'Arka plan kısıtlaması uygulanamadı ({}): {}. AppOps geri alma '
+                    'başarısız: {}'.format(pkg, exc, '; '.join(rollback_errors))) from exc
+            restored = 'AppOps ve standby bucket' if bucket_attempted else 'AppOps'
+            raise AdbError(
+                'Arka plan kısıtlaması uygulanamadı ({}): {}. Önceki {} durumları '
+                'geri yüklendi.'.format(pkg, exc, restored)) from exc
+
+    def _standby_bucket(self, target, pkg, user_id=0):
+        """Read the numeric bucket so a failed operation can restore it exactly."""
+        uid = check_user_id(user_id)
+        result = self.shell(target, 'am', 'get-standby-bucket', '--user', str(uid),
+                            pkg, timeout=10)
+        value = (result.output or '').strip()
+        if (result.exit_code != 0 or not re.fullmatch(r'\d{1,3}', value)
+                or int(value) > 100):
+            detail = (result.error or result.output or 'bucket okunamadı').strip()
+            raise AdbError('Standby bucket okunamadı ({}): {}'.format(pkg, detail))
+        return value
+
+    def _android_api_level(self, target):
+        result = self.shell(target, 'getprop', 'ro.build.version.sdk', timeout=10)
+        value = (result.output or '').strip()
+        if result.exit_code != 0 or not re.fullmatch(r'\d+', value):
+            detail = (result.error or result.output or 'API düzeyi okunamadı').strip()
+            raise AdbError('Cihaz API düzeyi belirlenemedi; değişiklik yapılmadı: ' + detail)
+        return int(value)
+
+    def force_stop(self, target, pkg, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_IN_BACKGROUND', 'allow')
-        self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_ANY_IN_BACKGROUND', 'allow')
-        self.shell(target, 'am', 'set-standby-bucket', pkg, 'active')
+        uid = check_user_id(user_id)
+        result = self.shell(target, 'am', 'force-stop', '--user', str(uid), pkg)
+        text = '{} {}'.format(result.output or '', result.error or '').strip()
+        if result.exit_code != 0 or re.search(
+                r'^\s*(?:error|exception|failed|failure)\b', text, re.I | re.M):
+            raise AdbError('Uygulama durdurulamadı ({}): {}'.format(
+                pkg, text or 'force-stop başarısız'))
+        return result
 
-    def force_stop(self, target, pkg):
+    def clear_data(self, target, pkg, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        return self.shell(target, 'am', 'force-stop', pkg)
-
-    def clear_data(self, target, pkg):
-        pkg = str(pkg).strip()
-        if not is_valid_package(pkg):
-            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        r = self.shell(target, 'pm', 'clear', pkg)
+        uid = check_user_id(user_id)
+        r = self.shell(target, 'pm', 'clear', '--user', str(uid), pkg)
         text = '{} {}'.format(r.output, r.error)
-        if r.exit_code != 0 or re.search(r'failed|not allowed|no such|unknown', text, re.I):
+        if (r.exit_code != 0 or not re.search(r'\bSuccess\b', text)
+                or re.search(r'\b(error|failed|denied|not allowed|no such package|unknown package)\b',
+                             text, re.I)):
             raise AdbError('Veri silinemedi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
         return r
 
-    def enable(self, target, pkg):
+    def enable(self, target, pkg, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        r = self.shell(target, 'pm', 'enable', pkg)
+        uid = check_user_id(user_id)
+        r = self.shell(target, 'pm', 'enable', '--user', str(uid), pkg)
         text = '{} {}'.format(r.output, r.error)
-        if r.exit_code != 0 or re.search(r'failed|not allowed|no such|unknown', text, re.I):
+        if r.exit_code != 0 or re.search(
+                r'(^|\n)\s*(?:error|exception|failed|failure|denied|not allowed|'
+                r'cannot|no such package|unknown package)\b', text, re.I):
             raise AdbError('Aktif edilemedi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
+        if self.is_uninstalled_for_user(target, pkg, user_id=uid):
+            raise AdbError('{} user {} için kurulu değil; etkinleştirilemez.'.format(pkg, uid))
+        if self.is_disabled(target, pkg, user_id=uid):
+            raise AdbError('Komut çalıştı ancak {} user {} için hâlâ devre dışı.'.format(
+                pkg, uid))
         return r
 
-    def disable_user(self, target, pkg):
-        """UAD yontemi: force-stop + clear + disable-user (sirali).
+    def disable_user(self, target, pkg, user_id=0):
+        """Force-stop, then disable for the selected user without clearing data.
 
         Donus: (durum, mesaj). durum True ise paket gercekten devre disi.
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uid = check_user_id(user_id)
         try:
-            self.force_stop(target, pkg)
+            self.force_stop(target, pkg, user_id=uid)
         except AdbError:
             pass
-        try:
-            self.clear_data(target, pkg)
-        except AdbError:
-            pass
-        r = self.shell(target, 'pm', 'disable-user', '--user', '0', pkg)
+        r = self.shell(target, 'pm', 'disable-user', '--user', str(uid), pkg)
         text = '{} {}'.format(r.output, r.error)
-        if r.exit_code != 0 or re.search(r'failed|not allowed|cannot|no such|unknown', text, re.I):
+        if r.exit_code != 0 or re.search(
+                r'(^|\n)\s*(?:error|exception|failed|failure|denied|not allowed|'
+                r'cannot|no such package|unknown package)\b', text, re.I):
             raise AdbError('Devre dışı birakilamadi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
-        if not self.is_disabled(target, pkg):
-            raise AdbError('Komut calisti ama {} hala aktif gorunuyor.'.format(pkg))
+        if not self.is_disabled(target, pkg, user_id=uid):
+            raise AdbError('Komut calisti ama {} user {} icin hala aktif gorunuyor.'.format(
+                pkg, uid))
         return r
 
-    def uninstall_user(self, target, pkg):
+    def uninstall_user(self, target, pkg, user_id=0):
         """Kullanici icin kaldirma. pm ciktisini DOGRULAR.
 
-        Sistem uygulamalarinda 'Failure [not installed for 0]' gibi
+        Sistem uygulamalarinda 'Failure [not installed for USER_ID]' gibi
         cikti sessizce basari sayilmaz; AdbError atilir. Zaten kaldirilmis
-        paket icin tekrar denemek basari sayilir (idempotent).
-        UAD-ng yontemi: force-stop + clear oncesi uygulanir.
+        paket icin tekrar denemek basari sayilir (idempotent). Uygulama
+        verisini korumak icin kaldirma oncesi pm clear calistirilmaz.
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        if self.is_uninstalled_for_user(target, pkg):
+        uid = check_user_id(user_id)
+        if self.is_uninstalled_for_user(target, pkg, user_id=uid):
             return None  # zaten kaldirilmis -> basari
         try:
-            self.force_stop(target, pkg)
+            self.force_stop(target, pkg, user_id=uid)
         except AdbError:
             pass
-        try:
-            self.clear_data(target, pkg)
-        except AdbError:
-            pass
-        r = self.shell(target, 'pm', 'uninstall', '--user', '0', pkg)
+        r = self.shell(target, 'pm', 'uninstall', '--user', str(uid), pkg)
         text = '{} {}'.format(r.output, r.error)
-        if re.search(r'\bSuccess\b', text):
-            return r
+        if r.exit_code == 0 and re.search(r'\bSuccess\b', text):
+            if self.is_uninstalled_for_user(target, pkg, user_id=uid):
+                return r
+            raise AdbError('Kaldırma komutu başarılı göründü ancak {} user {} için hâlâ kurulu.'.format(
+                pkg, uid))
         if re.search(r'not installed for|already|no such package|unknown package', text, re.I):
             # Yaris durumu: komut sirasinda zaten gitmis -> basari say.
-            if self.is_uninstalled_for_user(target, pkg):
+            if self.is_uninstalled_for_user(target, pkg, user_id=uid):
                 return r
         raise AdbError('Kaldırılamadı ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
 
-    def install_existing(self, target, pkg):
-        """Geri yukleme (UAD: cmd package install-existing --user 0).
+    def install_existing(self, target, pkg, user_id=0):
+        """Geri yukleme (UAD: cmd package install-existing --user USER_ID).
 
         Eski 'pm install-existing' bazi Android 14 surumlerinde sessiz
         kalir; once 'cmd package' denenir, olmazsa 'pm' yedegi kullanilir.
@@ -800,74 +1198,93 @@ class AdbEngine:
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uid = check_user_id(user_id)
         last_err = ''
-        for args in (['cmd', 'package', 'install-existing', '--user', '0', pkg],
-                     ['pm', 'install-existing', '--user', '0', pkg],
-                     ['pm', 'install-existing', pkg]):
+        attempts = [['cmd', 'package', 'install-existing', '--user', str(uid), pkg],
+                    ['pm', 'install-existing', '--user', str(uid), pkg]]
+        if uid == 0:
+            attempts.append(['pm', 'install-existing', pkg])
+        for args in attempts:
             r = self.shell(target, *args)
             text = '{} {}'.format(r.output, r.error)
-            if re.search(r'\bSuccess\b', text) or 'installed for user' in text.lower():
-                if not self.is_uninstalled_for_user(target, pkg):
+            if (r.exit_code == 0 and
+                    (re.search(r'\bSuccess\b', text) or 'installed for user' in text.lower())):
+                if not self.is_uninstalled_for_user(target, pkg, user_id=uid):
                     # install-existing bazi surumlerde devre disi birakir;
                     # UAD sirasi: geri yukle + aktif et.
-                    try:
-                        self.enable(target, pkg)
-                    except AdbError:
-                        pass
+                    self.enable(target, pkg, user_id=uid)
                     return r
                 last_err = text.strip()
                 continue
             last_err = text.strip()
         raise AdbError('Geri yuklenemedi ({}): {}'.format(pkg, last_err or 'bilinmeyen hata'))
 
-    def smart_remove(self, target, pkg):
+    def smart_remove(self, target, pkg, user_id=0):
         """Akilli kaldirma (UAD onerisi: disable dene, olmazsa uninstall).
 
         Sirayla dener, ilk basarili yontemi dondurur:
         1. disable-user (en guvenli, geri donusu kolay)
-        2. uninstall --user 0 (daha derin, geri donusu zor)
+        2. uninstall --user ID (daha derin, geri donusu zor)
         Ikisi de basarisizsa son hatayi yukseltir.
         Donus: (yontem, sonuc) ; yontem 'disable' | 'uninstall'.
         """
         errors = []
         try:
-            r = self.disable_user(target, pkg)
+            r = self.disable_user(target, pkg, user_id=user_id)
             return ('disable', r)
+        except PackageStateUnknownError:
+            # Unverified state is not evidence that disabling failed; never
+            # escalate to an uninstall when this probe could not be trusted.
+            raise
         except AdbError as e:
             errors.append('disable: ' + str(e))
         try:
-            r = self.uninstall_user(target, pkg)
+            r = self.uninstall_user(target, pkg, user_id=user_id)
             return ('uninstall', r)
         except AdbError as e:
             errors.append('uninstall: ' + str(e))
         raise AdbError('{} kaldirilamadi.\n{}'.format(pkg, '\n'.join(errors)))
 
-    def is_uninstalled_for_user(self, target, pkg, timeout=10):
-        """Paket user 0 icin kaldirilmis mi? ('Failure [not installed for 0]')."""
-        if not is_valid_package(str(pkg).strip()):
-            return False
-        try:
-            r = self.shell(target, 'pm', 'list', 'packages', '--user', '0', pkg, timeout=timeout)
-            # ciktida 'package:<pkg>' yoksa user 0'da kurulu degil.
-            for line in (r.output or '').splitlines():
-                if line.strip() == 'package:' + pkg:
-                    return False
-            return True
-        except AdbError:
-            return False
+    def is_uninstalled_for_user(self, target, pkg, timeout=10, user_id=0):
+        """Return whether a package is absent for one user; raise if unknown."""
+        pkg = str(pkg or '').strip()
+        if not is_valid_package(pkg):
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uid = check_user_id(user_id)
+        packages = self.list_packages_user0(target, timeout=timeout, user_id=uid)
+        if packages is None:
+            raise PackageStateUnknownError(
+                'Paket durumu okunamadı ({} user {}); sonuç doğrulanamadı.'.format(pkg, uid))
+        return pkg not in packages
 
-    def is_disabled(self, target, pkg, timeout=10):
-        """Paket devre disi mi? (pm list packages -d kontrolu)."""
-        if not is_valid_package(str(pkg).strip()):
-            return False
+    def is_disabled(self, target, pkg, timeout=10, user_id=0):
+        """Return whether a package is disabled for one user; raise if unknown."""
+        pkg = str(pkg or '').strip()
+        if not is_valid_package(pkg):
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uid = check_user_id(user_id)
         try:
-            r = self.shell(target, 'pm', 'list', 'packages', '-d', timeout=timeout)
-            for line in (r.output or '').splitlines():
-                if line.strip() == 'package:' + pkg:
-                    return True
-            return False
-        except AdbError:
-            return False
+            r = self.shell(target, 'pm', 'list', 'packages', '--user', str(uid),
+                           '-d', timeout=timeout)
+        except AdbError as exc:
+            raise PackageStateUnknownError(
+                'Devre dışı durumu okunamadı ({} user {}): {}'.format(pkg, uid, exc)) from exc
+        if r.exit_code != 0:
+            detail = (r.error or r.output or 'pm list packages -d başarısız').strip()
+            raise PackageStateUnknownError(
+                'Devre dışı durumu okunamadı ({} user {}): {}'.format(pkg, uid, detail))
+        try:
+            disabled = self._parse_package_list(r.output)
+        except AdbError as exc:
+            raise PackageStateUnknownError(
+                'Devre dışı durumu çözümlenemedi ({} user {}): {}'.format(
+                    pkg, uid, exc)) from exc
+        if re.search(r'\b(error|exception|denied|not allowed|invalid|usage|unknown|failed|failure)\b',
+                     r.error or '', re.I):
+            raise PackageStateUnknownError(
+                'Devre dışı durumu okunamadı ({} user {}): {}'.format(
+                    pkg, uid, (r.error or '').strip()))
+        return pkg in disabled
 
     def pm_path(self, target, pkg):
         pkg = str(pkg).strip()
@@ -934,7 +1351,7 @@ class AdbEngine:
         except AdbError:
             data_dir = '/data/data/' + pkg
         try:
-            r = self.shell(target, 'du', '-sk', data_dir, timeout=timeout)
+            r = self.shell(target, 'du', '-sk', _quoted_remote_path(data_dir), timeout=timeout)
             m = re.search(r'(\d+)', r.output)
             if m:
                 return int(m.group(1))
@@ -942,18 +1359,24 @@ class AdbEngine:
             pass
         return None
 
-    def pull(self, target, remote, local, timeout=300):
+    def pull(self, target, remote, local, timeout=300, cancel_check=None):
         remote = safe_remote_path(remote)
-        r = self.run(['-s', target, 'pull', remote, local], timeout=timeout)
+        options = {'timeout': timeout}
+        if cancel_check is not None:
+            options['cancel_check'] = cancel_check
+        r = self.run(['-s', target, 'pull', remote, local], **options)
         if r.exit_code != 0:
             raise AdbError('Indirilemedi ({}): {}'.format(
                 remote, (r.output + ' ' + r.error).strip() or 'bilinmeyen hata'))
         return r
 
-    def push(self, target, local, remote, timeout=300):
+    def push(self, target, local, remote, timeout=300, cancel_check=None):
         """Yerel dosyayi cihaza yukler. Basarisizsa AdbError atar."""
         remote = safe_remote_path(remote)
-        r = self.run(['-s', target, 'push', local, remote], timeout=timeout)
+        options = {'timeout': timeout}
+        if cancel_check is not None:
+            options['cancel_check'] = cancel_check
+        r = self.run(['-s', target, 'push', local, remote], **options)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|error|no such|denied', text, re.I):
             raise AdbError('Yüklenemedi ({} -> {}): {}'.format(
@@ -964,14 +1387,15 @@ class AdbEngine:
     # ------------------------------------------------------------------
     # Kumanda
     # ------------------------------------------------------------------
-    def keyevent(self, target, code):
+    def keyevent(self, target, code, longpress=False):
         try:
             code = int(code)
         except (TypeError, ValueError):
             raise AdbError('Geçersiz keyevent kodu: {!r}'.format(code))
         if not 0 <= code <= 300:
             raise AdbError('Geçersiz keyevent kodu: {}'.format(code))
-        return self.shell(target, 'input', 'keyevent', str(code), timeout=10)
+        args = ('--longpress', str(code)) if longpress else (str(code),)
+        return self.shell(target, 'input', 'keyevent', *args, timeout=10)
 
     def input_text(self, target, text):
         safe = sanitize_input_text(text)
@@ -979,33 +1403,43 @@ class AdbEngine:
             raise AdbError('Gonderilecek geçerli karakter yok (özel semboller atildi).')
         return self.shell(target, 'input', 'text', safe, timeout=10)
 
-    def launch(self, target, pkg):
+    def launch(self, target, pkg, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        r = self.shell(target, 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=15)
-        if 'No activities found' in r.output:
-            raise AdbError('{} için launcher aktivitesi bulunamadı.'.format(pkg))
+        uid = check_user_id(user_id)
+        r = self.shell(target, 'monkey', '--user', str(uid), '-p', pkg, '-c',
+                       'android.intent.category.LAUNCHER', '1', timeout=15)
+        text = '{} {}'.format(r.output or '', r.error or '')
+        if r.exit_code != 0 or re.search(
+                r'No activities found|error|exception|failed', text, re.I):
+            raise AdbError('{} için user {} uygulaması başlatılamadı: {}'.format(
+                pkg, uid, text.strip() or 'monkey başarısız'))
         return r
 
-    def launch_resolved(self, target, pkg, timeout=15):
+    def launch_resolved(self, target, pkg, timeout=15, user_id=0):
         """Once resolve-activity dener, olmazsa monkey fallback."""
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uid = check_user_id(user_id)
         try:
             r = self.shell(target, 'cmd', 'package', 'resolve-activity',
-                           '--brief', '-c', 'android.intent.category.LAUNCHER', pkg,
+                           '--brief', '--user', str(uid), '-c',
+                           'android.intent.category.LAUNCHER', pkg,
                            timeout=timeout)
-            # basarili cozumde paket adi ciktida gecer
-            if pkg in (r.output or ''):
-                r2 = self.shell(target, 'am', 'start', '-n', r.output.splitlines()[-1].strip(),
+            resolved = next((line.strip() for line in (r.output or '').splitlines()
+                             if home_pkg_of(line.strip()) == pkg), None)
+            if r.exit_code == 0 and resolved:
+                r2 = self.shell(target, 'am', 'start', '--user', str(uid), '-n', resolved,
                                 timeout=timeout)
-                if 'Error' not in (r2.output or '') and 'Exception' not in (r2.output or ''):
+                if (r2.exit_code == 0 and not re.search(
+                        r'error|exception|failed',
+                        '{} {}'.format(r2.output or '', r2.error or ''), re.I)):
                     return r2
         except AdbError:
             pass
-        return self.launch(target, pkg)
+        return self.launch(target, pkg, user_id=uid)
 
     # ------------------------------------------------------------------
     # Donanim / sistem
@@ -1027,19 +1461,39 @@ class AdbEngine:
         try:
             r = self.run(['-s', target, 'exec-out', 'screencap', '-p'],
                          timeout=timeout, binary=True)
-            fixed = _repair_png(r.output)
+            fixed = _repair_png(r.output) if r.exit_code == 0 else None
             if fixed and png_is_valid(fixed):
                 return fixed
         except AdbError:
             pass
         raise AdbError('Ekran goruntusu alinamadi (PNG dogrulanamadi).')
 
+    def foreground_package(self, target, timeout=12):
+        """Return the resumed app package when Android exposes it to dumpsys."""
+        queries = (
+            (['dumpsys', 'activity', 'activities'],
+             ('topResumedActivity', 'mResumedActivity', 'ResumedActivity:')),
+            (['dumpsys', 'window', 'windows'], ('mCurrentFocus=', 'mFocusedApp=')),
+        )
+        for command, markers in queries:
+            try:
+                result = self.shell(target, *command, timeout=timeout)
+            except AdbError:
+                continue
+            for line in (result.output or '').splitlines():
+                if not any(marker in line for marker in markers):
+                    continue
+                match = re.search(r'\bu\d+\s+([A-Za-z][A-Za-z0-9_.]+)/', line)
+                if match:
+                    return match.group(1)
+        return ''
+
     def screenshot_via_file(self, target, timeout=60):
         """screencap'i cihazdaki dosyaya yazip pull ile indirir (guvenilir)."""
         import tempfile
         remote = '/sdcard/mibox_scr_{}.png'.format(os.getpid())
         try:
-            r = self.shell(target, 'screencap', '-p', remote, timeout=timeout)
+            r = self.shell(target, 'screencap', '-p', _quoted_remote_path(remote), timeout=timeout)
             if r.exit_code != 0:
                 raise AdbError('screencap başarısız: {} {}'.format(r.output, r.error))
             tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
@@ -1050,7 +1504,7 @@ class AdbEngine:
                     raise AdbError('Ekran dosyası indirilemedi: {} {}'.format(pr.output, pr.error))
                 with open(tmp.name, 'rb') as f:
                     data = f.read()
-                if not data or data[1:4] != b'PNG':
+                if not png_is_valid(data):
                     raise AdbError('Ekran dosyası bozuk indi.')
                 return data
             finally:
@@ -1060,21 +1514,36 @@ class AdbEngine:
                     pass
         finally:
             try:
-                self.shell(target, 'rm', remote, timeout=10)
+                self.shell(target, 'rm', _quoted_remote_path(remote), timeout=10)
             except AdbError:
                 pass
 
     def screenshot_hd(self, target, timeout=45):
-        """Hidpi/dahili ekran goruntusu (kilitli-kenar modunda genis ekran)."""
+        """Capture a physical display when possible; preserve the legacy byte API."""
+        data, _used_hd = self.screenshot_hd_with_info(target, timeout=timeout)
+        return data
+
+    def screenshot_hd_with_info(self, target, timeout=45, check_cancel=None):
+        """Return (PNG bytes, physical-display-capture-used)."""
+        if callable(check_cancel):
+            check_cancel()
         try:
-            r = self.run(['-s', target, 'exec-out', 'screencap', '-d', 'internal_display', '-p'],
+            displays = self.shell(target, 'dumpsys', 'SurfaceFlinger', '--display-id', timeout=15)
+            match = re.search(r'(?m)^\s*Display\s+(\d+)\s+\(HWC display 0\)', displays.output)
+            if displays.exit_code != 0 or not match:
+                if callable(check_cancel):
+                    check_cancel()
+                return self.screenshot(target, timeout=timeout), False
+            r = self.run(['-s', target, 'exec-out', 'screencap', '-d', match.group(1), '-p'],
                          timeout=timeout, binary=True)
-            fixed = _repair_png(r.output)
-            if fixed:
-                return fixed
+            fixed = _repair_png(r.output) if r.exit_code == 0 else None
+            if fixed and png_is_valid(fixed):
+                return fixed, True
         except AdbError:
             pass
-        return self.screenshot(target, timeout=timeout)
+        if callable(check_cancel):
+            check_cancel()
+        return self.screenshot(target, timeout=timeout), False
 
     def reboot(self, target):
         return self.run(['-s', target, 'reboot'], timeout=15)
@@ -1125,6 +1594,36 @@ class AdbEngine:
         except AdbError:
             return ''
 
+    def _ls_symlink_name(self, target, directory, entry, timeout):
+        """Resolve the filename/target boundary in an ambiguous ls symlink row.
+
+        Toybox prints links as ``name -> target`` without escaping either
+        field. When both contain that marker, verify each possible boundary
+        with readlink and accept only a unique exact match.
+        """
+        matches = []
+        offset = 0
+        marker = ' -> '
+        while True:
+            boundary = entry.find(marker, offset)
+            if boundary < 0:
+                break
+            name = entry[:boundary]
+            link_target = entry[boundary + len(marker):]
+            offset = boundary + len(marker)
+            if not name or not link_target:
+                continue
+            try:
+                result = self.shell(
+                    target, 'readlink', _quoted_remote_path(directory + name),
+                    timeout=timeout, preserve_output_whitespace=True)
+            except AdbError:
+                continue
+            actual_target = (result.output or '').rstrip('\r\n')
+            if result.exit_code == 0 and actual_target == link_target:
+                matches.append(name)
+        return matches[0] if len(matches) == 1 else None
+
     def file_list(self, target, path, timeout=20):
         """ls -la ayristir: [{'name','size','dir','perm','mtime'}].
 
@@ -1138,53 +1637,154 @@ class AdbEngine:
         p = safe_remote_path(path)
         if not p.endswith('/'):
             p += '/'
-        r = self.shell(target, 'ls', '-la', p, timeout=timeout)
+        r = self.shell(target, 'ls', '-la', shlex.quote(p), timeout=timeout,
+                       preserve_output_whitespace=True)
+        if r.exit_code != 0:
+            raise AdbError('Klasör listelenemedi ({}): {}'.format(
+                p, (r.error or r.output or 'ls başarısız').strip()))
         out = []
         for line in (r.output or '').splitlines():
-            line = line.strip()
             if not line or line.startswith('total'):
                 continue
-            parts = line.split()
-            # toybox: perm links owner group size date time name (8+)
-            # ISO:    perm links owner group size YYYY-MM-DD HH:MM name (8+)
-            if len(parts) < 7:
+            # Parse only the fixed metadata prefix. Keep the remaining filename
+            # substring byte-for-byte (after UTF-8 decoding): split/join or
+            # strip would merge distinct names such as "a  b" and "a b".
+            header = re.match(r'^(\S+)\s+\S+\s+\S+\s+\S+\s+(\d+)\s+(.*)$', line)
+            if not header:
                 continue
-            perm = parts[0]
+            perm = header.group(1)
             if len(perm) < 10 or perm[0] not in 'd-lcbps':
                 continue
             try:
-                size = int(parts[4])
+                size = int(header.group(2))
             except ValueError:
                 continue
-            # boyut-detay farki: [perm, link, owner, group, size, ...tarih, ad]
-            # ad, sondan bulunur: tarih parcaciklarini atla
-            rest = parts[5:]
-            name_parts = list(rest)
-            # ISO 'YYYY-MM-DD HH:MM' veya 'Mon DD HH:MM/YYYY' kalibini sok
-            if len(name_parts) >= 2 and (
-                    '-' in name_parts[0] or name_parts[0] in (
-                        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul',
-                        'Aug', 'Sep', 'Oct', 'Nov', 'Dec')):
-                name_parts = name_parts[2:] if len(name_parts) > 2 else []
-            name = ' '.join(name_parts).strip()
+            rest = header.group(3)
+            date_tokens = list(re.finditer(r'\S+', rest))
+            if (date_tokens and re.fullmatch(r'\d{4}-\d{2}-\d{2}',
+                                             date_tokens[0].group())):
+                date_count = 2
+                if (len(date_tokens) < date_count
+                        or not re.fullmatch(r'\d{2}:\d{2}', date_tokens[1].group())):
+                    continue
+            elif date_tokens and date_tokens[0].group() in (
+                    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul',
+                    'Aug', 'Sep', 'Oct', 'Nov', 'Dec'):
+                date_count = 3
+                if (len(date_tokens) < date_count
+                        or not date_tokens[1].group().isdigit()
+                        or not re.fullmatch(r'(?:\d{2}:\d{2}|\d{4})',
+                                            date_tokens[2].group())):
+                    continue
+            else:
+                continue
+            name_start = date_tokens[date_count - 1].end()
+            if name_start >= len(rest) or rest[name_start] not in ' \t':
+                continue
+            # Skip exactly the separator, retaining any leading whitespace in
+            # the actual filename and all internal/trailing spaces.
+            name = rest[name_start + 1:]
+            if perm.startswith('l') and ' -> ' in name:
+                if name.count(' -> ') == 1:
+                    name = name.split(' -> ', 1)[0]
+                else:
+                    resolved_name = self._ls_symlink_name(
+                        target, p, name, timeout)
+                    if resolved_name is None:
+                        # Ambiguous records are omitted rather than exposing
+                        # a guessed path that could delete a different file.
+                        continue
+                    name = resolved_name
             if not name or name in ('.', '..'):
                 continue
-            mtime = ' '.join(parts[5:7])
+            mtime = ' '.join(token.group() for token in date_tokens[:date_count])
             out.append({'name': name, 'size': size, 'dir': perm.startswith('d'),
                         'perm': perm, 'mtime': mtime})
         out.sort(key=lambda e: (not e['dir'], e['name'].lower()))
         return out
 
+    @staticmethod
+    def _is_protected_file_path(path):
+        protected_roots = {
+            '/', '/sdcard', '/data', '/system', '/vendor', '/storage',
+            '/data/media', '/data/media/0',
+            '/storage/emulated', '/storage/emulated/0', '/storage/emulated/legacy',
+            '/storage/self', '/storage/self/primary',
+            '/mnt', '/mnt/runtime', '/mnt/user', '/mnt/user/0', '/mnt/user/0/primary',
+            '/mnt/shell', '/mnt/shell/emulated', '/mnt/shell/emulated/0',
+            '/mnt/media_rw', '/mnt/expand',
+        }
+        for runtime_view in ('default', 'read', 'write'):
+            runtime_root = '/mnt/runtime/' + runtime_view
+            protected_roots.update((runtime_root, runtime_root + '/emulated',
+                                    runtime_root + '/emulated/0'))
+        parts = [part for part in path.split('/') if part]
+        # Block mount points for every Android user and removable volume, not
+        # only user 0. Their child folders remain available to the file manager.
+        is_storage_volume_root = len(parts) == 2 and parts[0] == 'storage'
+        is_emulated_user_root = (
+            len(parts) == 3 and parts[:2] == ['storage', 'emulated']
+            and parts[2].isdigit())
+        is_data_media_user_root = (
+            len(parts) == 3 and parts[:2] == ['data', 'media']
+            and parts[2].isdigit())
+        is_mnt_user_root = (
+            len(parts) == 3 and parts[:2] == ['mnt', 'user']
+            and parts[2].isdigit())
+        is_mnt_user_primary_root = (
+            len(parts) == 4 and parts[:2] == ['mnt', 'user']
+            and parts[2].isdigit() and parts[3] == 'primary')
+        is_runtime_user_root = (
+            len(parts) == 5 and parts[:2] == ['mnt', 'runtime']
+            and parts[2] in ('default', 'read', 'write')
+            and parts[3] == 'emulated' and parts[4].isdigit())
+        is_shell_user_root = (
+            len(parts) == 4 and parts[:3] == ['mnt', 'shell', 'emulated']
+            and parts[3].isdigit())
+        is_media_rw_volume_root = len(parts) == 3 and parts[:2] == ['mnt', 'media_rw']
+        is_adopted_storage_root = len(parts) == 3 and parts[:2] == ['mnt', 'expand']
+        return (path in protected_roots or is_storage_volume_root or is_emulated_user_root
+                or is_data_media_user_root or is_mnt_user_root
+                or is_mnt_user_primary_root or is_runtime_user_root or is_shell_user_root
+                or is_media_rw_volume_root or is_adopted_storage_root)
+
     def file_remove(self, target, path, timeout=20):
         path = safe_remote_path(path)
-        if path in ('/', '/sdcard', '/data', '/system', '/vendor', '/storage'):
+        if self._is_protected_file_path(path):
             raise AdbError('Kok dizinler silinemez: {}'.format(path))
-        r = self.shell(target, 'rm', '-rf', path, timeout=timeout)
+
+        # Canonicalize the parent rather than the leaf: selecting a symlink
+        # should delete the link itself, while symlinked ancestors must not
+        # redirect deletion into protected storage. readlink -f is in Android
+        # Toybox; failure is fail-closed.
+        parent = posixpath.dirname(path.rstrip('/')) or '/'
+        name = posixpath.basename(path.rstrip('/'))
+        resolved = self.shell(
+            target, 'readlink', '-f', _quoted_remote_path(parent), timeout=timeout,
+            preserve_output_whitespace=True)
+        resolved_parent = (resolved.output or '').rstrip('\r\n')
+        if resolved.exit_code != 0 or not resolved_parent:
+            raise AdbError('Silinecek yolun üst dizini doğrulanamadı ({}): {}'.format(
+                parent, (resolved.error or resolved.output or 'readlink başarısız').strip()))
+        resolved_parent = safe_remote_path(resolved_parent)
+        canonical = safe_remote_path(
+            (resolved_parent.rstrip('/') + '/' + name) if name else resolved_parent)
+        if self._is_protected_file_path(canonical):
+            raise AdbError('Korunan kok dizin silinemez: {}'.format(canonical))
+        r = self.shell(target, 'rm', '-rf', _quoted_remote_path(canonical), timeout=timeout)
         if r.exit_code != 0:
-            raise AdbError('Silinemedi ({}): {}'.format(path, (r.output + r.error).strip()))
+            raise AdbError('Silinemedi ({}): {}'.format(
+                canonical, (r.output + r.error).strip() or 'rm başarısız'))
 
     def file_mkdir(self, target, path, timeout=15):
-        self.shell(target, 'mkdir', '-p', safe_remote_path(path), timeout=timeout)
+        r = self.shell(target, 'mkdir', '-p', _quoted_remote_path(path), timeout=timeout)
+        if r.exit_code != 0 or re.search(
+                r'\b(error|failed|denied|not allowed)\b',
+                '{} {}'.format(r.output or '', r.error or ''), re.I):
+            raise AdbError('Dizin oluşturulamadı ({}): {}'.format(
+                safe_remote_path(path),
+                '{} {}'.format(r.output or '', r.error or '').strip() or 'mkdir başarısız'))
+        return r
 
     # ------------------------------------------------------------------
     # APK kurulum + HOME launcher + hizlandirma (v8: AppControl/tvboxtools)
@@ -1211,15 +1811,149 @@ class AdbEngine:
                 text.strip() or 'bilinmeyen hata'))
         return r
 
+    def _bundletool_command(self):
+        """Find a directly executable bundletool or a local bundletool JAR."""
+        for name in ('bundletool', 'bundletool.exe'):
+            path = shutil.which(name)
+            if path and os.path.splitext(path)[1].lower() not in ('.bat', '.cmd'):
+                return [path]
+
+        java = shutil.which('java') or shutil.which('java.exe')
+        if not java:
+            return None
+        import glob as _glob
+        adb_path = getattr(self, 'adb_path', None)
+        directories = {_base_dir()}
+        if adb_path:
+            directories.add(os.path.dirname(os.path.abspath(adb_path)))
+        jars = []
+        for directory in directories:
+            jars.extend(_glob.glob(os.path.join(directory, 'bundletool-all*.jar')))
+            jars.extend(_glob.glob(os.path.join(directory, 'bundletool*.jar')))
+        jars = sorted(set(jars), key=lambda path: os.path.getmtime(path), reverse=True)
+        return [java, '-jar', jars[0]] if jars else None
+
+    @staticmethod
+    def _run_bundletool(command, timeout, operation):
+        try:
+            return subprocess.run(command, capture_output=True, text=True,
+                                  timeout=timeout, shell=False)
+        except subprocess.TimeoutExpired as exc:
+            raise AdbError('Bundletool {} zaman aşımına uğradı.'.format(operation)) from exc
+        except OSError as exc:
+            raise AdbError('Bundletool {} çalıştırılamadı: {}'.format(operation, exc)) from exc
+
+    def _install_apks_archive(self, target, archive_path, timeout):
+        """Install only the APKs bundletool selects for this exact device."""
+        import tempfile as _tempfile
+        prefix = self._bundletool_command()
+        adb_path = getattr(self, 'adb_path', None)
+        if not prefix or not adb_path:
+            return None
+
+        serial = str(target or '').strip()
+        if not serial or any(ord(char) < 32 for char in serial):
+            raise AdbError('Cihaz hedefi bundletool için geçersiz.')
+        with _tempfile.TemporaryDirectory(prefix='mibox-apks-') as folder:
+            spec_path = os.path.join(folder, 'device-spec.json')
+            selected_dir = os.path.join(folder, 'selected')
+            os.makedirs(selected_dir)
+            result = self._run_bundletool(
+                prefix + ['get-device-spec', '--adb=' + adb_path,
+                          '--device-id=' + serial, '--output=' + spec_path],
+                timeout, 'cihaz yapılandırmasını okuma')
+            if result.returncode != 0 or not os.path.isfile(spec_path):
+                detail = (result.stderr or result.stdout or 'cihaz yapılandırması alınamadı').strip()
+                raise AdbError('Bundletool hedef cihaz {} yapılandırmasını okuyamadı: {}'.format(
+                    serial, detail[:300]))
+
+            result = self._run_bundletool(
+                prefix + ['extract-apks', '--apks=' + archive_path,
+                          '--device-spec=' + spec_path, '--output-dir=' + selected_dir],
+                timeout, 'cihaz APK varyantlarını seçme')
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or 'uyumlu APK seçilemedi').strip()
+                raise AdbError('Bundletool {} için uyumlu APK seçemedi: {}'.format(
+                    serial, detail[:300]))
+
+            selected = []
+            for root, _dirs, names in os.walk(selected_dir):
+                selected.extend(os.path.join(root, name) for name in names
+                                if name.lower().endswith('.apk'))
+            selected.sort()
+            if not selected:
+                raise AdbError('Bundletool {} için uyumlu APK bulamadı.'.format(serial))
+            if len(selected) == 1:
+                return self.install_apk(target, selected[0], timeout=timeout)
+            return self.install_multiple(target, selected, timeout=timeout)
+
+    def _install_universal_apks(self, target, archive_path, timeout):
+        """Use a single explicitly universal APK when bundletool is absent."""
+        import zipfile
+        import tempfile as _tempfile
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                members = [entry for entry in archive.infolist()
+                           if not entry.is_dir()
+                           and entry.filename.replace('\\', '/').rsplit('/', 1)[-1].lower()
+                           == 'universal.apk']
+                if len(members) != 1:
+                    raise AdbError(
+                        '.apks için Bundletool gerekli: {} cihazına uygun tek bir universal.apk '
+                        'yok. Bundletool kurun veya hedef cihaz için hazırlanmış APK setini '
+                        'seçin.'.format(target))
+                entry = members[0]
+                if entry.file_size <= 0 or entry.file_size > 2 * 1024 ** 3:
+                    raise AdbError('Universal APK boyutu güvenli sınırların dışında.')
+                with _tempfile.TemporaryDirectory(prefix='mibox-apks-') as folder:
+                    path = os.path.join(folder, 'universal.apk')
+                    with archive.open(entry) as source, open(path, 'wb') as dest:
+                        shutil.copyfileobj(source, dest, length=1024 * 1024)
+                    return self.install_apk(target, path, timeout=timeout)
+        except AdbError:
+            raise
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise AdbError('.apks arşivi açılamadı: {}'.format(exc)) from exc
+
     def install_multiple(self, target, apk_path, timeout=180):
-        """Split-APK toplu kurulum (adb install-multiple).
+        """Install a flat APK set (adb install-multiple) or .apkm/.xapk archive.
 
         apk_path tek tek dosya listesi, dizin (icindeki *.apk'lar) veya
-        tek dosya olabilir. Base + split'ler tek oturumda kurulur
-        (AppControl 'install APKS' davranisi).
+        tek dosya olabilir. .apks içinden hedefe uygun varyant bundletool ile
+        seçilir; bundletool yoksa yalnızca universal.apk güvenle kullanılabilir.
         """
         import glob as _glob
         import os as _os
+        if isinstance(apk_path, str) and apk_path.lower().endswith('.apks'):
+            if not _os.path.isfile(apk_path):
+                raise AdbError('.apks arşivi bulunamadı: ' + apk_path)
+            result = self._install_apks_archive(target, apk_path, timeout)
+            if result is not None:
+                return result
+            return self._install_universal_apks(target, apk_path, timeout)
+        if isinstance(apk_path, str) and apk_path.lower().endswith(('.apkm', '.xapk')):
+            import zipfile
+            import tempfile
+            import shutil
+            try:
+                with zipfile.ZipFile(apk_path) as archive:
+                    members = [entry for entry in archive.infolist()
+                               if not entry.is_dir() and entry.filename.lower().endswith('.apk')]
+                    if not members:
+                        raise AdbError('Arşivde kurulacak APK bulunamadı: ' + apk_path)
+                    if len(members) > 512 or any(m.file_size > 2 * 1024 ** 3 for m in members) or sum(m.file_size for m in members) > 4 * 1024 ** 3:
+                        raise AdbError('APK arşivi boyut veya dosya sayısı sınırını aşıyor.')
+                    with tempfile.TemporaryDirectory(prefix='mibox-apks-') as folder:
+                        extracted = []
+                        for index, entry in enumerate(members):
+                            # Use generated names; archive paths never control extraction paths.
+                            path = _os.path.join(folder, 'split-{:04d}.apk'.format(index))
+                            with archive.open(entry) as source, open(path, 'wb') as dest:
+                                shutil.copyfileobj(source, dest, length=1024 * 1024)
+                            extracted.append(path)
+                        return self.install_multiple(target, extracted, timeout=timeout)
+            except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+                raise AdbError('APK arşivi açılamadı: {}'.format(exc)) from exc
         if isinstance(apk_path, (list, tuple)):
             files = [str(f or '').strip() for f in list(apk_path)]
         elif isinstance(apk_path, str) and _os.path.isdir(apk_path):
@@ -1290,7 +2024,7 @@ class AdbEngine:
         if r.exit_code != 0:
             raise AdbError('HOME ayarlanamadi: {}'.format(text.strip() or 'bilinmeyen hata'))
         cur = self.home_activity(target)
-        if want in cur:
+        if home_pkg_of(cur) == want:
             return r
         blocker = home_pkg_of(cur)
         if not fix_setup or not is_setup_wizard_pkg(blocker):
@@ -1309,7 +2043,7 @@ class AdbEngine:
         r2 = self.shell(target, 'cmd', 'package', 'set-home-activity', comp,
                         timeout=timeout)
         cur2 = self.home_activity(target)
-        if want in cur2:
+        if home_pkg_of(cur2) == want:
             self.last_home_notes.append('HOME dogrulandi: ' + cur2)
             return r2
         raise AdbError(
@@ -1382,7 +2116,13 @@ class AdbEngine:
                     'animator_duration_scale'):
             try:
                 r = self.shell(target, 'settings', 'get', 'global', key, timeout=timeout)
-                out[key] = (r.output or '').strip() or '1'
+                value = (r.output or '').strip()
+                if (r.exit_code != 0 or not re.fullmatch(r'(?:\d+(?:\.\d*)?|\.\d+)', value)
+                        or re.search(r'\b(error|failed|exception|denied)\b',
+                                     r.error or '', re.I)):
+                    out[key] = '?'
+                else:
+                    out[key] = value
             except AdbError:
                 out[key] = '?'
         return out
@@ -1396,28 +2136,51 @@ class AdbEngine:
             val = '1'
         for key in ('window_animation_scale', 'transition_animation_scale',
                     'animator_duration_scale'):
-            self.shell(target, 'settings', 'put', 'global', key, val,
-                       timeout=timeout)
+            result = self.shell(target, 'settings', 'put', 'global', key, val,
+                                timeout=timeout)
+            text = '{} {}'.format(result.output or '', result.error or '').strip()
+            if result.exit_code != 0 or re.search(
+                    r'\b(error|failed|exception|denied|not allowed)\b', text, re.I):
+                raise AdbError('Animasyon ölçeği yazılamadı ({}): {}'.format(
+                    key, text or 'settings put başarısız'))
         # dogrula
         cur = self.animator_scales(target)
-        bad = [k for k, v in cur.items() if v != val]
+        expected = float(val)
+        bad = [k for k, v in cur.items()
+               if v == '?' or float(v) != expected]
         if bad:
             raise AdbError('Doğrulama başarısız: {}'.format(', '.join(bad)))
 
     def storage_top(self, target, limit=15, timeout=60):
         """En çok yer kaplayan dizinler (GB eşiği üstü du taraması)."""
-        out = []
+        errors = []
         for base in ('/sdcard', '/data/media/0'):
             try:
                 r = self.shell(target, 'du', '-sk', base + '/*', timeout=timeout)
-            except AdbError:
+            except AdbError as exc:
+                errors.append(str(exc))
                 continue
+            if r.exit_code != 0 or (r.error or '').strip():
+                errors.append((r.error or r.output or 'du başarısız').strip())
+                continue
+            out = []
+            malformed = []
             for line in (r.output or '').splitlines():
+                if not line.strip():
+                    continue
                 m = re.match(r'\s*(\d+)\s+(.+)', line)
                 if m:
                     out.append({'path': m.group(2).strip(), 'kb': int(m.group(1))})
-        out.sort(key=lambda e: e['kb'], reverse=True)
-        return out[:limit]
+                else:
+                    malformed.append(line[:160])
+            if malformed:
+                errors.append('du çıktısı çözümlenemedi: {}'.format(
+                    '; '.join(malformed[:3])))
+                continue
+            out.sort(key=lambda e: e['kb'], reverse=True)
+            return out[:limit]
+        raise AdbError('Depolama taraması tamamlanamadı: {}'.format(
+            '; '.join(errors) or 'kullanılabilir depolama yolu bulunamadı'))
 
     def list_users(self, target, timeout=15):
         """Cihazdaki kullanıcılar: [{'id': int, 'name': str, 'running': bool}]."""
@@ -1437,42 +2200,11 @@ class AdbEngine:
 
     def uninstall_user_id(self, target, pkg, user_id):
         """Belirli kullanıcı için kaldırma (multi-user, UAD davranışı)."""
-        pkg = str(pkg or '').strip()
-        if not is_valid_package(pkg):
-            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
-        uid = check_user_id(user_id)
-        if self.is_uninstalled_for_user_id(target, pkg, uid):
-            return None
-        try:
-            self.force_stop(target, pkg)
-        except AdbError:
-            pass
-        r = self.shell(target, 'pm', 'uninstall', '--user', str(uid), pkg)
-        text = '{} {}'.format(r.output, r.error)
-        if re.search(r'\bSuccess\b', text):
-            return r
-        if self.is_uninstalled_for_user_id(target, pkg, user_id):
-            return r
-        raise AdbError('Kaldırılamadı ({} user {}): {}'.format(
-            pkg, user_id, text.strip() or 'bilinmeyen hata'))
+        return self.uninstall_user(target, pkg, user_id=user_id)
 
     def is_uninstalled_for_user_id(self, target, pkg, user_id, timeout=10):
-        pkg = str(pkg or '').strip()
-        if not is_valid_package(pkg):
-            return False
-        try:
-            uid = check_user_id(user_id)
-        except AdbError:
-            return False
-        try:
-            r = self.shell(target, 'pm', 'list', 'packages', '--user', str(uid),
-                           pkg, timeout=timeout)
-            for line in (r.output or '').splitlines():
-                if line.strip() == 'package:' + pkg:
-                    return False
-            return True
-        except AdbError:
-            return False
+        return self.is_uninstalled_for_user(
+            target, pkg, timeout=timeout, user_id=user_id)
 
     def autorun_receivers(self, target, timeout=40):
         """BOOT_COMPLETED dinleyen paketler: {pkg: [component, ...]}.
@@ -1483,14 +2215,15 @@ class AdbEngine:
         found = {}
         try:
             r = self.shell(target, 'cmd', 'package', 'query-receivers',
-                           '--brief', 'android.intent.action.BOOT_COMPLETED',
+                           '--brief', '-a', 'android.intent.action.BOOT_COMPLETED',
                            timeout=timeout)
             for line in (r.output or '').splitlines():
                 line = line.strip()
-                if '/' in line and not line.startswith(('package:', 'all ')):
-                    pkg = line.split('/')[0]
-                    if '.' in pkg:
-                        found.setdefault(pkg, []).append(line)
+                component = re.fullmatch(
+                    r'([A-Za-z]\w*(?:\.[A-Za-z]\w*)+)/((?:\.[\w$]+)+|[A-Za-z]\w*(?:\.[\w$]+)+)', line)
+                if component:
+                    pkg = component.group(1)
+                    found.setdefault(pkg, []).append(line)
             if found:
                 return found
         except AdbError:

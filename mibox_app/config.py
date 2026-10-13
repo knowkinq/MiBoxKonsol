@@ -7,6 +7,7 @@ save() tmp + os.replace ile atomiktir.
 """
 import json
 import os
+import shutil
 import sys
 import threading
 
@@ -26,13 +27,12 @@ APK_DIR = os.path.join(BASE_DIR, 'apk-yedekleri')
 # Eski buyuk harfli dosya adiyla geriye uyumluluk (kullanicida varsa oku).
 LEGACY_CONFIG_PATH = os.path.join(BASE_DIR, 'MiBox-ayarlar.json')
 
-# NOT: Bilinen-uygulama listesi KALDIRILDI (v8.3). Adlar cihazin
-# kendisinden okunur (dumpsys package -> application-label). Asagidaki
-# tablo yalnizca cihaz etiketsiz eski kayitlarla geriye uyumluluk icin
-# durur; yeni kayit YAZILMAZ, sisteme gore hareket edilir.
-# TV icin yaygin paketler -> dost ad (LEGACY, salt-okunur yedek)
+# Android TV'nin ADB paket listesi çoğu ROM'da yerelleştirilmiş etiketleri
+# vermiyor. Cihaz etiketi bulunamadığında bu salt-okunur tablo kullanıcıya
+# tanıdık ad gösterir; paket kayıtlarını değiştirmek için kullanılmaz.
 DEFAULT_FRIENDLY = {
     'ar.tvplayer.tv': 'TiviMate',
+    'com.lagradost.cloudstream3': 'CloudStream',
     'com.spocky.projengmenu': 'Projectivy Launcher',
     'org.smarttube.stable': 'SmartTube',
     'org.smarttube': 'SmartTube (beta)',
@@ -53,6 +53,7 @@ DEFAULT_FRIENDLY = {
     'com.stremio.tv': 'Stremio TV',
     'com.google.android.gms': 'Google Play Servisleri',
     'com.android.vending': 'Google Play Store',
+    'com.google.android.vending': 'Google Play Store',
     'com.google.android.tv.remote.service': 'TV Remote Servisi',
     'com.google.android.tv.startguide': 'TV Start Guide',
     'com.google.android.tv.settings': 'TV Ayarlar',
@@ -60,9 +61,14 @@ DEFAULT_FRIENDLY = {
     'com.android.systemui': 'System UI',
     'com.android.launcher': 'Launcher',
     'com.google.android.tv.home': 'TV Home',
+    'com.mitv.tvhome.oemtab': 'Mi TV Home',
     'com.xiaomi.mibrand': 'Mi Brand',
     'com.miui.tv': 'Mi UI TV',
     'com.xiaomi.mitv': 'Mi TV',
+    'com.xiaomi.mitv.updateservice': 'Mi TV Update Service',
+    'com.xm.webcontent': 'Xiaomi TV Web Content',
+    'com.manitux.nuviotv': 'Nuvio TV',
+    'com.nuvio.tv': 'Nuvio TV',
     'com.google.android.webview': 'WebView',
     'com.android.shell': 'Shell',
     'com.google.android.inputmethod.latin': 'Gboard',
@@ -116,16 +122,19 @@ DEFAULT_FRIENDLY = {
     'com.google.android.gsf.login': 'Google Login',
 }
 
-DEFAULT_PROTECTED = ['ar.tvplayer.tv', 'com.spocky.projengmenu']
+DEFAULT_PROTECTED = []  # Kullanıcı kendi koruma listesini oluşturur.
 
 
 class Config:
-    def __init__(self):
+    def __init__(self, load=True, on_persistence_error=None):
         self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
+        self._on_persistence_error = on_persistence_error
+        self.save_error = ''
         # Varsayilan kalip: kullanici kendi IP'sini yazar, ilk baglantida
         # kaydedilir. Eskiden sabit ev IP'si gomuluydu (otomatik baglanma
         # sikayeti) — artik bos kalip, otomatik baglanti YOK.
-        self.last_target = '192.168.1.x:5555'
+        self.last_target = ''
         self.protected = list(DEFAULT_PROTECTED)
         # legacy salt-okunur yedek (yeni kayit yazilmaz)
         self.friendly = dict(DEFAULT_FRIENDLY)
@@ -140,56 +149,84 @@ class Config:
         self.user_id = 0
         self.show_unlisted = False
         self.show_removed = False  # kaldirilmislar varsayilan gizli
-        self.load()
+        # Bekci baglantiyi geri getirdiginde cihazi uyandir (uyku modundan cikar)
+        self.wake_on_reconnect = True
+        self.load_warning = ''
+        self._recovery_blocked = False
+        if load:
+            self.load()
 
     def load(self):
         with self._lock:
             self._load_locked()
 
     def _load_locked(self):
-        try:
-            cfg = None
-            for p in (CONFIG_PATH, LEGACY_CONFIG_PATH):
-                if os.path.exists(p):
-                    with open(p, 'r', encoding='utf-8') as f:
-                        cfg = json.load(f)
-                    break
-            if isinstance(cfg, dict):
-                data = cfg
-                if isinstance(data.get('protected'), list):
-                    self.protected = [str(p) for p in data['protected']]
-                if data.get('last_target'):
-                    self.last_target = str(data['last_target'])
-                if data.get('include_system') is not None:
-                    self.include_system = bool(data['include_system'])
-                if data.get('dark_mode') is not None:
-                    self.dark_mode = bool(data['dark_mode'])
-                if data.get('auto_refresh_min') is not None:
-                    try:
-                        self.auto_refresh_min = int(data['auto_refresh_min'])
-                    except (TypeError, ValueError):
-                        self.auto_refresh_min = 0
-                if data.get('log_to_file') is not None:
-                    self.log_to_file = bool(data['log_to_file'])
-                if data.get('device_history'):
-                    self.device_history = [str(x) for x in data['device_history']][:10]
-                if data.get('screenshot_hd') is not None:
-                    self.screenshot_hd = bool(data['screenshot_hd'])
-                if data.get('auto_maint') is not None:
-                    self.auto_maint = bool(data['auto_maint'])
-                if data.get('maint_last'):
-                    self.maint_last = str(data['maint_last'])
-                if data.get('user_id') is not None:
-                    try:
-                        self.user_id = int(data['user_id'])
-                    except (TypeError, ValueError):
-                        self.user_id = 0
-                if data.get('show_unlisted') is not None:
-                    self.show_unlisted = bool(data['show_unlisted'])
-                if data.get('show_removed') is not None:
-                    self.show_removed = bool(data['show_removed'])
-        except (OSError, ValueError):
-            pass
+        self.load_warning = ''
+        self._recovery_blocked = False
+        warnings = []
+        cfg = None
+        seen_paths = set()
+        for path in (CONFIG_PATH, LEGACY_CONFIG_PATH):
+            normalized_path = os.path.normcase(os.path.abspath(path))
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    candidate = json.load(f)
+                if not isinstance(candidate, dict):
+                    raise ValueError('JSON kökü nesne değil')
+                cfg = candidate
+                break
+            except (OSError, ValueError):
+                try:
+                    backup = self._preserve_invalid_config(path)
+                    warnings.append(
+                        'Okunamayan ayar dosyasının yedeği oluşturuldu: {}'
+                        .format(backup))
+                except OSError as backup_error:
+                    self._recovery_blocked = True
+                    warnings.append(
+                        'Ayar dosyası okunamadı ve güvenli biçimde yedeklenemedi: {} '
+                        '({}). Ayarlar bu dosyaya yazılmayacak.'
+                        .format(path, backup_error))
+        self.load_warning = '\n'.join(warnings)
+        if isinstance(cfg, dict):
+            data = cfg
+            if isinstance(data.get('protected'), list):
+                self.protected = [str(p) for p in data['protected']]
+            if data.get('last_target'):
+                self.last_target = str(data['last_target'])
+            if data.get('include_system') is not None:
+                self.include_system = bool(data['include_system'])
+            if data.get('dark_mode') is not None:
+                self.dark_mode = bool(data['dark_mode'])
+            if data.get('auto_refresh_min') is not None:
+                try:
+                    self.auto_refresh_min = int(data['auto_refresh_min'])
+                except (TypeError, ValueError):
+                    self.auto_refresh_min = 0
+            if data.get('log_to_file') is not None:
+                self.log_to_file = bool(data['log_to_file'])
+            if data.get('device_history'):
+                self.device_history = [str(x) for x in data['device_history']][:10]
+            if data.get('screenshot_hd') is not None:
+                self.screenshot_hd = bool(data['screenshot_hd'])
+            if data.get('auto_maint') is not None:
+                self.auto_maint = bool(data['auto_maint'])
+            if data.get('maint_last'):
+                self.maint_last = str(data['maint_last'])
+            if data.get('user_id') is not None:
+                try:
+                    self.user_id = int(data['user_id'])
+                except (TypeError, ValueError):
+                    self.user_id = 0
+            if data.get('show_unlisted') is not None:
+                self.show_unlisted = bool(data['show_unlisted'])
+            if data.get('show_removed') is not None:
+                self.show_removed = bool(data['show_removed'])
         # NOT: mibox-bilinen-uygulamalar.json ARTIK OKUNMUYOR/YAZILMIYOR.
         # Adlar cihazdan gelir; bu dosya varsa yoksayilir (asagida
         # save_known_apps artik dosyayi SILER).
@@ -213,7 +250,24 @@ class Config:
             }
 
     @staticmethod
-    def _write_atomic(data):
+    def _preserve_invalid_config(path):
+        """Copy a broken settings file before a later save can replace it."""
+        import datetime
+        stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        base = '{}.corrupt-{}'.format(path, stamp)
+        backup = base + '.bak'
+        suffix = 1
+        while os.path.exists(backup):
+            backup = '{}-{}.bak'.format(base, suffix)
+            suffix += 1
+        shutil.copy2(path, backup)
+        return backup
+
+    def _write_atomic(self, data):
+        with self._write_lock:
+            return self._write_atomic_locked(data)
+
+    def _write_atomic_locked(self, data):
         """JSON'u atomik yaz: tmp -> fsync -> os.replace (tum yazma yollari)."""
         tmp = CONFIG_PATH + '.tmp'
         try:
@@ -227,15 +281,27 @@ class Config:
                     pass
             # Atomik degisim: elektrik kesintisinde yari-yazilmis JSON kalmaz.
             os.replace(tmp, CONFIG_PATH)
-        except OSError:
+            self.save_error = ''
+            return True
+        except OSError as error:
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
             except OSError:
                 pass
+            self.save_error = 'Ayar dosyası kaydedilemedi ({}): {}'.format(
+                CONFIG_PATH, error)
+            if self._on_persistence_error is not None:
+                try:
+                    self._on_persistence_error(self.save_error)
+                except Exception:
+                    pass
+            return False
 
     def save(self):
-        self._write_atomic(self.to_dict())
+        if self._recovery_blocked:
+            return False
+        return self._write_atomic(self.to_dict())
 
     def save_known_apps(self):
         # LEGACY: artik dosya YAZILMAZ; varsa kalinti temizlenir.
@@ -260,11 +326,11 @@ class Config:
 
     def push_history(self, target):
         target = (target or '').strip()
-        if not target:
-            return
+        if not target or self._recovery_blocked:
+            return False
         with self._lock:
             hist = [t for t in self.device_history if t != target]
             hist.insert(0, target)
             self.device_history = hist[:10]
             data = self.to_dict()
-        self._write_atomic(data)
+        return self._write_atomic(data)

@@ -5,15 +5,24 @@ __pycache__/
 .venv/
 venv/
 env/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.coverage
 
 # --- PyInstaller ciktilari ---
 build/
 dist/
 dist-onedir/
+dist-onedir-*/
 *.manifest
 
 # --- Calisma zamani verileri (kisisel / uretilen) ---
 logs/
+snapshots/
+*.log
+*.csv
+*.jsonl
 _arsiv/
 mibox-ayarlar.json
 MiBox-ayarlar.json

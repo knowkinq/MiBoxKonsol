@@ -132,6 +132,12 @@ _DROP_SUBSTR = (
 
 def _keep_binary(dest_name):
     low = dest_name.replace('\\', '/').lower()
+    # Windows Qt uses the OS ICU API (unsuffixed exports). A foreign ICU
+    # found on PATH (e.g. Poppler's ICU 78) shadows it and breaks QtWidgets.
+    # This app has no bundled ICU consumer; resolve ICU through Windows.
+    basename = low.rsplit('/', 1)[-1]
+    if basename == 'icuuc.dll' or basename.startswith('icudt'):
+        return False
     for drop in _DROP_SUBSTR:
         if drop.lower() in low:
             # platform pluginleri ve kritik DLL'ler korunur

@@ -11,7 +11,7 @@ from . import kit
 
 
 class StageDialog(QDialog):
-    def __init__(self, parent, stage, friendly=None):
+    def __init__(self, parent, stage, friendly=None, description=None, summary=None):
         super().__init__(parent)
         self.setWindowTitle('İşlem Önizleme — Sahne')
         self.resize(620, 420)
@@ -19,10 +19,25 @@ class StageDialog(QDialog):
         lay.setSpacing(4)
 
         self._info = QLabel('Aşağıdaki işlemler sırayla uygulanacak. '
-                      'Önce otomatik güvenlik snapshot alınır, sonuçlar geçmişe yazılır.')
+                      'Önce paket durum kaydı alınır, sonuçlar geçmişe yazılır. '
+                      'Bu kayıt uygulama verilerini yedeklemez.')
         self._info.setWordWrap(True)
         self._info.setStyleSheet(kit.muted(kit.dark_from(parent)))
         lay.addWidget(self._info)
+
+        self._description = None
+        if description:
+            self._description = QLabel(description)
+            self._description.setWordWrap(True)
+            self._description.setStyleSheet(kit.muted(kit.dark_from(parent)))
+            lay.addWidget(self._description)
+
+        self._summary = None
+        if summary:
+            self._summary = QLabel(summary)
+            self._summary.setWordWrap(True)
+            self._summary.setStyleSheet(kit.muted(kit.dark_from(parent)))
+            lay.addWidget(self._summary)
 
         self.grid = QTableWidget(0, 3)
         self.grid.setHorizontalHeaderLabels(['İşlem', 'Paket', 'Not'])
@@ -37,12 +52,17 @@ class StageDialog(QDialog):
         for action, pkg in stage.items():
             r = self.grid.rowCount()
             self.grid.insertRow(r)
-            icon = ACTION_ICON.get(action, '•')
-            ai = QTableWidgetItem('{} {}'.format(icon, ACTION_TR.get(action, action)))
+            icon = ACTION_ICON.get(action, '⚡' if action == 'smart' else '•')
+            label = ACTION_TR.get(
+                action, 'Akıllı kaldır' if action == 'smart' else action)
+            ai = QTableWidgetItem('{} {}'.format(icon, label))
             pi = QTableWidgetItem('{}{}'.format(
                 pkg, '' if (friendly is None or friendly(pkg) == pkg)
                 else '  (' + friendly(pkg) + ')'))
-            note = '⚠ geri dönüşü zor' if action in RISKY_ACTIONS else ''
+            if action == 'smart':
+                note = '⚠ önce devre dışı, olmazsa kaldır'
+            else:
+                note = '⚠ geri dönüşü zor' if action in RISKY_ACTIONS else ''
             ni = QTableWidgetItem(note)
             for it in (ai, pi, ni):
                 it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
@@ -53,17 +73,20 @@ class StageDialog(QDialog):
         self.lbl = QLabel('Toplam {} işlem.'.format(stage.count()))
         lay.addWidget(self.lbl)
 
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText('Uygula')
+        self.buttons.button(QDialogButtonBox.Ok).setProperty('accent', True)
+        self.buttons.button(QDialogButtonBox.Cancel).setText('Vazgeç')
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+
     def apply_theme(self):
-        """Tema degisince: bilgi etiketi yeni palete gecer."""
+        """Tema degisince: bilgi etiketleri yeni palete gecer."""
         try:
-            self._info.setStyleSheet(kit.muted(kit.dark_from(self)))
+            style = kit.muted(kit.dark_from(self))
+            for label in (self._info, self._description, self._summary):
+                if label is not None:
+                    label.setStyleSheet(style)
         except (RuntimeError, AttributeError):
             pass
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.button(QDialogButtonBox.Ok).setText('Uygula')
-        btns.button(QDialogButtonBox.Ok).setProperty('accent', True)
-        btns.button(QDialogButtonBox.Cancel).setText('Vazgeç')
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        lay.addWidget(btns)

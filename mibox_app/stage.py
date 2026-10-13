@@ -3,7 +3,8 @@
 
 Kullanım: Debloat/Profil/Sağlık sekmeleri işlem listesini buraya ekler,
 kullanıcı Önizle ile görür, Uygula ile tek worker zincirinde çalıştırır.
-Her sahne çalışması öncesi otomatik güvenlik snapshot'ı alınır.
+Her sahne çalışması öncesi paket durum snapshot'ı alınır; uygulama verisi
+snapshot'a dahil değildir.
 """
 from .adb_engine import AdbError
 
@@ -13,15 +14,21 @@ ACTION_TR = {
     'enable': 'Aktif et', 'restore': 'Geri yükle',
     'restrict': 'Kısıtla', 'unrestrict': 'Serbest bırak',
     'clear': 'Veriyi sil', 'stop': 'Force stop',
+    'smart': 'Akıllı kaldır (önce devre dışı bırak)',
 }
 
 ACTION_ICON = {
     'uninstall': '🗑', 'disable': '⏸', 'enable': '▶', 'restore': '♻',
     'restrict': '🔒', 'unrestrict': '🔓', 'clear': '🧹', 'stop': '⏹',
+    'smart': '⚡',
 }
 
-# Geri dönüşü olmayan/zor olanlar uyarılır
-RISKY_ACTIONS = {'uninstall', 'clear'}
+# Geri dönüşü olmayan/zor olanlar uyarılır. Akıllı kaldırma, yedek yöntem
+# olarak paketi kaldırabildiğinden önizlemede riskli kabul edilir.
+RISKY_ACTIONS = {'uninstall', 'clear', 'smart'}
+_SNAPSHOT_REQUIRED_ACTIONS = {
+    'uninstall', 'disable', 'restrict', 'unrestrict', 'smart',
+}
 
 
 class Stage:
@@ -97,14 +104,23 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
                 'details': [(p, False, str(e)) for _a, p in items],
                 'action': 'stage', 'auto_snap': None}
     snap_name = None
+    snapshot_failed = False
     try:
         snap_name, _c = snapmod.take(engine, target)
         if log:
-            log('Güvenlik snapshot: {}'.format(snap_name))
+            log('Paket durumu snapshot\'ı: {} (uygulama verisi yedeklenmez)'.format(snap_name))
     except Exception as e:  # noqa: BLE001
+        snapshot_failed = True
         if log:
-            log('Snapshot alınamadı: {}'.format(e))
-    ok, fail, details = 0, 0, []
+            log('Paket durumu snapshot\'ı alınamadı: {}'.format(e))
+    ok, fail, details, history_details = 0, 0, [], []
+
+    def record(action, pkg, succeeded, message, history_action=None):
+        details.append((pkg, succeeded, message))
+        history_details.append((
+            action if history_action is None else history_action,
+            pkg, succeeded, message))
+
     total = len(items)
     for i, (action, pkg) in enumerate(items, 1):
         if progress:
@@ -115,15 +131,21 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
         try:
             if is_cancelled is not None and is_cancelled():
                 fail += 1
-                details.append((pkg, False, 'kullanıcı durdurdu'))
+                record(action, pkg, False, 'kullanıcı durdurdu')
                 continue
         except Exception:
             pass
         if pkg in (protected or ()):
             fail += 1
-            details.append((pkg, False, 'koruma listesinde'))
+            record(action, pkg, False, 'koruma listesinde')
+            continue
+        if snapshot_failed and action in _SNAPSHOT_REQUIRED_ACTIONS:
+            fail += 1
+            record(action, pkg, False,
+                   'paket durumu snapshot\'ı alınamadı; işlem yapılmadı')
             continue
         try:
+            history_action = action
             if action == 'uninstall':
                 engine.uninstall_user(target, pkg)
                 if verify and not engine.is_uninstalled_for_user(target, pkg):
@@ -144,10 +166,21 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
                 engine.clear_data(target, pkg)
             elif action == 'stop':
                 engine.force_stop(target, pkg)
+            elif action == 'smart':
+                method, _result = engine.smart_remove(target, pkg)
+                if method == 'disable':
+                    result = 'Akıllı kaldırma: devre dışı bırakıldı ve doğrulandı'
+                elif method == 'uninstall':
+                    result = 'Akıllı kaldırma: kullanıcı için kaldırıldı ve doğrulandı'
+                else:
+                    raise AdbError('akıllı kaldırma beklenmeyen yöntem döndürdü')
+                history_action = method
             else:
                 raise AdbError('bilinmeyen aksiyon: ' + action)
             ok += 1
-            details.append((pkg, True, ACTION_TR.get(action, action) + ' (doğrulandı)'))
+            if action != 'smart':
+                result = ACTION_TR.get(action, action) + ' (doğrulandı)'
+            record(action, pkg, True, result, history_action)
         except AdbError as e:
             if log:
                 try:
@@ -155,10 +188,10 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
                 except Exception:
                     pass
             fail += 1
-            details.append((pkg, False, str(e)))
+            record(action, pkg, False, str(e))
     try:
         from . import history as histmod
-        histmod.append_many(target, 'stage', details)
+        histmod.append_many(target, 'stage', history_details)
     except Exception:
         pass
     try:
