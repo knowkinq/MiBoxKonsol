@@ -2,10 +2,14 @@
 setlocal
 cd /d "%~dp0"
 
-REM --- Python bul (venv > PATH) ---
+REM --- Python bul (.venv > venv > PATH) ---
 set "PY="
-if exist "%~dp0venv\Scripts\python.exe" set "PY=%~dp0venv\Scripts\python.exe"
-if not defined PY where python >nul 2>nul && set "PY=python"
+if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+if not defined PY if exist "%~dp0venv\Scripts\python.exe" set "PY=%~dp0venv\Scripts\python.exe"
+if not defined PY (
+  where python >nul 2>nul
+  if not errorlevel 1 set "PY=python"
+)
 
 if not defined PY (
   echo [HATA] Python bulunamadi. Kurun: winget install Python.Python.3.12
@@ -15,13 +19,18 @@ if not defined PY (
 )
 
 REM --- PySide6 kontrol ---
-%PY% -c "import PySide6" >nul 2>nul
+"%PY%" -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
   echo [UYARI] PySide6 eksik. Kuruluyor: pip install -r requirements.txt
-  %PY% -m pip install -r requirements.txt
+  "%PY%" -m pip install -r requirements.txt
+  if errorlevel 1 (
+    echo [HATA] Bagimliliklar kurulamadi.
+    pause
+    exit /b 1
+  )
 )
 
-%PY% mibox.py
+"%PY%" mibox.py
 if errorlevel 1 (
   echo.
   echo [HATA] Konsol kapatildi veya hata verdi.
