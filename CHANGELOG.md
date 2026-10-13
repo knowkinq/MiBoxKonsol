@@ -25,6 +25,22 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   `addItem(etiket, veri)` ile kurulur, tüm karşılaştırmalar `currentData()`
   ve `DATA_*` sabitleriyle yapılır. Yazım düzeltmesi filtreyi bozamaz.
   (Regresyon testi: `tests/faz8_ui_filtre_test.py`.)
+- **Zaman aşımı mesajı ↔ geçici-hata regex uyumu:** diakritik geçişinde mesaj
+  `ADB zaman aşımı (...)` olurken `_TRANSIENT_CONNECT_RE` hâlâ `zaman asimi`
+  arıyordu; bu, bağlantı tekrar denemesini sessizce devre dışı bırakırdı.
+  Regex artık iki yazımı da tanır (`zaman\s*a[sş][iı]m[iı]`) ve bu bağ
+  `tests/faz10_dil_test.py` ile kilitlendi.
+- **Türkçe dil tutarlılığı (diakritik geçişi):** 18 modülde ~360 görünen metin
+  düzeltildi (`Baglan`→`Bağlan`, `Kisitla`→`Kısıtla`, `Guv...`→`Güv...`).
+  Kural: **etiket Türkçe diakritikli, veri ASCII**.
+  - Motor verisi (`Kisitli`, `Serbest`, `Evet`, `Hayir`) ve kategori anahtarları
+    (`guvenli`, `dokunma`) değişmedi.
+  - Durum sütunu `DISPLAY_STATUS` ile çevrilir (`Kisitli` → `Kısıtlı`).
+  - `tests/device_scan.py` başlık doğrulaması yeni Türkçe başlıklara güncellendi
+    (`Seç`, `Çalışıyor`).
+  - `tools/diakritik.py`: token (string sabiti) seviyesinde çalışır; raw/regex
+    string'lere ve karşılaştırma satırlarına dokunmaz, `--uygula` olmadan kuru
+    çalışır. Son durum: **0 kalıntı**.
 
 ### Değiştirilen
 - **Uygulamalar sekmesi filtreleri:** ayrı `Çalışan` / `Kaldırılmış` /
@@ -60,6 +76,11 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   filtresinin satır sayısı (offline, `QT_QPA_PLATFORM=offscreen`).
 - `tests/faz9_dayaniklilik_test.py` — 22 iddia: geçici/kalıcı hata ayrımı,
   bekçi geri çekilmesi, `connect()` sözleşmesi (offline).
+- `tests/faz10_dil_test.py` — 73 iddia: dil tutarlılığı bekçisi (etiketler
+  diakritikli ve ASCII-Türkçe kalıntısız; veri anahtarları/sabitleri ASCII;
+  zaman aşımı mesajı ↔ regex uyumu).
+- `tools/diakritik.py` — güvenli diakritik düzeltme aracı (kuru çalıştırma
+  varsayılan, karşılaştırma satırlarını raporlar, raw/regex string'leri atlar).
 - `.gitignore` (build/dist/__pycache__/logs/ayar ve snapshot dosyaları).
 - **`--version` / `--bilgi` CLI:** pencere açmadan sürüm + ortam bilgisi
   (`frozen`, `meipass`, `executable`, `base_dir`, `log_dir`, `selftest`
@@ -79,9 +100,10 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
 ### Doğrulanmış
 - `python -m compileall mibox_app tests` → temiz.
 - `python mibox.py --selftest` → SELFTEST_OK.
-- `python tests/run_all.py` → **5 suite yeşil** (Faz2 + 106 güvenlik + 47 kalite
-  + 17 UI filtre + 22 dayanıklılık) → `ALL_TESTS_OK`.
+- `python tests/run_all.py` → **6 suite yeşil** (Faz2 + 106 güvenlik + 47 kalite
+  + 17 UI filtre + 22 dayanıklılık + 73 dil) → `ALL_TESTS_OK`.
 - `python tools/kalite_tara.py --siki` → 0 bulgu.
+- `python tools/diakritik.py` (kuru) → 0 kalıntı.
 - Gerçek cihaz (salt-okunur ölçüm): hedefe bağlantı 0.28 sn; erişilemez
   adreste `deneme=1` → 3.0 sn, `deneme=2` → 6.3 sn (tekrar deneme çalışıyor).
 - `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin

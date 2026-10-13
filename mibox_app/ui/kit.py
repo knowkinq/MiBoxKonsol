@@ -125,7 +125,7 @@ def hint_label(text='', dark=None):
     return lbl
 
 
-def status_label(text='Hazir.', dark=None):
+def status_label(text='Hazır.', dark=None):
     lbl = QLabel(text)
     lbl.setStyleSheet(muted(dark_from(lbl) if dark is None else dark))
     lbl.setWordWrap(True)
@@ -187,9 +187,9 @@ def select_bar(grid, check_col):
     from PySide6.QtWidgets import QPushButton as _PB, QLabel as _LB
     from .flowlayout import FlowLayout as _FL
     bar = _FL()
-    btn_all = _PB('Tumunu Sec')
-    btn_none = _PB('Secimi Birak')
-    btn_inv = _PB('Ters Cevir')
+    btn_all = _PB('Tümünü Seç')
+    btn_none = _PB('Seçimi Bırak')
+    btn_inv = _PB('Ters Çevir')
     lbl = _LB('')
     lbl.setStyleSheet(faint(dark_from(grid)))
 
@@ -231,7 +231,7 @@ def select_bar(grid, check_col):
                     if _ is not None and (_.flags() & _Qt.ItemIsUserCheckable)
                     and _.checkState() == _Qt.Checked)
             total = grid.rowCount()
-            lbl.setText('Secili: {}/{}'.format(n, total))
+            lbl.setText('Seçili: {}/{}'.format(n, total))
         except RuntimeError:
             pass
 

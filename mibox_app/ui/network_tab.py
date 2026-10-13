@@ -104,16 +104,16 @@ class NetworkTab(QWidget):
         root.addWidget(self.grid, 1)
 
         flow = FlowLayout()
-        self.btn_pair = QPushButton('Kablosuz Eslestir')
+        self.btn_pair = QPushButton('Kablosuz Eşleştir')
         self.btn_pair.clicked.connect(self._pair)
-        self.btn_use = QPushButton('Seciliyi Hedef Yap')
+        self.btn_use = QPushButton('Seçiliyi Hedef Yap')
         self.btn_use.setProperty('accent', True)
         self.btn_use.clicked.connect(self._use_selected)
         flow.addWidget(self.btn_pair)
         flow.addWidget(self.btn_use)
         root.addLayout(flow)
 
-        self.lbl_summary = QLabel("Tara: LAN'da ADB portu acik cihazlari bulur. Cift tiklama hedef yapar.")
+        self.lbl_summary = QLabel("Tara: LAN'da ADB portu açık cihazları bulur. Cift tiklama hedef yapar.")
         self.lbl_summary.setWordWrap(True)
         root.addWidget(self.lbl_summary)
         self._stop_flag = False
@@ -152,7 +152,7 @@ class NetworkTab(QWidget):
                     lat = int((time.time() - t0) * 1000)
                     s.close()
                     if r == 0:
-                        return (ip, 'Acik', str(lat))
+                        return (ip, 'Açık', str(lat))
                 except OSError:
                     pass
                 return None
@@ -192,7 +192,7 @@ class NetworkTab(QWidget):
             self.grid.setItem(r, COL_STATE, QTableWidgetItem(state))
             self.grid.setItem(r, COL_LATENCY, QTableWidgetItem(lat))
         self.progress.setValue(100)
-        self.lbl_summary.setText('{} cihaz bulundu (port acik).'.format(len(found)))
+        self.lbl_summary.setText('{} cihaz bulundu (port açık).'.format(len(found)))
 
     def _selected_ip(self):
         row = self.grid.currentRow()
@@ -204,7 +204,7 @@ class NetworkTab(QWidget):
     def _use_selected(self):
         ip = self._selected_ip()
         if not ip:
-            QMessageBox.information(self, 'Secim', 'Once listeden bir IP secin.')
+            QMessageBox.information(self, 'Seçim', 'Önce listeden bir IP seçin.')
             return
         self._set_target(ip + ':' + str(self.spn_port.value()))
 
@@ -225,17 +225,17 @@ class NetworkTab(QWidget):
         self.window.on_connect()
 
     def _pair(self):
-        host, ok = QInputDialog.getText(self, 'Eslestir', 'Eslestirme adresi (IP:port):',
+        host, ok = QInputDialog.getText(self, 'Eşleştir', 'Eşleştirme adresi (IP:port):',
                                        text=self.txt_subnet.text().strip() + '1:XXXXX')
         if not ok or not host.strip():
             return
-        code, ok2 = QInputDialog.getText(self, 'Eslestir', 'Eslestirme kodu (TVde yazar):')
+        code, ok2 = QInputDialog.getText(self, 'Eşleştir', 'Eşleştirme kodu (TVde yazar):')
         if not ok2 or not code.strip():
             return
 
         def do():
             return self.core.engine.pair(host.strip(), code.strip())
         w = Worker(do)
-        w.job_name = 'Kablosuz eslestirme'
-        w.finished_ok.connect(lambda m: QMessageBox.information(self, 'Eslestirme', m or 'Eslestirme tamam.'))
-        self.window._run(w, desc='Ag: kablosuz eslestirme deneniyor')
+        w.job_name = 'Kablosuz eşleştirme'
+        w.finished_ok.connect(lambda m: QMessageBox.information(self, 'Eşleştirme', m or 'Eşleştirme tamam.'))
+        self.window._run(w, desc='Ag: kablosuz eşleştirme deneniyor')

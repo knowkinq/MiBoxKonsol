@@ -115,7 +115,7 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
         try:
             if is_cancelled is not None and is_cancelled():
                 fail += 1
-                details.append((pkg, False, 'kullanici durdurdu'))
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 continue
         except Exception:
             pass

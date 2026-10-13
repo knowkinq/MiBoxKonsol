@@ -31,7 +31,7 @@ NON_REVERSIBLE = {'clear', 'stop', 'launch'}
 
 def _path():
     from .config import BASE_DIR
-    return os.path.join(BASE_DIR, 'mibox-islem-gecmisi.jsonl')
+    return os.path.join(BASE_DIR, 'mibox-işlem-gecmisi.jsonl')
 
 
 def append(target, action, package, method='', ok=True):

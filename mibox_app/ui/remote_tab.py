@@ -25,13 +25,13 @@ KEYS = {
     ],
     'media': [
         ('Oynat/Duraklat', 85), ('Durdur', 86),
-        ('Onceki', 88), ('Sonraki', 87),
-        ('Geri Sar', 90), ('Hizli Sar', 91),
-        ('Kayit', 130),
+        ('Önceki', 88), ('Sonraki', 87),
+        ('Geri Sar', 90), ('Hızlı Sar', 91),
+        ('Kayıt', 130),
     ],
     'navigasyon': [
-        ('Yukari', 19), ('Asagi', 20), ('Sol', 21), ('Sag', 22),
-        ('OK', 23), ('Geri', 4), ('Ana Ekran', 3), ('Menu', 82),
+        ('Yukari', 19), ('Asagi', 20), ('Sol', 21), ('Sağ', 22),
+        ('OK', 23), ('Geri', 4), ('Ana Ekran', 3), ('Menü', 82),
         ('Ayarlar', 176),
     ],
 }
@@ -87,7 +87,7 @@ class RemoteTab(QWidget):
         self._pad_btn(pad, '▲', 19, 0, 1, tooltip='Yukari (key 19)')
         self._pad_btn(pad, '◀', 21, 1, 0, tooltip='Sol (key 21)')
         self._pad_btn(pad, 'OK', 23, 1, 1, accent=True, tooltip='OK (key 23)')
-        self._pad_btn(pad, '▶', 22, 1, 2, tooltip='Sag (key 22)')
+        self._pad_btn(pad, '▶', 22, 1, 2, tooltip='Sağ (key 22)')
         self._pad_btn(pad, '▼', 20, 2, 1, tooltip='Asagi (key 20)')
         body.addLayout(pad)
 
@@ -96,7 +96,7 @@ class RemoteTab(QWidget):
         nav_row.setSpacing(6)
         nav_row.addWidget(self._key_button('⟨ Geri', 4, min_h=44, tooltip='Geri (key 4)'))
         nav_row.addWidget(self._key_button('⌂ Home', 3, min_h=44, tooltip='Ana Ekran (key 3)'))
-        nav_row.addWidget(self._key_button('☰ Menu', 82, min_h=44, tooltip='Menu (key 82)'))
+        nav_row.addWidget(self._key_button('☰ Menü', 82, min_h=44, tooltip='Menü (key 82)'))
         body.addLayout(nav_row)
         home_row = QHBoxLayout()
         home_row.setSpacing(6)
@@ -117,7 +117,7 @@ class RemoteTab(QWidget):
         body.addWidget(media_play)
         media_row = QHBoxLayout()
         media_row.setSpacing(6)
-        prev_btn = self._key_button('⏮ Onceki', 88, min_h=40)
+        prev_btn = self._key_button('⏮ Önceki', 88, min_h=40)
         next_btn = self._key_button('⏭ Sonraki', 87, min_h=40)
         kit.fit_buttons(prev_btn, next_btn)
         media_row.addWidget(prev_btn)
@@ -126,7 +126,7 @@ class RemoteTab(QWidget):
         seek_row = FlowLayout()
         seek_row.addWidget(self._key_button('⏪ Geri Sar', 90, min_h=40))
         seek_row.addWidget(self._key_button('Durdur', 86, min_h=40))
-        seek_row.addWidget(self._key_button('Hizli Sar ⏩', 91, min_h=40))
+        seek_row.addWidget(self._key_button('Hızlı Sar ⏩', 91, min_h=40))
         body.addLayout(seek_row)
         return body
 
@@ -134,15 +134,15 @@ class RemoteTab(QWidget):
         root = kit.page(self)
 
         # --- Uygulama acma ---
-        g_launch = QGroupBox('Uygulama Ac')
+        g_launch = QGroupBox('Uygulama Aç')
         gl = QHBoxLayout(g_launch)
         gl.setSpacing(4)
         self.cmb_app = QComboBox()
-        self.cmb_app.setPlaceholderText('Uygulama sec (once Uygulamalar sekmesini yenileyin)')
+        self.cmb_app.setPlaceholderText('Uygulama seç (önce Uygulamalar sekmesini yenileyin)')
         self.cmb_app.setMinimumWidth(200)
         self.cmb_app.setEditable(True)
-        self.cmb_app.lineEdit().setPlaceholderText('Uygulama sec veya paket yaz...')
-        self.btn_launch = QPushButton('Ac')
+        self.cmb_app.lineEdit().setPlaceholderText('Uygulama seç veya paket yaz...')
+        self.btn_launch = QPushButton('Aç')
         self.btn_launch.setProperty('accent', True)
         self.btn_launch.clicked.connect(self._launch_selected)
         gl.addWidget(self.cmb_app, 1)
@@ -187,7 +187,7 @@ class RemoteTab(QWidget):
         g_right = QGroupBox('Durum / Goruntu')
         right_v = QVBoxLayout(g_right)
         right_v.setSpacing(4)
-        self.lbl_status = QLabel('Hazir.')
+        self.lbl_status = QLabel('Hazır.')
         self.lbl_status.setStyleSheet(kit.muted(kit.dark_from(self)))
         self.lbl_status.setWordWrap(True)
         right_v.addWidget(self.lbl_status)
@@ -206,7 +206,7 @@ class RemoteTab(QWidget):
         self.chk_hd.setToolTip('internal_display ile yuksek cozunurluk')
         self.chk_hd.setChecked(self.core.config.screenshot_hd)
         self.chk_hd.toggled.connect(self._on_hd_toggle)
-        self.btn_shot_open = QPushButton('Klasor')
+        self.btn_shot_open = QPushButton('Klasör')
         self.btn_shot_open.clicked.connect(self._open_shot_dir)
         shot_row.addWidget(self.btn_shot)
         shot_row.addWidget(self.chk_hd)
@@ -224,12 +224,12 @@ class RemoteTab(QWidget):
         flow = FlowLayout()
         self.btn_info = QPushButton('Cihaz Bilgisi')
         self.btn_info.clicked.connect(self._device_info)
-        self.btn_reboot = QPushButton('Yeniden Baslat')
+        self.btn_reboot = QPushButton('Yeniden Başlat')
         self.btn_reboot.setProperty('danger', True)
         self.btn_reboot.clicked.connect(self._reboot)
         self.cmb_reboot = QComboBox()
         self.cmb_reboot.addItems(['Sistem', 'Recovery', 'Bootloader'])
-        self.btn_cache = QPushButton('Onbellegi Temizle')
+        self.btn_cache = QPushButton('Önbelleği Temizle')
         self.btn_cache.clicked.connect(self._trim_caches)
         self.btn_apk = QPushButton('APK Kur')
         self.btn_apk.clicked.connect(self._install_apk)
@@ -269,7 +269,7 @@ class RemoteTab(QWidget):
         f.setBold(True)
         f.setPointSize(13)
         b.setFont(f)
-        names = {19: 'Yukari', 20: 'Asagi', 21: 'Sol', 22: 'Sag', 23: 'OK'}
+        names = {19: 'Yukari', 20: 'Asagi', 21: 'Sol', 22: 'Sağ', 23: 'OK'}
         b.clicked.connect(lambda _=False, co=code: self._send_key(co, names.get(co, label)))
         layout.addWidget(b, r, c)
 
@@ -350,14 +350,14 @@ class RemoteTab(QWidget):
             else:
                 pkg = typed
         if not pkg:
-            QMessageBox.information(self, 'Uygulama', 'Once Uygulamalar sekmesinden liste yenileyin.')
+            QMessageBox.information(self, 'Uygulama', 'Önce Uygulamalar sekmesinden liste yenileyin.')
             return
         try:
             name = self.core.config.friendly_name(pkg)
         except Exception:
             name = pkg
         shown = pkg_lines([pkg], lambda _p: name)[0]
-        if QMessageBox.question(self, 'Ac', u'Açılsın mı?\n\n{}'.format(shown),
+        if QMessageBox.question(self, 'Aç', u'Açılsın mı?\n\n{}'.format(shown),
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.No) != QMessageBox.Yes:
             return
@@ -367,7 +367,7 @@ class RemoteTab(QWidget):
             return pkg
         w = Worker(do)
         w.job_name = 'Uygulama acma'
-        w.finished_ok.connect(lambda p: self.lbl_status.setText('Acildi: ' + p))
+        w.finished_ok.connect(lambda p: self.lbl_status.setText('Açıldı: ' + p))
         self.window._run(w, desc='Kumanda: uygulama aciliyor: ' + pkg)
 
     # ------------------------------------------------------------------
@@ -452,7 +452,7 @@ class RemoteTab(QWidget):
                 return
             pix = QPixmap()
             if not pix.loadFromData(self._shot_data):
-                self.lbl_status.setText('PNG okunamadi.')
+                self.lbl_status.setText('PNG okunamadı.')
                 return
             size = self.lbl_shot.size()
             if size.width() < 10 or size.height() < 10:
@@ -507,11 +507,11 @@ class RemoteTab(QWidget):
 
     def _trim_caches(self):
         w = Worker(lambda: self.core.engine.trim_caches(self.core.target))
-        w.finished_ok.connect(lambda _: self.lbl_status.setText('Onbellegi temizlendi.'))
+        w.finished_ok.connect(lambda _: self.lbl_status.setText('Önbelleği temizlendi.'))
         self.window._run(w)
 
     def _install_apk(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'APK Sec', '', 'APK dosyalari (*.apk)')
+        path, _ = QFileDialog.getOpenFileName(self, 'APK Seç', '', 'APK dosyalari (*.apk)')
         if not path:
             return
         base = os.path.basename(path)
@@ -537,7 +537,7 @@ class RemoteTab(QWidget):
         QMessageBox.information(self, 'Tamam', 'APK kuruldu; uygulama listesi yenilendi.')
 
     def _install_apks(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, 'Split APK Sec (base + splitler)', '', 'APK (*.apk)')
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Split APK Seç (base + splitler)', '', 'APK (*.apk)')
         if not paths:
             return
         if QMessageBox.question(

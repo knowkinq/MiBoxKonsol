@@ -229,7 +229,7 @@ class HistoryTab(QWidget):
         if not self._records:
             QMessageBox.information(self, 'Aktar', 'Kayıt yok.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'CSV Kaydet', 'mibox-gecmis.csv', 'CSV (*.csv)')
+        path, _ = QFileDialog.getSaveFileName(self, 'CSV Kaydet', 'mibox-geçmiş.csv', 'CSV (*.csv)')
         if not path:
             return
         try:
@@ -265,7 +265,7 @@ class HistoryTab(QWidget):
     def _snap_take(self):
         w = SnapshotWorker(self.core.engine, self.core.target, 'take')
         w.finished_ok.connect(self._snap_taken)
-        self.window._run(w, desc='Gecmis: snapshot aliniyor')
+        self.window._run(w, desc='Geçmiş: snapshot aliniyor')
 
     def _snap_taken(self, res):
         self.refresh_snaps()
@@ -285,7 +285,7 @@ class HistoryTab(QWidget):
         w = Worker(do)
         w.job_name = 'Snapshot fark'
         w.finished_ok.connect(self._show_diff)
-        self.window._run(w, desc='Gecmis: snapshot farki hesaplaniyor')
+        self.window._run(w, desc='Geçmiş: snapshot farki hesaplaniyor')
 
     def _show_diff(self, diffs):
         if not diffs:
@@ -316,7 +316,7 @@ class HistoryTab(QWidget):
             _detail = '{} paket ({}).'.format(
                 _n, ', '.join('{}: {}'.format(k, v) for k, v in sorted(_cnt.items())))
         except Exception:
-            _detail = '(icerik okunamadi)'
+            _detail = '(içerik okunamadı)'
         if QMessageBox.question(
                 self, u'Onay — Snapshot Uygula',
                 u'{}\n{}\n\nCihaza uygulanacak. Devam edilsin mi?'.format(name, _detail),

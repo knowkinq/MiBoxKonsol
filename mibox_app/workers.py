@@ -68,7 +68,7 @@ class BaseWorker(QThread):
         """Uzun islerde faz gecislerinde cagir; iptal varsa firlatir."""
         try:
             if self.isInterruptionRequested():
-                raise CancelledError('kullanici durdurdu')
+                raise CancelledError('kullanıcı durdurdu')
         except CancelledError:
             raise
         except Exception:
@@ -94,7 +94,7 @@ class BaseWorker(QThread):
             except Exception:
                 pass
             try:
-                self.failed.emit('kullanici durdurdu')
+                self.failed.emit('kullanıcı durdurdu')
             except Exception:
                 pass
         except Exception as e:  # noqa: BLE001 - tek noktada yakala, standarda cevir
@@ -146,7 +146,7 @@ class AppScanWorker(BaseWorker):
         self._include_system = include_system
 
     def _work(self):
-        self.log.emit('Baglanti kontrol ediliyor...')
+        self.log.emit('Bağlantı kontrol ediliyor...')
         self._engine.connect(self._target)
         self.check_cancel()
         self.log.emit('Paketler listeleniyor...')
@@ -180,9 +180,9 @@ class AppScanWorker(BaseWorker):
         running = self._engine.parse_running_packages(running_raw, pkgs)
         restricted = self._engine.bulk_restricted(self._target)
         if restricted is None:
-            self.log.emit('Bulk okuma desteklenmiyor; tekil kontrol yapilacak (daha yavas).')
+            self.log.emit('Bulk okuma desteklenmiyor; tekil kontrol yapilacak (daha yavaş).')
         else:
-            self.log.emit('Bulk okuma tamam: {} kisitli uygulama bulundu.'.format(len(restricted)))
+            self.log.emit('Bulk okuma tamam: {} kısıtlı uygulama bulundu.'.format(len(restricted)))
 
         apps = []
         for i, pkg in enumerate(pkgs, 1):
@@ -220,7 +220,7 @@ class BulkActionWorker(BaseWorker):
 
     def __init__(self, engine, target, packages, restrict, protected):
         super().__init__()
-        self.job_name = 'Toplu kisitla/serbest'
+        self.job_name = 'Toplu kısıtla/serbest'
         self._engine = engine
         self._target = target
         self._packages = packages
@@ -241,7 +241,7 @@ class BulkActionWorker(BaseWorker):
                 # toplamlar tutsun diye skip'e de eklenir.
                 cancelled += 1
                 skip += 1
-                details.append((pkg, False, 'kullanici durdurdu'))
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 self.progress.emit(i, total)
                 continue
             self.progress.emit(i, total)
@@ -261,7 +261,7 @@ class BulkActionWorker(BaseWorker):
                 skip += 1
                 details.append((pkg, False, str(e)))
         if cancelled:
-            self.log.emit(u'⏹ {} paket islenmedi (kullanici durdurdu).'.format(cancelled))
+            self.log.emit(u'⏹ {} paket islenmedi (kullanıcı durdurdu).'.format(cancelled))
         self.finished_ok.emit({'ok': ok, 'skip': skip, 'details': details,
                                'cancelled': cancelled,
                                'action': 'restrict' if self._restrict else 'unrestrict'})
@@ -285,10 +285,10 @@ class PackageActionWorker(BaseWorker):
         try:
             from . import snapshot as snapmod
             name, count = snapmod.take(self._engine, self._target)
-            self.log.emit('Guvenlik snapshot alindi: {} ({} paket)'.format(name, count))
+            self.log.emit('Güvenlik snapshot alindi: {} ({} paket)'.format(name, count))
             return name
         except Exception as e:  # noqa: BLE001
-            self.log.emit('Guvenlik snapshot alinamadi: {}'.format(e))
+            self.log.emit('Güvenlik snapshot alinamadi: {}'.format(e))
             return None
 
     def _do(self, pkg):
@@ -315,16 +315,16 @@ class PackageActionWorker(BaseWorker):
         t = self._target
         if self._action == 'uninstall':
             if not e.is_uninstalled_for_user(t, pkg):
-                raise AdbError('Dogrulama basarisiz: {} hala kurulu gorunuyor.'.format(pkg))
+                raise AdbError('Doğrulama başarısız: {} hala kurulu gorunuyor.'.format(pkg))
         elif self._action == 'disable':
             if not e.is_disabled(t, pkg):
-                raise AdbError('Dogrulama basarisiz: {} hala aktif gorunuyor.'.format(pkg))
+                raise AdbError('Doğrulama başarısız: {} hala aktif gorunuyor.'.format(pkg))
         elif self._action == 'restore':
             if e.is_uninstalled_for_user(t, pkg):
-                raise AdbError('Dogrulama basarisiz: {} geri gelmedi.'.format(pkg))
+                raise AdbError('Doğrulama başarısız: {} geri gelmedi.'.format(pkg))
         elif self._action == 'enable':
             if e.is_disabled(t, pkg):
-                raise AdbError('Dogrulama basarisiz: {} hala devre disi.'.format(pkg))
+                raise AdbError('Doğrulama başarısız: {} hala devre dışı.'.format(pkg))
 
     def _work(self):
         self._engine.connect(self._target)
@@ -338,14 +338,14 @@ class PackageActionWorker(BaseWorker):
         total = len(self._packages)
         for i, pkg in enumerate(self._packages, 1):
             if self.isInterruptionRequested():
-                details.append((pkg, False, 'kullanici durdurdu'))
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 fail += 1
                 cancelled += 1
                 self.progress.emit(i, total)
                 continue
             self.progress.emit(i, total)
             if pkg in self._protected and self._action != 'stop':
-                self.log.emit('{} korumali; atlandi.'.format(pkg))
+                self.log.emit('{} korumali; atlandı.'.format(pkg))
                 fail += 1
                 details.append((pkg, False, 'koruma listesinde'))
                 continue
@@ -359,7 +359,7 @@ class PackageActionWorker(BaseWorker):
                 fail += 1
                 details.append((pkg, False, str(e)))
         if cancelled:
-            self.log.emit(u'⏹ {} paket islenmedi (kullanici durdurdu).'.format(cancelled))
+            self.log.emit(u'⏹ {} paket islenmedi (kullanıcı durdurdu).'.format(cancelled))
         try:
             from . import history as histmod
             histmod.append_many(self._target, self._action, details)
@@ -386,12 +386,12 @@ def format_action_result(res, name_of=None, max_items=60):
     details = res.get('details', [])
     action = res.get('action', '')
     labels = {
-        'uninstall': 'kaldirildi (user)', 'disable': 'devre disi birakildi',
+        'uninstall': 'kaldırıldı (user)', 'disable': 'devre dışı bırakıldı',
         'enable': 'aktif edildi', 'restore': 'geri yuklendi', 'clear': 'verisi temizlendi',
-        'stop': 'durduruldu', 'launch': 'acildi', 'smart': 'islem yapildi',
-        'stage': 'islem yapildi',
+        'stop': 'durduruldu', 'launch': 'acildi', 'smart': 'işlem yapildi',
+        'stage': 'işlem yapildi',
     }
-    verb = labels.get(action, action or 'islem yapildi')
+    verb = labels.get(action, action or 'işlem yapildi')
 
     def display(pkg):
         if name_of:
@@ -403,13 +403,13 @@ def format_action_result(res, name_of=None, max_items=60):
                 pass
         return str(pkg)
 
-    lines = ['{} basarili, {} basarisiz/atlandi.'.format(ok, fail)]
+    lines = ['{} başarılı, {} başarısız/atlandı.'.format(ok, fail)]
     if res.get('auto_snap'):
-        lines.append('Guvenlik snapshot: {}'.format(res['auto_snap']))
+        lines.append('Güvenlik snapshot: {}'.format(res['auto_snap']))
     good_rows = [(p, m) for p, good, m in details if good]
     bad_rows = [(p, m) for p, good, m in details if not good]
     if good_rows:
-        lines += ['', 'Yapilan islem ({}):'.format(verb)]
+        lines += ['', 'Yapilan işlem ({}):'.format(verb)]
         for pkg, msg in good_rows[:max_items]:
             extra = ''
             if action == 'smart' and msg:
@@ -419,14 +419,14 @@ def format_action_result(res, name_of=None, max_items=60):
             lines.append('… ve {} uygulama daha (tam liste Canli Log / dosya gunlugunde).'.format(
                 len(good_rows) - max_items))
     if bad_rows:
-        lines += ['', 'Basarisiz / atlanan:']
+        lines += ['', 'Başarısız / atlanan:']
         for pkg, msg in bad_rows[:max_items]:
             lines.append('X {}: {}'.format(display(pkg), msg))
         if len(bad_rows) > max_items:
             lines.append('… ve {} uygulama daha.'.format(len(bad_rows) - max_items))
     if action in ('uninstall', 'disable', 'smart', 'stage') and fail:
         lines += ['', 'Ipucu: bazi sistem paketleri Android tarafindan korunur; '
-                  '"Akilli Kaldir" once devre disi birakir, olmazsa kaldirir (UAD onerisi).']
+                  '"Akilli Kaldır" önce devre dışı birakir, olmazsa kaldirir (UAD onerisi).']
     return '\n'.join(lines)
 
 
@@ -435,7 +435,7 @@ class SmartRemoveWorker(BaseWorker):
 
     def __init__(self, engine, target, packages, protected, auto_snapshot=True):
         super().__init__()
-        self.job_name = 'Akilli kaldirma'
+        self.job_name = 'Akilli kaldırma'
         self._engine = engine
         self._target = target
         self._packages = packages
@@ -447,10 +447,10 @@ class SmartRemoveWorker(BaseWorker):
         try:
             from . import snapshot as snapmod
             name, count = snapmod.take(self._engine, self._target)
-            self.log.emit('Guvenlik snapshot alindi: {} ({} paket)'.format(name, count))
+            self.log.emit('Güvenlik snapshot alindi: {} ({} paket)'.format(name, count))
             return name
         except Exception as e:  # noqa: BLE001
-            self.log.emit('Guvenlik snapshot alinamadi: {}'.format(e))
+            self.log.emit('Güvenlik snapshot alinamadi: {}'.format(e))
             return None
 
     def _work(self):
@@ -465,31 +465,31 @@ class SmartRemoveWorker(BaseWorker):
         total = len(self._packages)
         for i, pkg in enumerate(self._packages, 1):
             if self.isInterruptionRequested():
-                details.append((pkg, False, 'kullanici durdurdu'))
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 fail += 1
                 cancelled += 1
                 self.progress.emit(i, total)
                 continue
             self.progress.emit(i, total)
             if pkg in self._protected:
-                self.log.emit('{} korumali; atlandi.'.format(pkg))
+                self.log.emit('{} korumali; atlandı.'.format(pkg))
                 fail += 1
                 details.append((pkg, False, 'koruma listesinde'))
                 continue
             try:
                 method, _r = self._engine.smart_remove(self._target, pkg)
                 if method == 'disable':
-                    msg = 'disable ile kapatildi (guvenli)'
+                    msg = 'disable ile kapatildi (güvenli)'
                 else:
-                    msg = 'uninstall ile kaldirildi'
+                    msg = 'uninstall ile kaldırıldı'
                 ok += 1
                 details.append((pkg, True, msg))
             except AdbError as e:
-                self.log.emit('{} akilli-kaldirma: {}'.format(pkg, e))
+                self.log.emit('{} akilli-kaldırma: {}'.format(pkg, e))
                 fail += 1
                 details.append((pkg, False, str(e)))
         if cancelled:
-            self.log.emit(u'⏹ {} paket islenmedi (kullanici durdurdu).'.format(cancelled))
+            self.log.emit(u'⏹ {} paket islenmedi (kullanıcı durdurdu).'.format(cancelled))
         try:
             from . import history as histmod
             histmod.append_many(self._target, 'smart', details)
@@ -544,7 +544,7 @@ class HealthWorker(BaseWorker):
 
     def __init__(self, engine, target):
         super().__init__()
-        self.job_name = 'Saglik olcumu'
+        self.job_name = 'Sağlık olcumu'
         self._engine = engine
         self._target = target
 
@@ -643,7 +643,7 @@ class ApkBackupWorker(BaseWorker):
             try:
                 paths = self._engine.pm_paths(self._target, pkg)
                 if not paths:
-                    self.log.emit('{}: APK yolu bulunamadi.'.format(pkg))
+                    self.log.emit('{}: APK yolu bulunamadı.'.format(pkg))
                     fail += 1
                     continue
                 if len(paths) == 1:
@@ -660,5 +660,5 @@ class ApkBackupWorker(BaseWorker):
                 self.log.emit('{}: {}'.format(pkg, e))
                 fail += 1
         if cancelled:
-            self.log.emit(u'⏹ {} paket yedeklenmedi (kullanici durdurdu).'.format(cancelled))
+            self.log.emit(u'⏹ {} paket yedeklenmedi (kullanıcı durdurdu).'.format(cancelled))
         self.finished_ok.emit({'ok': ok, 'fail': fail, 'cancelled': cancelled})

@@ -56,7 +56,7 @@ class Core(QObject):
                         self._engine_err = None
                     except AdbError as e:
                         self._engine_err = str(e)
-                        raise AdbError(self._engine_err or 'ADB hazir degil.')
+                        raise AdbError(self._engine_err or 'ADB hazır degil.')
         # trace baglantisi kopmussa onar
         try:
             if getattr(self._engine, 'trace_cb', None) is None:
@@ -97,4 +97,4 @@ class Core(QObject):
             pass
         self.connected = False
         self.connection_changed.emit(False, self.target)
-        self.log_msg('Baglanti kesildi: {}'.format(self.target))
+        self.log_msg('Bağlantı kesildi: {}'.format(self.target))

@@ -25,7 +25,7 @@ class SettingsTab(QWidget):
         # --- Gorunum ---
         g_theme = QGroupBox('Gorunum')
         tf = QFormLayout(g_theme)
-        self.chk_dark = QCheckBox('Koyu tema (kapatinca acik tema)')
+        self.chk_dark = QCheckBox('Koyu tema (kapatinca açık tema)')
         self.chk_dark.setChecked(self.core.config.dark_mode)
         self.chk_dark.toggled.connect(self._on_dark)
         tf.addRow(self.chk_dark)
@@ -45,7 +45,7 @@ class SettingsTab(QWidget):
         root.addWidget(g_gen)
 
         # --- Koruma listesi ---
-        g_prot = QGroupBox('Koruma Listesi (bu paketlere islem uygulanmaz)')
+        g_prot = QGroupBox('Koruma Listesi (bu paketlere işlem uygulanmaz)')
         gp = QVBoxLayout(g_prot)
         self.lst_protected = QListWidget()
         for p in self.core.config.protected:
@@ -57,7 +57,7 @@ class SettingsTab(QWidget):
         self.txt_prot.returnPressed.connect(self._add_protected)
         btn_add = QPushButton('Ekle')
         btn_add.clicked.connect(self._add_protected)
-        btn_rm = QPushButton('Kaldir')
+        btn_rm = QPushButton('Kaldır')
         btn_rm.clicked.connect(self._rm_protected)
         row.addWidget(self.txt_prot)
         row.addWidget(btn_add)
@@ -68,9 +68,9 @@ class SettingsTab(QWidget):
         # --- Yedek / geri yukleme ---
         g_bak = QGroupBox('Ayar Yedegi')
         bak = QHBoxLayout(g_bak)
-        self.btn_export_cfg = QPushButton('Ayarlari Disari Aktar')
+        self.btn_export_cfg = QPushButton('Ayarları Disari Aktar')
         self.btn_export_cfg.clicked.connect(self._export_cfg)
-        self.btn_import_cfg = QPushButton('Ayarlari Ice Aktar')
+        self.btn_import_cfg = QPushButton('Ayarları Ice Aktar')
         self.btn_import_cfg.clicked.connect(self._import_cfg)
         bak.addWidget(self.btn_export_cfg)
         bak.addWidget(self.btn_import_cfg)
@@ -80,7 +80,7 @@ class SettingsTab(QWidget):
         root.addStretch()
 
         # --- Kaydet ---
-        self.btn_save = QPushButton('Ayarlari Kaydet')
+        self.btn_save = QPushButton('Ayarları Kaydet')
         self.btn_save.setProperty('accent', True)
         self.btn_save.clicked.connect(self._save)
         root.addWidget(self.btn_save)
@@ -144,14 +144,14 @@ class SettingsTab(QWidget):
 
     def _import_cfg(self):
         import json
-        path, _ = QFileDialog.getOpenFileName(self, 'Ayar Yedegi Sec', '', 'JSON (*.json)')
+        path, _ = QFileDialog.getOpenFileName(self, 'Ayar Yedegi Seç', '', 'JSON (*.json)')
         if not path:
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                raise ValueError('Gecersiz yedek dosyasi.')
+                raise ValueError('Geçersiz yedek dosyası.')
             for k in ('protected', 'device_history'):
                 if k in data and isinstance(data[k], list):
                     setattr(self.core.config, k, [str(x) for x in data[k]])

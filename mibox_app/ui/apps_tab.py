@@ -53,6 +53,11 @@ DATA_RESTRICTED = 'Kisitli'
 DATA_FREE = 'Serbest'
 DATA_RUNNING = 'Evet'
 DEBLOAT_ALL_LABEL = 'Debloat: Tümü'
+# Durum sutununda GOSTERILEN metin (veri ASCII kalir; ceviri burada yapilir).
+DISPLAY_STATUS = {
+    DATA_RESTRICTED: 'Kısıtlı',
+    DATA_FREE: 'Serbest',
+}
 
 
 class AppsTab(QWidget):
@@ -93,8 +98,8 @@ class AppsTab(QWidget):
         self.cmb_status.setMinimumWidth(110)
         self.cmb_status.setToolTip(
             'Duruma gore filtrele — Tümü: hepsi, Kaldırılmış: user 0\'dan '
-            'kaldirilanlar (geri yuklenebilir), Çalışan: su an acik olanlar, '
-            'Sistem: ROM uygulamalari (tarama sistem paketlerini de kapsar)')
+            'kaldirilanlar (geri yuklenebilir), Çalışan: su an açık olanlar, '
+            'Sistem: ROM uygulamaları (tarama sistem paketlerini de kapsar)')
         self.cmb_status.currentIndexChanged.connect(self._on_status_combo)
         self._restore_status_from_config()
         self.cmb_debloat = QComboBox()
@@ -122,8 +127,8 @@ class AppsTab(QWidget):
         root.addLayout(row2)
 
         # --- Tablo (esnek, pencereyle buyur/kucuk) ---
-        self.grid = kit.make_table(7, ['Sec', 'Uygulama', 'Paket', 'Durum',
-                                       'Calisiyor', 'Debloat', 'Aktif'])
+        self.grid = kit.make_table(7, ['Seç', 'Uygulama', 'Paket', 'Durum',
+                                       'Çalışıyor', 'Debloat', 'Aktif'])
         hdr = self.grid.horizontalHeader()
         hdr.setSectionResizeMode(COL_PKG, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
@@ -148,14 +153,14 @@ class AppsTab(QWidget):
         # Sec basligi tiklanabilir: 3 durum (bos -> tumu -> ters) + sayac.
         # Ayri buton YOK: tek tik, tek Birak.
         flow1 = FlowLayout()
-        self.chk_inv = QPushButton('Ters Cevir')
+        self.chk_inv = QPushButton('Ters Çevir')
         self.chk_inv.clicked.connect(self._invert_all)
         self.lbl_sel = QLabel('')
         self.lbl_sel.setStyleSheet(kit.faint(kit.dark_from(self)))
-        self.btn_restrict = QPushButton('Kisitla')
+        self.btn_restrict = QPushButton('Kısıtla')
         self.btn_restrict.setProperty('danger', True)
         self.btn_restrict.clicked.connect(lambda: self._bulk_restrict(True))
-        self.btn_unrestrict = QPushButton('Serbest Birak')
+        self.btn_unrestrict = QPushButton('Serbest Bırak')
         self.btn_unrestrict.setProperty('accent', True)
         self.btn_unrestrict.clicked.connect(lambda: self._bulk_restrict(False))
         for b in (self.chk_inv, self.btn_restrict, self.btn_unrestrict):
@@ -169,16 +174,16 @@ class AppsTab(QWidget):
         self.btn_stop.clicked.connect(lambda: self._pkg_action('stop'))
         self.btn_clear = QPushButton('Veriyi Sil')
         self.btn_clear.clicked.connect(lambda: self._pkg_action('clear'))
-        self.btn_disable = QPushButton('Devre disi')
+        self.btn_disable = QPushButton('Devre dışı')
         self.btn_disable.clicked.connect(lambda: self._pkg_action('disable'))
         self.btn_enable = QPushButton('Aktif et')
         self.btn_enable.clicked.connect(lambda: self._pkg_action('enable'))
-        self.btn_uninstall = QPushButton('Kaldir (user)')
+        self.btn_uninstall = QPushButton('Kaldır (user)')
         self.btn_uninstall.setProperty('danger', True)
         self.btn_uninstall.clicked.connect(lambda: self._pkg_action('uninstall'))
-        self.btn_restore = QPushButton('Geri Yukle')
+        self.btn_restore = QPushButton('Geri Yükle')
         self.btn_restore.clicked.connect(lambda: self._pkg_action('restore'))
-        self.btn_launch = QPushButton('Ac')
+        self.btn_launch = QPushButton('Aç')
         self.btn_launch.clicked.connect(lambda: self._pkg_action('launch'))
         self.btn_apk = QPushButton('APK Yedekle')
         self.btn_apk.clicked.connect(self._backup_apk)
@@ -190,7 +195,7 @@ class AppsTab(QWidget):
         root.addLayout(flow2)
 
         # --- Ozet ---
-        self.lbl_summary = kit.status_label('Liste bos. "Yenile" ile baslayin.')
+        self.lbl_summary = kit.status_label('Liste boş. "Yenile" ile başlayın.')
         root.addWidget(self.lbl_summary)
 
     def _remote_tab(self):
@@ -248,7 +253,7 @@ class AppsTab(QWidget):
             if need_scan or not getattr(self, '_scanned_with_system', False):
                 try:
                     self.window.append_log(
-                        'Sistem filtresi: sistem uygulamalari da taranacak.', 'INFO')
+                        'Sistem filtresi: sistem uygulamaları da taranacak.', 'INFO')
                 except Exception:
                     pass
                 self.refresh()
@@ -277,7 +282,7 @@ class AppsTab(QWidget):
         try:
             engine = self.core.engine
         except Exception as e:
-            self.lbl_summary.setText('Tarama basarisiz: ' + str(e))
+            self.lbl_summary.setText('Tarama başarısız: ' + str(e))
             return
         self.lbl_summary.setText('Taraniyor...')
         # Tarama kapsami: 'Sistem' filtresi icin bu bayrak kullanilir.
@@ -304,7 +309,7 @@ class AppsTab(QWidget):
 
     def _on_scan_fail(self, err):
         self._set_busy(False)
-        self.lbl_summary.setText('Tarama basarisiz: ' + str(err))
+        self.lbl_summary.setText('Tarama başarısız: ' + str(err))
 
     def _on_presence(self, pkgs):
         self._presence = set(pkgs)
@@ -453,7 +458,7 @@ class AppsTab(QWidget):
                 f.setBold(True)
                 db.setFont(f)
                 bloat += 1
-            st = QTableWidgetItem(a['status'])
+            st = QTableWidgetItem(DISPLAY_STATUS.get(a['status'], a['status']))
             run = QTableWidgetItem(a['running'])
             removed_u0 = not a.get('installed_user0', True)
             disabled = removed_u0 or not a.get('enabled', True)
@@ -466,16 +471,16 @@ class AppsTab(QWidget):
                 f_en = en.font()
                 f_en.setBold(True)
                 en.setFont(f_en)
-                en.setToolTip('user 0 icin kaldirilmis; sag tik > Geri Yukle ile dondurulebilir')
+                en.setToolTip('user 0 için kaldırılmış; sağ tık > Geri Yükle ile döndürülebilir')
             elif not a.get('enabled', True):
                 en.setForeground(QBrush(QColor(pal['warning'])))
             prot = self.core.config.is_protected(a['package'])
             if prot:
                 for it in (name, pkg, db, st, run, en):
                     it.setForeground(QBrush(QColor(pal['warning'])))
-                name.setToolTip('Koruma listesinde (islem icin secilemez)')
-                chk.setToolTip('Koruma listesinde (islem icin secilemez)')
-            if a['status'] == 'Kisitli':
+                name.setToolTip('Koruma listesinde (işlem için secilemez)')
+                chk.setToolTip('Koruma listesinde (işlem için secilemez)')
+            if a['status'] == DATA_RESTRICTED:
                 st.setForeground(QBrush(QColor(pal['danger'])))
                 f = st.font()
                 f.setBold(True)
@@ -491,8 +496,8 @@ class AppsTab(QWidget):
                     fnt.setStrikeOut(True)
                     it.setFont(fnt)
                     it.setForeground(QBrush(QColor(pal['faint'])))
-                name.setToolTip('Kaldirilmis: {} — sag tik > Geri Yukle ile dondurulebilir'.format(
-                    a['package']) if removed_u0 else 'Devre disi: {}'.format(a['package']))
+                name.setToolTip('Kaldırılmış: {} — sağ tık > Geri Yükle ile döndürülebilir'.format(
+                    a['package']) if removed_u0 else 'Devre dışı: {}'.format(a['package']))
             for it in (name, pkg, db, st, run, en):
                 it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.grid.setItem(r, COL_CHECK, chk)
@@ -503,10 +508,10 @@ class AppsTab(QWidget):
             self.grid.setItem(r, COL_DEBLOAT, db)
             self.grid.setItem(r, COL_ENABLED, en)
         self.grid.blockSignals(False)
-        suffix = ('  |  ({} kaldirilmis gizli — "Kaldirilmis" secenegiyle goster)'.format(
+        suffix = ('  |  ({} kaldırılmış gizli — "Kaldırılmış" secenegiyle göster)'.format(
             removed_hidden) if removed_hidden else '')
         self.lbl_summary.setText(
-            'Gosterilen: {}  |  Serbest: {}  |  Kisitli: {}  |  Kaldirilmis: {}  |  Debloat DB de: {}{}'.format(
+            'Gösterilen: {}  |  Serbest: {}  |  Kısıtlı: {}  |  Kaldırılmış: {}  |  Debloat DB de: {}{}'.format(
                 self.grid.rowCount(), free, lim, removed, bloat, suffix))
         self._update_sel_count()
 
@@ -573,7 +578,7 @@ class AppsTab(QWidget):
         try:
             hdr_item = self.grid.horizontalHeaderItem(COL_CHECK)
             if hdr_item is not None:
-                hdr_item.setText('☑ Sec' if on else 'Sec')
+                hdr_item.setText('☑ Seç' if on else 'Seç')
         except RuntimeError:
             pass
 
@@ -597,7 +602,7 @@ class AppsTab(QWidget):
                        and _it.checkState() == Qt.Checked}
             selected = {ix.row() for ix in self.grid.selectedIndexes()}
             rows = checked or selected
-            self.lbl_sel.setText('Secili: {}/{}{}'.format(
+            self.lbl_sel.setText('Seçili: {}/{}{}'.format(
                 len(rows), self.grid.rowCount(),
                 ' (satir)' if selected and not checked else ''))
         except RuntimeError:
@@ -608,7 +613,7 @@ class AppsTab(QWidget):
         from .dialogs import confirm_action
         pkgs = self._selected_packages()
         if not pkgs:
-            QMessageBox.information(self, 'Secim', 'Once uygulamalari secin (satir secimi de olur).')
+            QMessageBox.information(self, 'Seçim', 'Önce uygulamaları seçin (satir secimi de olur).')
             return
         prot = [p for p in pkgs if self.core.config.is_protected(p)]
         if prot and len(prot) == len(pkgs):
@@ -627,7 +632,7 @@ class AppsTab(QWidget):
         try:
             self.window.set_last_action(
                 '{} uygulamaya {}: {} paket'.format(
-                    len(pkgs), 'Kisitla' if restrict else 'Serbest Birak',
+                    len(pkgs), 'Kısıtla' if restrict else 'Serbest Bırak',
                     ', '.join(pkgs[:3]) + ('…' if len(pkgs) > 3 else '')))
         except Exception:
             pass
@@ -636,7 +641,7 @@ class AppsTab(QWidget):
     def _on_bulk_done(self, res):
         if isinstance(res, dict):
             details = res.get('details', [])
-            lines = ['{} basarili, {} atlandi.'.format(res.get('ok', 0), res.get('skip', 0))]
+            lines = ['{} başarılı, {} atlandı.'.format(res.get('ok', 0), res.get('skip', 0))]
             for pkg, good, msg in details[:60]:
                 name = self.core.config.friendly_name(pkg)
                 disp = '{} ({})'.format(name, pkg) if name != pkg else pkg
@@ -650,13 +655,13 @@ class AppsTab(QWidget):
             except Exception:
                 ok, skip = res, '?'
             QMessageBox.information(self, 'Tamam',
-                                    '{} basarili, {} atlandi.'.format(ok, skip))
+                                    '{} başarılı, {} atlandı.'.format(ok, skip))
 
     def _pkg_action(self, action):
         from .dialogs import confirm_action
         pkgs = self._selected_packages()
         if not pkgs:
-            QMessageBox.information(self, 'Secim', 'Once uygulama secin.')
+            QMessageBox.information(self, 'Seçim', 'Önce uygulama seçin.')
             return
         prot = [p for p in pkgs if self.core.config.is_protected(p)]
         if prot and len(prot) == len(pkgs):
@@ -690,7 +695,7 @@ class AppsTab(QWidget):
     def _backup_apk(self):
         pkgs = self._selected_packages()
         if not pkgs:
-            QMessageBox.information(self, 'Secim', 'Once APK yedeklenecek uygulamalari secin.')
+            QMessageBox.information(self, 'Seçim', 'Önce APK yedeklenecek uygulamaları seçin.')
             return
         import os
         os.makedirs(APK_DIR, exist_ok=True)
@@ -702,12 +707,12 @@ class AppsTab(QWidget):
     def _on_backup_done(self, res):
         QMessageBox.information(
             self, 'Tamam',
-            '{} APK yedeklendi, {} basarisiz.\nKlasor: {}'.format(
+            '{} APK yedeklendi, {} başarısız.\nKlasor: {}'.format(
                 res.get('ok', 0), res.get('fail', 0), APK_DIR))
 
     def _export_csv(self):
         if not self._apps:
-            QMessageBox.information(self, 'Aktar', 'Once listeyi yenileyin.')
+            QMessageBox.information(self, 'Aktar', 'Önce listeyi yenileyin.')
             return
         path, _ = QFileDialog.getSaveFileName(self, 'CSV Kaydet', 'mibox-uygulamalar.csv',
                                               'CSV (*.csv)')
@@ -716,12 +721,12 @@ class AppsTab(QWidget):
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
-                w.writerow(['Ad', 'Paket', 'Durum', 'Calisiyor', 'Debloat', 'Aktif'])
+                w.writerow(['Ad', 'Paket', 'Durum', 'Çalışıyor', 'Debloat', 'Aktif'])
                 for row in range(self.grid.rowCount()):
                     w.writerow([self.grid.item(row, c).text() if self.grid.item(row, c) else ''
                                 for c in (COL_NAME, COL_PKG, COL_STATUS, COL_RUNNING,
                                           COL_DEBLOAT, COL_ENABLED)])
-            QMessageBox.information(self, 'Tamam', 'Aktarildi:\n' + path)
+            QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:
             QMessageBox.critical(self, 'Hata', str(e))
 
@@ -738,7 +743,7 @@ class AppsTab(QWidget):
         lay = QVBoxLayout(dlg)
         txt = QTextEdit()
         txt.setReadOnly(True)
-        txt.setPlainText('Yukleniyor...')
+        txt.setPlainText('Yükleniyor...')
         lay.addWidget(txt)
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         btns.rejected.connect(dlg.reject)
@@ -760,7 +765,7 @@ class AppsTab(QWidget):
             size_txt = ('{:.1f} MB'.format(size_kb / 1024) if size_kb else 'olcumulemedi')
             txt.setPlainText(
                 'Paket: {}\nAd: {}\nSurum: {} ({})\nKurucu: {}\n'
-                'Ilk kurulum: {}\nSon guncelleme: {}\nAktif: {}\nVeri boyutu: {}\n'
+                'İlk kurulum: {}\nSon güncelleme: {}\nAktif: {}\nVeri boyutu: {}\n'
                 'APK yolu: {}\nVeri klasoru: {}\n'.format(
                     d['package'], self.core.config.friendly_name(pkg),
                     d['versionName'], d['versionCode'], d['installer'],
@@ -809,23 +814,23 @@ class AppsTab(QWidget):
         if en_cell and en_cell.text() == 'Kaldirilmis':
             removed = True
         if removed:
-            act = menu.addAction('Geri Yukle (onerilen)')
+            act = menu.addAction('Geri Yükle (önerilen)')
             f = act.font()
             f.setBold(True)
             act.setFont(f)
             act.triggered.connect(lambda: self._pkg_action_single('restore', p))
             menu.addSeparator()
-        menu.addAction('Kisitla', lambda: self._ctx_action([p], 'restrict'))
-        menu.addAction('Serbest Birak', lambda: self._ctx_action([p], 'unrestrict'))
+        menu.addAction('Kısıtla', lambda: self._ctx_action([p], 'restrict'))
+        menu.addAction('Serbest Bırak', lambda: self._ctx_action([p], 'unrestrict'))
         menu.addSeparator()
         menu.addAction('Detay', lambda: self._show_detail(p))
-        menu.addAction('Ac', lambda: self._pkg_action_single('launch', p))
+        menu.addAction('Aç', lambda: self._pkg_action_single('launch', p))
         menu.addAction('Force Stop', lambda: self._pkg_action_single('stop', p))
         menu.addAction('Veriyi Sil', lambda: self._pkg_action_single('clear', p))
-        menu.addAction('Devre disi birak', lambda: self._pkg_action_single('disable', p))
+        menu.addAction('Devre dışı bırak', lambda: self._pkg_action_single('disable', p))
         menu.addAction('Aktif et', lambda: self._pkg_action_single('enable', p))
-        menu.addAction('Kaldir (user)', lambda: self._pkg_action_single('uninstall', p))
-        menu.addAction('Geri Yukle', lambda: self._pkg_action_single('restore', p))
+        menu.addAction('Kaldır (user)', lambda: self._pkg_action_single('uninstall', p))
+        menu.addAction('Geri Yükle', lambda: self._pkg_action_single('restore', p))
         menu.addAction('APK Yedekle', lambda: self._backup_apk())
         menu.addAction('Favorilere Ekle (Debloat)', lambda: self._add_favorite(p))
         menu.exec(self.grid.viewport().mapToGlobal(pos))
@@ -835,7 +840,7 @@ class AppsTab(QWidget):
         # cihazdan gelen ad; yoksa paket (bilinen-liste yok)
         name = next((a.get('name', '') for a in self._apps
                      if a['package'] == pkg), '') or pkg
-        if add_user_entry(pkg, name, 'Kullanici favorisi'):
+        if add_user_entry(pkg, name, 'Kullanıcı favorisi'):
             QMessageBox.information(self, 'Favori', pkg + ' favorilere eklendi.')
             try:
                 self.window.tab_debloat.reload()

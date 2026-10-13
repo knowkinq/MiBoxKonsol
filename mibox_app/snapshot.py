@@ -176,7 +176,7 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
                 pass
         try:
             if is_cancelled is not None and is_cancelled():
-                details.append((pkg, False, 'kullanici durdurdu'))
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 fail += 1
                 continue
         except Exception:

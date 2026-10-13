@@ -112,7 +112,7 @@ class HealthTab(QWidget):
             self.core.config.auto_maint = False
         self.chk_maint.toggled.connect(self._maint_toggle)
         self.btn_maint_now = QPushButton('Şimdi Çalıştır')
-        self.btn_maint_now.setToolTip('Otomatik bakimi hemen calistir')
+        self.btn_maint_now.setToolTip('Otomatik bakimi hemen çalıştır')
         self.btn_maint_now.clicked.connect(self._maint_now)
         kit.fit_buttons(self.btn_maint_now)
         mrow = QHBoxLayout()
@@ -182,9 +182,9 @@ class HealthTab(QWidget):
         self.btn_autorun_restrict.setProperty('accent', True)
         self.btn_autorun_restrict.clicked.connect(self._autorun_restrict)
         kit.fit_buttons(self.btn_autorun_restrict)
-        self.btn_auto_all = QPushButton('Tumunu Sec')
+        self.btn_auto_all = QPushButton('Tümünü Seç')
         self.btn_auto_all.clicked.connect(lambda: self._auto_toggle_all(True))
-        self.btn_auto_none = QPushButton('Secimi Birak')
+        self.btn_auto_none = QPushButton('Seçimi Bırak')
         self.btn_auto_none.clicked.connect(lambda: self._auto_toggle_all(False))
         self.lbl_auto_sel = QLabel('')
         self.lbl_auto_sel.setStyleSheet(kit.faint(kit.dark_from(self)))
@@ -227,7 +227,7 @@ class HealthTab(QWidget):
     def refresh(self):
         w = HealthWorker(self.core.engine, self.core.target)
         w.finished_ok.connect(self._show)
-        self.window._run(w, desc='Saglik Yenile: depolama/RAM/paket olculuyor')
+        self.window._run(w, desc='Sağlık Yenile: depolama/RAM/paket olculuyor')
 
     def _show(self, h):
         if 'disk_pct' in h:
@@ -252,10 +252,10 @@ class HealthTab(QWidget):
 
     def _trim(self):
         w = Worker(lambda: self.core.engine.trim_caches(self.core.target))
-        w.job_name = 'Onbellek temizleme'
+        w.job_name = 'Önbellek temizleme'
         w.finished_ok.connect(lambda _: (self.lbl_clean.setText('Önbellek temizlendi.'),
                                          self.refresh()))
-        self.window._run(w, desc='Saglik: onbellek temizleniyor')
+        self.window._run(w, desc='Sağlık: önbellek temizleniyor')
 
     def _storage_top(self):
         def do():
@@ -263,7 +263,7 @@ class HealthTab(QWidget):
         w = Worker(do)
         w.job_name = 'Depolama Top-N'
         w.finished_ok.connect(self._show_top)
-        self.window._run(w, desc='Saglik: depolama Top-N hesaplaniyor')
+        self.window._run(w, desc='Sağlık: depolama Top-N hesaplaniyor')
 
     def _show_top(self, items):
         from PySide6.QtWidgets import QTableWidgetItem as _TWI
@@ -291,9 +291,9 @@ class HealthTab(QWidget):
         def do():
             return self.core.engine.app_permissions(self.core.target, pkg)
         w = Worker(do)
-        w.job_name = 'Izin okuma'
+        w.job_name = 'İzin okuma'
         w.finished_ok.connect(lambda res, p=pkg: self._render_perms(p, res))
-        self.window._run(w, desc='Saglik: izinler okunuyor: ' + pkg)
+        self.window._run(w, desc='Sağlık: izinler okunuyor: ' + pkg)
 
     def _autorun_scan(self):
         def do():
@@ -302,7 +302,7 @@ class HealthTab(QWidget):
         w = Worker(do)
         w.job_name = 'Otomatik baslayan tarama'
         w.finished_ok.connect(self._show_autorun)
-        self.window._run(w, desc='Saglik: otomatik baslayanlar taraniyor')
+        self.window._run(w, desc='Sağlık: otomatik baslayanlar taraniyor')
 
     def _show_autorun(self, found):
         from PySide6.QtWidgets import QTableWidgetItem as _TWI3
@@ -347,7 +347,7 @@ class HealthTab(QWidget):
                     for _it in [self.grid_auto.item(row, 1)]
                     if _it is not None and (_it.flags() & _Qt.ItemIsUserCheckable)
                     and _it.checkState() == _Qt.Checked)
-            self.lbl_auto_sel.setText('Secili: {}/{}'.format(n, self.grid_auto.rowCount()))
+            self.lbl_auto_sel.setText('Seçili: {}/{}'.format(n, self.grid_auto.rowCount()))
         except (RuntimeError, AttributeError):
             pass
 
@@ -384,7 +384,7 @@ class HealthTab(QWidget):
                              self.core.config.protected)
         w.finished_ok.connect(lambda res: QMessageBox.information(
             self, 'Tamam', '{} başarılı, {} atlandı.'.format(res.get('ok', 0), res.get('skip', 0))))
-        self.window._run(w, desc='Saglik: {} paket kisitlaniyor'.format(len(pkgs)))
+        self.window._run(w, desc='Sağlık: {} paket kısıtlanıyor'.format(len(pkgs)))
 
     def _maint_toggle(self, on):
         self.core.config.auto_maint = bool(on)
@@ -401,7 +401,7 @@ class HealthTab(QWidget):
         w = Worker(do)
         w.job_name = 'Otomatik bakim'
         w.finished_ok.connect(self._maint_done)
-        self.window._run(w, desc='Saglik: otomatik bakim calisiyor')
+        self.window._run(w, desc='Sağlık: otomatik bakim çalışıyor')
 
     def _maint_done(self, h):
         self._show(h)
@@ -461,7 +461,7 @@ class HealthTab(QWidget):
                 self.lbl_clean.setText('Temizlenecek güvenli paket bulunamadı.')
                 return
             from .dialogs import confirm_action
-            extra = 'Veri temizlenir' + (' + devre disi birakilir.'
+            extra = 'Veri temizlenir' + (' + devre dışı birakilir.'
                                          if self.chk_disable_too.isChecked() else '.')
             if not confirm_action(self, 'clear', cands,
                                   self.core.config.friendly_name, extra):
@@ -473,9 +473,9 @@ class HealthTab(QWidget):
             self._run_next_clean()
 
         w = Worker(do)
-        w.job_name = 'Guvenli temizlik adaylari'
+        w.job_name = 'Güvenli temizlik adaylari'
         w.finished_ok.connect(start)
-        self.window._run(w, desc='Saglik: temizlik adaylari araniyor')
+        self.window._run(w, desc='Sağlık: temizlik adaylari araniyor')
 
     def _run_next_clean(self):
         if not self._clean_queue:

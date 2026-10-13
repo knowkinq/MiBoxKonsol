@@ -207,9 +207,9 @@ class FilesTab(QWidget):
                                         self._cwd.rstrip('/') + '/' + name.strip())
             return name.strip()
         w = Worker(do)
-        w.job_name = 'Klasor olusturma'
+        w.job_name = 'Klasör olusturma'
         w.finished_ok.connect(lambda _: self.refresh())
-        self.window._run(w, desc='Dosyalar: klasor aciliyor: ' + name.strip())
+        self.window._run(w, desc='Dosyalar: klasör aciliyor: ' + name.strip())
 
     def _delete(self):
         e = self._selected()

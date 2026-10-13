@@ -87,7 +87,7 @@ DEFAULT_FRIENDLY = {
     'com.android.providers.contacts': 'Kiysiler Provider',
     'com.android.providers.settings': 'Ayarlar Provider',
     'com.android.providers.telephony': 'Telephony Provider',
-    'com.google.android.providers.userdictionary': 'Kullanici Sozluk',
+    'com.google.android.providers.userdictionary': 'Kullanıcı Sözlük',
     'com.android.chrome': 'Chrome',
     'com.google.android.apps.tachyon': 'Google Cast',
     'com.google.android.apps.photos.tv': 'Photos TV',

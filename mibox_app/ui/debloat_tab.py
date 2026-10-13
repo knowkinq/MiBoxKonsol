@@ -97,7 +97,7 @@ class DebloatTab(QWidget):
         urow = QHBoxLayout()
         urow.setSpacing(4)
         self.cmb_user = QComboBox()
-        self.cmb_user.setToolTip('Islem uygulanacak Android kullanicisi (UAD multi-user)')
+        self.cmb_user.setToolTip('İşlem uygulanacak Android kullanicisi (UAD multi-user)')
         self.cmb_user.addItem('Kullanıcı: Owner (0)', 0)
         self.cmb_user.currentIndexChanged.connect(self._user_changed)
         self.btn_users = QPushButton('Kullanıcıları Tara')
@@ -115,7 +115,7 @@ class DebloatTab(QWidget):
         root.addLayout(urow)
 
         self.lbl_hint = QLabel(
-            'Ipuclu: "Cihazda Var" sutunu paketin cihazda kurulu olup olmadigini gosterir. '
+            'İpucu: "Cihazda Var" sutunu paketin cihazda kurulu olup olmadigini gosterir. '
             '"Dokunma" kategorisindeki kritik paketler secilemez.')
         self.lbl_hint.setWordWrap(True)
         self.lbl_hint.setStyleSheet(kit.muted(kit.dark_from(self)))
@@ -142,7 +142,7 @@ class DebloatTab(QWidget):
         self._show_profile_desc()
 
         self.grid = kit.make_table(
-            7, ['Sec', 'Uygulama', 'Paket', 'Aciklama', 'Cihazda', 'Durum', 'UAD'])
+            7, ['Seç', 'Uygulama', 'Paket', 'Açıklama', 'Cihazda', 'Durum', 'UAD'])
         hdr = self.grid.horizontalHeader()
         hdr.setSectionResizeMode(COL_PKG, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_DESC, QHeaderView.Stretch)
@@ -156,24 +156,24 @@ class DebloatTab(QWidget):
         root.addWidget(self.grid, 1)
 
         flow1 = FlowLayout()
-        self.chk_all = QPushButton('Tumu Sec')
+        self.chk_all = QPushButton('Tümü Seç')
         self.chk_all.clicked.connect(lambda: self._toggle_all(True))
-        self.chk_none = QPushButton('Secimi Kaldir')
+        self.chk_none = QPushButton('Seçimi Kaldır')
         self.chk_none.clicked.connect(lambda: self._toggle_all(False))
-        self.chk_inv = QPushButton('Ters Cevir')
+        self.chk_inv = QPushButton('Ters Çevir')
         self.chk_inv.clicked.connect(self._invert_all)
         self.lbl_sel = QLabel('')
         self.lbl_sel.setStyleSheet(kit.faint(kit.dark_from(self)))
-        self.btn_smart = QPushButton('Akilli Kaldir')
+        self.btn_smart = QPushButton('Akilli Kaldır')
         self.btn_smart.setProperty('accent', True)
-        self.btn_smart.setToolTip('Once devre disi birakir, olmazsa kaldirir (UAD yontemi)')
+        self.btn_smart.setToolTip('Önce devre dışı birakir, olmazsa kaldirir (UAD yontemi)')
         self.btn_smart.clicked.connect(lambda: self._bulk('smart'))
-        self.btn_remove = QPushButton('Kaldir (user)')
+        self.btn_remove = QPushButton('Kaldır (user)')
         self.btn_remove.setProperty('danger', True)
         self.btn_remove.clicked.connect(lambda: self._bulk('uninstall'))
-        self.btn_disable = QPushButton('Devre disi')
+        self.btn_disable = QPushButton('Devre dışı')
         self.btn_disable.clicked.connect(lambda: self._bulk('disable'))
-        self.btn_restore = QPushButton('Geri Yukle')
+        self.btn_restore = QPushButton('Geri Yükle')
         self.btn_restore.setProperty('accent', True)
         self.btn_restore.clicked.connect(lambda: self._bulk('restore'))
         self.btn_scan = QPushButton('Varligi Tara')
@@ -265,7 +265,7 @@ class DebloatTab(QWidget):
             clean = [p for p in clean if p in self._present]
             if missing:
                 self.window.append_log(
-                    'Profil: {} paket cihazda yok, atlandi: {}'.format(
+                    'Profil: {} paket cihazda yok, atlandı: {}'.format(
                         len(missing), ', '.join(missing[:8])), 'WARN')
         if not clean:
             QMessageBox.warning(self, 'Profil', 'Uygulanabilir paket yok (tümü yasaklı veya cihazda yok).')
@@ -372,7 +372,7 @@ class DebloatTab(QWidget):
                 self.chk_installed.blockSignals(True)
                 self.chk_installed.setChecked(True)
                 self.chk_installed.setEnabled(False)
-                self.chk_installed.setToolTip('Yalnizca-cihaz modu: hep acik')
+                self.chk_installed.setToolTip('Yalnızca-cihaz modu: hep açık')
                 self.chk_installed.blockSignals(False)
         except Exception:
             pass
@@ -392,7 +392,7 @@ class DebloatTab(QWidget):
             chk = QTableWidgetItem()
             if critical:
                 chk.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                chk.setToolTip('Kritik sistem paketi: islem icin secilemez')
+                chk.setToolTip('Kritik sistem paketi: işlem için secilemez')
             else:
                 chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk.setCheckState(Qt.Unchecked)
@@ -416,7 +416,7 @@ class DebloatTab(QWidget):
             if pkg in self._uninstalled or (self._presence_known and pkg not in self._present):
                 state_txt, state_color = 'Kaldirilmis', pal['accent']
             elif pkg in self._disabled:
-                state_txt, state_color = 'Devre disi', pal['warning']
+                state_txt, state_color = 'Devre dışı', pal['warning']
             elif present:
                 state_txt, state_color = 'Kurulu', pal['success']
             else:
@@ -443,7 +443,7 @@ class DebloatTab(QWidget):
             uad_cell = QTableWidgetItem(uad_txt)
             uad_cell.setForeground(QBrush(QColor(rem_pal.get(removal, REMOVAL_COLOR.get(removal, pal['faint'])))))
             if deps:
-                uad_cell.setToolTip('BUNA IHTIAC DUYANLAR: {}\n(Kaldirinca bunlar bozulabilir)'.format(
+                uad_cell.setToolTip('BUNA IHTIAC DUYANLAR: {}\n(Kaldırınca bunlar bozulabilir)'.format(
                     ', '.join(deps)))
             uad_cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             for it in (nm, pk, ds, pr, st):
@@ -531,7 +531,7 @@ class DebloatTab(QWidget):
                        and _it.checkState() == Qt.Checked}
             selected = {ix.row() for ix in self.grid.selectedIndexes()}
             rows = checked or selected
-            self.lbl_sel.setText('Secili: {}/{}{}'.format(
+            self.lbl_sel.setText('Seçili: {}/{}{}'.format(
                 len(rows), self.grid.rowCount(),
                 ' (satir)' if selected and not checked else ''))
         except RuntimeError:
@@ -555,7 +555,7 @@ class DebloatTab(QWidget):
         from .dialogs import confirm_action, ACTION_TR
         pkgs = self._selected_packages()
         if not pkgs:
-            QMessageBox.information(self, 'Secim', 'Once paketleri secin.')
+            QMessageBox.information(self, 'Seçim', 'Önce paketleri seçin.')
             return
         name_of = lambda p: self._debloat_name(p)
         label = ACTION_TR.get(action, action)
@@ -576,8 +576,8 @@ class DebloatTab(QWidget):
         # Risk politikasi (UAD onerisi): riskli kategoride uninstall YASAK,
         # yerine disable-oncelikli smart uygulanir.
         if cat == 'riskli' and action == 'uninstall':
-            extra = ('RISKL kategori: Guvenlik politikasi geregi Kaldir yerine '
-                     'once Devre disi denenir (Akilli Kaldir).')
+            extra = ('RISKL kategori: Güvenlik politikasi geregi Kaldır yerine '
+                     'önce Devre dışı denenir (Akilli Kaldır).')
             if not confirm_action(self, 'smart', pkgs, name_of, extra):
                 return
             self._smart_remove(pkgs)
@@ -618,7 +618,7 @@ class DebloatTab(QWidget):
 
     def _on_done_smart(self, res):
         from ..workers import format_action_result
-        QMessageBox.information(self, 'Akilli Kaldirma',
+        QMessageBox.information(self, 'Akilli Kaldırma',
                                 format_action_result(res, self._debloat_name))
 
     def _on_done(self, res):
@@ -744,7 +744,7 @@ class DebloatTab(QWidget):
         self._reload()
         n_shown = self.grid.rowCount()
         self.lbl_summary.setText(
-            'Cihazda {} paket kurulu, {} devre disi — {} listeleniyor (yalnızca cihaz).'.format(
+            'Cihazda {} paket kurulu, {} devre dışı — {} listeleniyor (yalnızca cihaz).'.format(
                 len(self._present), len(self._disabled), n_shown))
 
     def set_present(self, pkgs):
@@ -777,18 +777,18 @@ class DebloatTab(QWidget):
         name, ok2 = QInputDialog.getText(self, 'Favori Ekle', 'Dost ad (opsiyonel):')
         if not ok2:
             return
-        if add_user_entry(pkg, name.strip() or pkg, 'Kullanici favorisi'):
+        if add_user_entry(pkg, name.strip() or pkg, 'Kullanıcı favorisi'):
             self.reload()
         else:
             QMessageBox.information(self, 'Favori', 'Bu paket zaten listede.')
 
     def _remove_favorite_selected(self):
         if self.cmb_cat.currentData() != 'favoriler':
-            QMessageBox.information(self, 'Favori', 'Once "Favoriler" kategorisini secin.')
+            QMessageBox.information(self, 'Favori', 'Önce "Favoriler" kategorisini seçin.')
             return
         pkgs = self._selected_packages()
         if not pkgs:
-            QMessageBox.information(self, 'Secim', 'Once paket secin.')
+            QMessageBox.information(self, 'Seçim', 'Önce paket seçin.')
             return
         for p in pkgs:
             remove_user_entry(p)
@@ -801,10 +801,10 @@ class DebloatTab(QWidget):
         try:
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
-                w.writerow(['Ad', 'Paket', 'Aciklama', 'Cihazda'])
+                w.writerow(['Ad', 'Paket', 'Açıklama', 'Cihazda'])
                 for row in range(self.grid.rowCount()):
                     w.writerow([self.grid.item(row, c).text() if self.grid.item(row, c) else ''
                                 for c in (COL_NAME, COL_PKG, COL_DESC, COL_PRESENT)])
-            QMessageBox.information(self, 'Tamam', 'Aktarildi:\n' + path)
+            QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:
             QMessageBox.critical(self, 'Hata', str(e))

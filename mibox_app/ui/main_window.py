@@ -196,25 +196,25 @@ class MainWindow(QMainWindow):
         self.lbl_conn_dot = QLabel('●')
         self.lbl_conn_dot.setStyleSheet(
             'color: {}; font-size: 14pt;'.format(colors_for(self.core.config.dark_mode)['danger']))
-        self.lbl_conn_dot.setToolTip('Baglanti durumu')
+        self.lbl_conn_dot.setToolTip('Bağlantı durumu')
         self.txt_target = QLineEdit(self.core.target or '')
         self.txt_target.setPlaceholderText('IP:PORT  ornek: 192.0.2.1:5555')
         self.txt_target.setMinimumWidth(170)
         self.txt_target.setMaximumWidth(220)
-        self.btn_connect = QPushButton('Baglan')
+        self.btn_connect = QPushButton('Bağlan')
         self.btn_connect.setProperty('accent', True)
         self.btn_disconnect = QPushButton('Kopar')
         self.btn_disconnect.setProperty('danger', True)
         self.btn_disconnect.setEnabled(False)
-        self.lbl_status = QLabel('Bagli degil')
+        self.lbl_status = QLabel('Bağlı degil')
         self.lbl_status.setStyleSheet(conn_style(self.core.config.dark_mode, False))
         self.cmb_devices = QComboBox()
         self.cmb_devices.setPlaceholderText('Cihaz')
-        self.cmb_devices.setToolTip('Bagli cihazlar (adb devices)')
+        self.cmb_devices.setToolTip('Bağlı cihazlar (adb devices)')
         self.cmb_devices.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.cmb_history = QComboBox()
-        self.cmb_history.setPlaceholderText('Gecmis')
-        self.cmb_history.setToolTip('Gecmis hedefler')
+        self.cmb_history.setPlaceholderText('Geçmiş')
+        self.cmb_history.setToolTip('Geçmiş hedefler')
         self.cmb_history.setEditable(False)
         self.cmb_history.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         conn_layout.addWidget(self.lbl_conn_dot)
@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.lbl_status)
         conn_layout.addWidget(QLabel('Cihaz:'))
         conn_layout.addWidget(self.cmb_devices, 1)
-        conn_layout.addWidget(QLabel('Gecmis:'))
+        conn_layout.addWidget(QLabel('Geçmiş:'))
         conn_layout.addWidget(self.cmb_history, 1)
         root.addWidget(conn)
 
@@ -276,7 +276,7 @@ class MainWindow(QMainWindow):
         self.btn_save_log = QPushButton('Kaydet')
         self.btn_save_log.setProperty('flat', True)
         self.btn_save_log.setMaximumWidth(90)
-        self.btn_hide_log = QPushButton('Goster')
+        self.btn_hide_log = QPushButton('Göster')
         self.btn_hide_log.setProperty('flat', True)
         self.btn_hide_log.setMaximumWidth(70)
         self.btn_hide_log.setCheckable(True)
@@ -290,8 +290,8 @@ class MainWindow(QMainWindow):
         self.chk_err.setChecked(True)
         self.chk_adb = QCheckBox('ADB')
         self.chk_adb.setChecked(True)
-        self.chk_adb.setToolTip('Her calistirilan ADB komutunu goster (suruculu, sureli)')
-        self.chk_verbose = QCheckBox('Ayrinti')
+        self.chk_adb.setToolTip('Her calistirilan ADB komutunu göster (suruculu, sureli)')
+        self.chk_verbose = QCheckBox('Ayrıntı')
         self.chk_verbose.setChecked(False)
         self.chk_verbose.setToolTip('Yoklama satirlari (pidof negatif vb). Acinca gürültü artar.')
         self.chk_info.toggled.connect(lambda on: self._toggle_level('INFO', on))
@@ -323,7 +323,7 @@ class MainWindow(QMainWindow):
         try:
             self.btn_hide_log.blockSignals(True)
             self.btn_hide_log.setChecked(True)
-            self.btn_hide_log.setText('Goster')
+            self.btn_hide_log.setText('Göster')
             self.btn_hide_log.blockSignals(False)
         except Exception:
             pass
@@ -339,7 +339,7 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.btn_log_toggle)
         # --- Durdur: calisan arka plan islerini iptal et (Faz 3) ---
         self.btn_stop = QPushButton('Durdur')
-        self.btn_stop.setToolTip('Calisan arka plan islerini durdur')
+        self.btn_stop.setToolTip('Çalışan arka plan islerini durdur')
         self.btn_stop.setProperty('danger', True)
         self.btn_stop.setMaximumWidth(70)
         self.btn_stop.setEnabled(False)
@@ -349,17 +349,17 @@ class MainWindow(QMainWindow):
         # --- Status bar: solda SON KULLANICI ISLEMI, sagda sistem ---
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.lbl_last_action = QLabel('Hazir')
-        self.lbl_last_action.setToolTip('Kullanicinin yaptigi son islem')
+        self.lbl_last_action = QLabel('Hazır')
+        self.lbl_last_action.setToolTip('Kullanicinin yaptigi son işlem')
         self.status.addWidget(self.lbl_last_action, 1)
         self.lbl_clock = QLabel('')
         self.status.addPermanentWidget(self.lbl_clock)
-        self.lbl_adb = QLabel('ADB: ' + (self.core.adb_path or 'bulunamadi'))
+        self.lbl_adb = QLabel('ADB: ' + (self.core.adb_path or 'bulunamadı'))
         self.lbl_adb.setToolTip(self.core.adb_path or '')
         self.lbl_target = QLabel('Hedef: ' + (self.core.target or '-'))
         self.lbl_link = QLabel(u'● Çevrimdışı')
         self.lbl_link.setStyleSheet(conn_style(self.core.config.dark_mode, False))
-        self.status.showMessage('Hazir')
+        self.status.showMessage('Hazır')
         self.status.addPermanentWidget(self.lbl_adb)
         self.status.addPermanentWidget(self.lbl_target)
         self.status.addPermanentWidget(self.lbl_link)
@@ -377,9 +377,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(3000, self._watchdog)
         # append_log hem tamponu hem gunluk dosyasini besler; burada ikinci
         # kez _write_log_line cagrilmasi baslangic satirini duplike ediyordu.
-        self.append_log('{} v{} baslatildi.'.format(APP_NAME, __version__), 'INFO')
+        self.append_log('{} v{} başlatıldı.'.format(APP_NAME, __version__), 'INFO')
         if not self.core.adb_path:
-            QMessageBox.warning(self, 'ADB', self.core.engine_error or 'ADB bulunamadi.')
+            QMessageBox.warning(self, 'ADB', self.core.engine_error or 'ADB bulunamadı.')
         # NOT: acilis OTOMATIK BAGLANTI YOK (v8.3). Kullanici Baglan'a basar.
         # Hedef kutusu kayitli degerle dolar ama baglanti kurulmaz.
 
@@ -399,7 +399,7 @@ class MainWindow(QMainWindow):
         """Paneli ac/kapa (canli log kutusu tamami). hidden=True -> kapali."""
         try:
             self.log_box.setVisible(not hidden)
-            self.btn_hide_log.setText('Goster' if hidden else 'Gizle')
+            self.btn_hide_log.setText('Göster' if hidden else 'Gizle')
         except RuntimeError:
             pass
         # ust cubuktaki Log dugmesiyle senkron tut
@@ -415,7 +415,7 @@ class MainWindow(QMainWindow):
         """Baglanti cubugundaki Log dugmesi: acildiginda tam paneli goster."""
         try:
             self.log_box.setVisible(bool(show))
-            self.btn_hide_log.setText('Gizle' if show else 'Goster')
+            self.btn_hide_log.setText('Gizle' if show else 'Göster')
             self.btn_hide_log.blockSignals(True)
             self.btn_hide_log.setChecked(not show)
             self.btn_hide_log.blockSignals(False)
@@ -499,7 +499,7 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             pass
         try:
-            self.append_log(u'Kullanici: {}'.format(text), 'INFO')
+            self.append_log(u'Kullanıcı: {}'.format(text), 'INFO')
         except Exception:
             pass
 
@@ -516,7 +516,7 @@ class MainWindow(QMainWindow):
         try:
             ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             with open(path, 'a', encoding='utf-8') as f:
-                f.write('\n--- Canli log tamponsu ({} kayit) ---\n'.format(len(records)))
+                f.write('\n--- Canli log tamponsu ({} kayıt) ---\n'.format(len(records)))
                 for rec in records:
                     if len(rec) == 3:
                         rec_ts, msg, level = rec
@@ -528,7 +528,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Log', str(e))
             return
         self.status.showMessage('Log kaydedildi: ' + path, 8000)
-        self.append_log('Log dosyaya kaydedildi: {} ({} kayit)'.format(path, len(records)), 'INFO')
+        self.append_log('Log dosyaya kaydedildi: {} ({} kayıt)'.format(path, len(records)), 'INFO')
 
     def _connect_signals(self):
         self.btn_connect.clicked.connect(self.on_connect)
@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
             self.core.set_target(t)
             self.lbl_target.setText('Hedef: ' + t)
         elif t:
-            self.lbl_target.setText('Hedef: (gecersiz)')
+            self.lbl_target.setText('Hedef: (geçersiz)')
 
     def on_connect(self):
         t = self.txt_target.text().strip()
@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
         self.core.config.push_history(t)
         self.refresh_history_combo()
         self.btn_connect.setEnabled(False)
-        self.append_log('Baglanti deneniyor: ' + t, 'INFO')
+        self.append_log('Bağlantı deneniyor: ' + t, 'INFO')
         self._run(Worker(lambda: self.core.connect()),
                    on_ok=self._after_connect, on_fail=self._after_connect_fail)
 
@@ -571,7 +571,7 @@ class MainWindow(QMainWindow):
         """Baglanti sonrasi Uygulamalar sekmesini otomatik yenile (tek nokta)."""
         try:
             if getattr(self.tab_apps, '_busy', False):
-                self.append_log('Otomatik yenileme atlandi ({}, tarama suruyor).'.format(why), 'WARN')
+                self.append_log('Otomatik yenileme atlandı ({}, tarama suruyor).'.format(why), 'WARN')
                 return
             self.tabs.setCurrentWidget(self.tab_apps)
             self.tab_apps.refresh()
@@ -593,17 +593,17 @@ class MainWindow(QMainWindow):
 
     def _after_connect_fail(self, err):
         self.btn_connect.setEnabled(True)
-        self.append_log('Baglanti hatasi: ' + err, 'ERROR')
-        QMessageBox.critical(self, 'Baglanti', err)
+        self.append_log('Bağlantı hatasi: ' + err, 'ERROR')
+        QMessageBox.critical(self, 'Bağlantı', err)
 
     def on_disconnect(self):
         self._run(Worker(lambda: self.core.disconnect()),
-                  on_ok=lambda _: self.append_log('Baglanti kesildi.', 'INFO'),
+                  on_ok=lambda _: self.append_log('Bağlantı kesildi.', 'INFO'),
                   on_fail=self.append_log)
 
     def on_connection_changed(self, connected, target):
         self.btn_disconnect.setEnabled(connected)
-        self.lbl_status.setText('Bagli: ' + target if connected else 'Bagli degil')
+        self.lbl_status.setText('Bağlı: ' + target if connected else 'Bağlı degil')
         dark = self.core.config.dark_mode
         self.lbl_status.setStyleSheet(conn_style(dark, bool(connected)))
         self.lbl_target.setText('Hedef: ' + target)
@@ -683,7 +683,7 @@ class MainWindow(QMainWindow):
         cur = self.txt_target.text().strip()
         self.cmb_history.blockSignals(True)
         self.cmb_history.clear()
-        self.cmb_history.addItem('Gecmis...', '')
+        self.cmb_history.addItem('Geçmiş...', '')
         for h in self.core.config.device_history:
             self.cmb_history.addItem(h, h)
         if cur:
@@ -720,7 +720,7 @@ class MainWindow(QMainWindow):
             return
         self.cmb_devices.blockSignals(True)
         self.cmb_devices.clear()
-        self.cmb_devices.addItem('Sec...', '')
+        self.cmb_devices.addItem('Seç...', '')
         for d in devs:
             self.cmb_devices.addItem('{}  [{}]'.format(d['id'], d['state']), d['id'])
         if cur:
@@ -933,7 +933,7 @@ class MainWindow(QMainWindow):
             try:
                 worker.progress.connect(
                     lambda cur, total: self.status.showMessage(
-                        'Islem: {}/{}'.format(cur, total), 3000))
+                        'İşlem: {}/{}'.format(cur, total), 3000))
             except Exception:
                 pass
 

@@ -317,6 +317,11 @@ mibox_app/
     ayrimi + 7 durum filtresinin satir sayisi (17 iddia, offline)
   - `tests/faz9_dayaniklilik_test.py` - baglanti dayanikliligi: gecici/kalici
     hata ayrimi, bekci geri cekilmesi 15->30->60 sn (22 iddia, offline)
+  - `tests/faz10_dil_test.py` - dil tutarliligi bekcisi: etiketler diakritikli
+    ve ASCII-Turkce kalintisiz, veri anahtarlari ASCII (73 iddia, offline)
+- `python tools/diakritik.py` - dil kurali denetimi/duzeltmesi:
+  **etiket Turkce diakritikli, veri ASCII**. Kuru calistirma varsayilan;
+  karsilastirma satirlarini ve regex/raw string'leri atlar.
 - `dogrula.bat` - TEK TIK: yukaridaki uc adimi sirayla calistirir
   (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
 - `dogrula_exe.bat` - DONMUS exe dogrulamasi: `--version` ciktisi + `--selftest`

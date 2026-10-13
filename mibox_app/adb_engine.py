@@ -150,9 +150,10 @@ def home_pkg_of(activity):
 # (logda: 'adb connect ... 8024ms HATA: zaman asimi'). Bu durumda tekrar
 # denemek anlamlidir; kalici hatalarda (yetki yok, adb yok) degildir.
 _TRANSIENT_CONNECT_RE = re.compile(
-    r'zaman asimi|timeout|timed out|could not|can\'t connect|cannot connect|'
-    r'unable to connect|failed to connect|no route|connection refused|'
-    r'reset by peer|protocol fault|device offline',
+    # 'zaman asimi' (eski) ve 'zaman aşımı' (Türkçe) yazımlarının ikisi de:
+    r'zaman\s*a[sş][iı]m[iı]|timeout|timed out|could not|can\'t connect|'
+    r'cannot connect|unable to connect|failed to connect|no route|'
+    r'connection refused|reset by peer|protocol fault|device offline',
     re.I)
 
 WATCHDOG_BASE_S = 15
@@ -193,9 +194,9 @@ def check_user_id(user_id):
     try:
         n = int(user_id)
     except (TypeError, ValueError):
-        raise AdbError('Gecersiz kullanici id: {!r}'.format(user_id))
+        raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
     if not 0 <= n <= 100:
-        raise AdbError('Gecersiz kullanici id: {!r}'.format(user_id))
+        raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
     return n
 
 
@@ -257,7 +258,7 @@ class AdbEngine:
         self.adb_path = adb_path or self.find_adb()
         if not self.adb_path:
             raise AdbError(
-                'ADB bulunamadi. platform-tools klasorunu program yanina koyun '
+                'ADB bulunamadı. platform-tools klasorunu program yanina koyun '
                 'veya adb.exe\'i PATH\'e ekleyin.'
             )
         self.trace_cb = trace_cb
@@ -314,8 +315,8 @@ class AdbEngine:
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
         except subprocess.TimeoutExpired:
-            self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman asimi')
-            raise AdbError('ADB zaman asimi ({} sn): adb {}'.format(timeout, ' '.join(str(a) for a in args)))
+            self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman aşımı')
+            raise AdbError('ADB zaman aşımı ({} sn): adb {}'.format(timeout, ' '.join(str(a) for a in args)))
         except OSError as e:
             self._trace(args, False, int((_time.time() - t0) * 1000), str(e)[:120])
             raise AdbError('ADB calistirilamadi: {}'.format(e))
@@ -359,7 +360,7 @@ class AdbEngine:
             text = '{} {}'.format(r.output, r.error)
             if r.exit_code != 0 or re.search(r'failed|refused|cannot|unreachable|unable|no route',
                                              text, re.I):
-                hata = AdbError('Baglanti basarisiz: {} (Cihaz uyku modunda olabilir; '
+                hata = AdbError('Bağlantı başarısız: {} (Cihaz uyku modunda olabilir; '
                                 'fiziksel kumandayla uyandin.)'.format(text.strip()))
                 if i + 1 < deneme and is_transient_connect_error(text):
                     son_hata = hata
@@ -368,14 +369,14 @@ class AdbEngine:
                 raise hata
             st = self.run(['-s', target, 'get-state'], timeout=timeout)
             if st.output != 'device':
-                hata = AdbError('Cihaz hazir degil: {} {}'.format(st.output, st.error))
+                hata = AdbError('Cihaz hazır degil: {} {}'.format(st.output, st.error))
                 if i + 1 < deneme and is_transient_connect_error('{} {}'.format(st.output, st.error)):
                     son_hata = hata
                     _time.sleep(bekleme)
                     continue
                 raise hata
             return target
-        raise son_hata or AdbError('Baglanti kurulamadi: {}'.format(target))
+        raise son_hata or AdbError('Bağlantı kurulamadi: {}'.format(target))
 
     def disconnect(self, target):
         try:
@@ -388,7 +389,7 @@ class AdbEngine:
         r = self.run(['pair', host_port, str(code)], timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|error|wrong|incorrect', text, re.I):
-            raise AdbError('Eslestirme basarisiz: {}'.format(text.strip()))
+            raise AdbError('Eşleştirme başarısız: {}'.format(text.strip()))
         return text.strip()
 
     def devices(self):
@@ -695,7 +696,7 @@ class AdbEngine:
     def restrict(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_IN_BACKGROUND', 'ignore')
         self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_ANY_IN_BACKGROUND', 'ignore')
         self.shell(target, 'am', 'set-standby-bucket', pkg, 'restricted')
@@ -703,7 +704,7 @@ class AdbEngine:
     def unrestrict(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_IN_BACKGROUND', 'allow')
         self.shell(target, 'cmd', 'appops', 'set', pkg, 'RUN_ANY_IN_BACKGROUND', 'allow')
         self.shell(target, 'am', 'set-standby-bucket', pkg, 'active')
@@ -711,13 +712,13 @@ class AdbEngine:
     def force_stop(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         return self.shell(target, 'am', 'force-stop', pkg)
 
     def clear_data(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'pm', 'clear', pkg)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|not allowed|no such|unknown', text, re.I):
@@ -727,7 +728,7 @@ class AdbEngine:
     def enable(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'pm', 'enable', pkg)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|not allowed|no such|unknown', text, re.I):
@@ -741,7 +742,7 @@ class AdbEngine:
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         try:
             self.force_stop(target, pkg)
         except AdbError:
@@ -753,7 +754,7 @@ class AdbEngine:
         r = self.shell(target, 'pm', 'disable-user', '--user', '0', pkg)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|not allowed|cannot|no such|unknown', text, re.I):
-            raise AdbError('Devre disi birakilamadi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
+            raise AdbError('Devre dışı birakilamadi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
         if not self.is_disabled(target, pkg):
             raise AdbError('Komut calisti ama {} hala aktif gorunuyor.'.format(pkg))
         return r
@@ -768,7 +769,7 @@ class AdbEngine:
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         if self.is_uninstalled_for_user(target, pkg):
             return None  # zaten kaldirilmis -> basari
         try:
@@ -787,7 +788,7 @@ class AdbEngine:
             # Yaris durumu: komut sirasinda zaten gitmis -> basari say.
             if self.is_uninstalled_for_user(target, pkg):
                 return r
-        raise AdbError('Kaldirilamadi ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
+        raise AdbError('Kaldırılamadı ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
 
     def install_existing(self, target, pkg):
         """Geri yukleme (UAD: cmd package install-existing --user 0).
@@ -798,7 +799,7 @@ class AdbEngine:
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         last_err = ''
         for args in (['cmd', 'package', 'install-existing', '--user', '0', pkg],
                      ['pm', 'install-existing', '--user', '0', pkg],
@@ -871,7 +872,7 @@ class AdbEngine:
     def pm_path(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'pm', 'path', pkg)
         m = re.search(r'package:(.+)', r.output)
         return m.group(1).strip() if m else None
@@ -880,7 +881,7 @@ class AdbEngine:
         """Split APK dahil TUM dex/yollar (base.apk + split_*.apk)."""
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'pm', 'path', pkg)
         paths = []
         for line in r.output.splitlines():
@@ -895,11 +896,11 @@ class AdbEngine:
         """dumpsys package'tan surum/kurulum/izin ozeti cikarir."""
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'dumpsys', 'package', pkg, timeout=timeout)
         out = r.output or ''
         if 'Unable to find package' in out or 'No such package' in out or not out.strip():
-            raise AdbError('{} icin paket bilgisi bulunamadi.'.format(pkg))
+            raise AdbError('{} için paket bilgisi bulunamadı.'.format(pkg))
 
         def grab(pat, default='?'):
             m = re.search(pat, out, re.M)
@@ -955,7 +956,7 @@ class AdbEngine:
         r = self.run(['-s', target, 'push', local, remote], timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|error|no such|denied', text, re.I):
-            raise AdbError('Yuklenemedi ({} -> {}): {}'.format(
+            raise AdbError('Yüklenemedi ({} -> {}): {}'.format(
                 local.rsplit('\\', 1)[-1].rsplit('/', 1)[-1],
                 remote, text.strip() or 'bilinmeyen hata'))
         return r
@@ -967,31 +968,31 @@ class AdbEngine:
         try:
             code = int(code)
         except (TypeError, ValueError):
-            raise AdbError('Gecersiz keyevent kodu: {!r}'.format(code))
+            raise AdbError('Geçersiz keyevent kodu: {!r}'.format(code))
         if not 0 <= code <= 300:
-            raise AdbError('Gecersiz keyevent kodu: {}'.format(code))
+            raise AdbError('Geçersiz keyevent kodu: {}'.format(code))
         return self.shell(target, 'input', 'keyevent', str(code), timeout=10)
 
     def input_text(self, target, text):
         safe = sanitize_input_text(text)
         if not safe:
-            raise AdbError('Gonderilecek gecerli karakter yok (ozel semboller atildi).')
+            raise AdbError('Gonderilecek geçerli karakter yok (özel semboller atildi).')
         return self.shell(target, 'input', 'text', safe, timeout=10)
 
     def launch(self, target, pkg):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         r = self.shell(target, 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1', timeout=15)
         if 'No activities found' in r.output:
-            raise AdbError('{} icin launcher aktivitesi bulunamadi.'.format(pkg))
+            raise AdbError('{} için launcher aktivitesi bulunamadı.'.format(pkg))
         return r
 
     def launch_resolved(self, target, pkg, timeout=15):
         """Once resolve-activity dener, olmazsa monkey fallback."""
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         try:
             r = self.shell(target, 'cmd', 'package', 'resolve-activity',
                            '--brief', '-c', 'android.intent.category.LAUNCHER', pkg,
@@ -1040,17 +1041,17 @@ class AdbEngine:
         try:
             r = self.shell(target, 'screencap', '-p', remote, timeout=timeout)
             if r.exit_code != 0:
-                raise AdbError('screencap basarisiz: {} {}'.format(r.output, r.error))
+                raise AdbError('screencap başarısız: {} {}'.format(r.output, r.error))
             tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
             tmp.close()
             try:
                 pr = self.pull(target, remote, tmp.name, timeout=timeout)
                 if pr.exit_code != 0:
-                    raise AdbError('Ekran dosyasi indirilemedi: {} {}'.format(pr.output, pr.error))
+                    raise AdbError('Ekran dosyası indirilemedi: {} {}'.format(pr.output, pr.error))
                 with open(tmp.name, 'rb') as f:
                     data = f.read()
                 if not data or data[1:4] != b'PNG':
-                    raise AdbError('Ekran dosyasi bozuk indi.')
+                    raise AdbError('Ekran dosyası bozuk indi.')
                 return data
             finally:
                 try:
@@ -1103,12 +1104,12 @@ class AdbEngine:
         if level:
             lv = str(level).strip().upper()
             if lv not in LOGCAT_LEVELS:
-                raise AdbError('Gecersiz log seviyesi: {!r}'.format(level))
+                raise AdbError('Geçersiz log seviyesi: {!r}'.format(level))
             args += ['*:{}'.format(lv)]
         if tag:
             tg = str(tag).strip()
             if not is_valid_tag(tg):
-                raise AdbError('Gecersiz log etiketi: {!r}'.format(tag))
+                raise AdbError('Geçersiz log etiketi: {!r}'.format(tag))
             args += [tg]
         args += ['-t', str(n)]
         r = self.shell(target, *args, timeout=timeout)
@@ -1193,11 +1194,11 @@ class AdbEngine:
         import os as _os
         lp = str(local_path or '').strip()
         if not lp.lower().endswith('.apk'):
-            raise AdbError('Gecersiz APK yolu (uzanti .apk olmali): {!r}'.format(local_path))
+            raise AdbError('Geçersiz APK yolu (uzanti .apk olmali): {!r}'.format(local_path))
         if '\n' in lp or '\r' in lp or '\x00' in lp:
-            raise AdbError('Gecersiz APK yolu: {!r}'.format(local_path))
+            raise AdbError('Geçersiz APK yolu: {!r}'.format(local_path))
         if not _os.path.isfile(lp):
-            raise AdbError('APK bulunamadi: {}'.format(lp))
+            raise AdbError('APK bulunamadı: {}'.format(lp))
         args = ['install']
         if reinstall:
             args.append('-r')
@@ -1205,7 +1206,7 @@ class AdbEngine:
         r = self.run(['-s', target] + args, timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or not re.search(r'\bSuccess\b', text):
-            raise AdbError('Kurulum basarisiz ({}): {}'.format(
+            raise AdbError('Kurulum başarısız ({}): {}'.format(
                 local_path.rsplit('\\', 1)[-1].rsplit('/', 1)[-1],
                 text.strip() or 'bilinmeyen hata'))
         return r
@@ -1237,12 +1238,12 @@ class AdbEngine:
                 clean.append(f)
         files = clean
         if not files:
-            raise AdbError('Kurulacak APK bulunamadi: ' + str(apk_path))
+            raise AdbError('Kurulacak APK bulunamadı: ' + str(apk_path))
         args = ['install-multiple', '-r'] + files
         r = self.run(['-s', target] + args, timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or not re.search(r'\bSuccess\b', text):
-            raise AdbError('Toplu kurulum basarisiz: {}'.format(text.strip()[:300]))
+            raise AdbError('Toplu kurulum başarısız: {}'.format(text.strip()[:300]))
         return r
 
     # Geriye uyumluluk: eski cagrilar calismaya devam eder.
@@ -1281,7 +1282,7 @@ class AdbEngine:
         self.last_home_notes = []
         comp = str(component or '').strip()
         if not is_valid_home_component(comp):
-            raise AdbError('Gecersiz HOME bileseni: {!r}'.format(component))
+            raise AdbError('Geçersiz HOME bileseni: {!r}'.format(component))
         want = comp.split('/')[0]
         r = self.shell(target, 'cmd', 'package', 'set-home-activity', comp,
                        timeout=timeout)
@@ -1293,7 +1294,7 @@ class AdbEngine:
             return r
         blocker = home_pkg_of(cur)
         if not fix_setup or not is_setup_wizard_pkg(blocker):
-            raise AdbError('Dogrulama basarisiz: HOME hala {}'.format(cur))
+            raise AdbError('Doğrulama başarısız: HOME hala {}'.format(cur))
         # --- Kurulum sihirbazi engeli: coz ve tekrar dene ---
         written = self.mark_device_provisioned(target)
         if written:
@@ -1302,7 +1303,7 @@ class AdbEngine:
         try:
             self.disable_setup_blocker(target, blocker, timeout=timeout)
             self.last_home_notes.append(
-                'Kurulum sihirbazi devre disi birakildi: ' + blocker)
+                'Kurulum sihirbazi devre dışı bırakıldı: ' + blocker)
         except AdbError as e:
             self.last_home_notes.append(str(e))
         r2 = self.shell(target, 'cmd', 'package', 'set-home-activity', comp,
@@ -1312,7 +1313,7 @@ class AdbEngine:
             self.last_home_notes.append('HOME dogrulandi: ' + cur2)
             return r2
         raise AdbError(
-            'HOME hala {} — kurulum sihirbazi ({}). Sihirbaz devre disi birakildi; '
+            'HOME hala {} — kurulum sihirbazi ({}). Sihirbaz devre dışı bırakıldı; '
             'cihazi yeniden baslatip tekrar deneyin.'.format(cur2, blocker or '?'))
 
     def mark_device_provisioned(self, target, timeout=15):
@@ -1343,9 +1344,9 @@ class AdbEngine:
         """
         pkg = str(pkg or '').strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         if not is_setup_wizard_pkg(pkg):
-            raise AdbError('Kurulum sihirbazi degil, devre disi birakilmadi: {}'.format(pkg))
+            raise AdbError('Kurulum sihirbazi degil, devre dışı birakilmadi: {}'.format(pkg))
         try:
             self.force_stop(target, pkg)
         except AdbError:
@@ -1355,7 +1356,7 @@ class AdbEngine:
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or re.search(r'failed|not allowed|cannot|no such|unknown',
                                          text, re.I):
-            raise AdbError('Kurulum sihirbazi devre disi birakilamadi ({}): {}'.format(
+            raise AdbError('Kurulum sihirbazi devre dışı birakilamadi ({}): {}'.format(
                 pkg, text.strip() or 'bilinmeyen hata'))
         return r
 
@@ -1390,7 +1391,7 @@ class AdbEngine:
         """0=hizli (kapali), 0.5=yari, 1=normal. tvboxtools 'speed up' esdegeri."""
         val = str(value or '').strip()
         if val not in ANIM_SCALES:
-            raise AdbError('Gecersiz animasyon olcegi: {!r}'.format(value))
+            raise AdbError('Geçersiz animasyon olcegi: {!r}'.format(value))
         if val == '1.0':
             val = '1'
         for key in ('window_animation_scale', 'transition_animation_scale',
@@ -1401,7 +1402,7 @@ class AdbEngine:
         cur = self.animator_scales(target)
         bad = [k for k, v in cur.items() if v != val]
         if bad:
-            raise AdbError('Dogrulama basarisiz: {}'.format(', '.join(bad)))
+            raise AdbError('Doğrulama başarısız: {}'.format(', '.join(bad)))
 
     def storage_top(self, target, limit=15, timeout=60):
         """En çok yer kaplayan dizinler (GB eşiği üstü du taraması)."""
@@ -1438,7 +1439,7 @@ class AdbEngine:
         """Belirli kullanıcı için kaldırma (multi-user, UAD davranışı)."""
         pkg = str(pkg or '').strip()
         if not is_valid_package(pkg):
-            raise AdbError('Gecersiz paket adi: {!r}'.format(pkg))
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         uid = check_user_id(user_id)
         if self.is_uninstalled_for_user_id(target, pkg, uid):
             return None
@@ -1452,7 +1453,7 @@ class AdbEngine:
             return r
         if self.is_uninstalled_for_user_id(target, pkg, user_id):
             return r
-        raise AdbError('Kaldirilamadi ({} user {}): {}'.format(
+        raise AdbError('Kaldırılamadı ({} user {}): {}'.format(
             pkg, user_id, text.strip() or 'bilinmeyen hata'))
 
     def is_uninstalled_for_user_id(self, target, pkg, user_id, timeout=10):
