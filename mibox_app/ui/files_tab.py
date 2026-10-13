@@ -2,6 +2,7 @@
 """Dosya sekmesi: sdcard gözat, push/pull, klasör aç, sil."""
 import os
 import posixpath
+import tempfile
 import unicodedata
 
 from PySide6.QtCore import Qt
@@ -425,16 +426,30 @@ class FilesTab(QWidget):
             return
 
         def do():
+            parent = os.path.dirname(os.path.abspath(dest)) or os.getcwd()
+            fd, staged = tempfile.mkstemp(
+                prefix='.mibox-download-', suffix='.part', dir=parent)
+            os.close(fd)
             try:
                 self.core.engine.pull(
-                    target, remote, dest,
+                    target, remote, staged,
                     cancel_check=w.isInterruptionRequested)
+                w.check_cancel()
+                if not os.path.isfile(staged):
+                    raise OSError('İndirilen geçici dosya oluşturulamadı.')
+                w.check_cancel()
+                os.replace(staged, dest)
             except Exception:
                 if w.isInterruptionRequested():
                     w.log.emit(
-                        'Aktarım durduruldu; yerel dosyada kısmi veri kalmış olabilir.')
+                        'Aktarım durduruldu; geçici indirme temizlendi, mevcut dosya korundu.')
                     w.check_cancel()
                 raise
+            finally:
+                try:
+                    os.remove(staged)
+                except OSError:
+                    pass
             return dest
         w = Worker(do)
         w.job_name = 'Dosya indirme'

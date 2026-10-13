@@ -400,6 +400,7 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
             fail += 1
             message = 'Snapshot son durumu eşleşmedi: {}'.format(
                 remaining_by_pkg[pkg])
-            details = [(p, passed, message if p == pkg and passed else msg)
+            details = [(p, False if p == pkg and passed else passed,
+                        message if p == pkg and passed else msg)
                        for p, passed, msg in details]
     return {'ok': ok, 'fail': fail, 'details': details, 'action': 'snapshot'}

@@ -997,7 +997,9 @@ class ApkBackupWorker(BaseWorker):
         try:
             staged_path = os.path.join(staging_dir, pkg + '.apk')
             self.check_cancel()
-            self._engine.pull(self._target, remote, staged_path)
+            self._engine.pull(
+                self._target, remote, staged_path,
+                cancel_check=self.isInterruptionRequested)
             self.check_cancel()
             os.replace(staged_path, destination)
         finally:
@@ -1018,7 +1020,8 @@ class ApkBackupWorker(BaseWorker):
                 # never join a path component derived from device output.
                 local_name = 'base.apk' if index == 0 else 'split_{:03d}.apk'.format(index)
                 self._engine.pull(
-                    self._target, remote, os.path.join(staging_dir, local_name))
+                    self._target, remote, os.path.join(staging_dir, local_name),
+                    cancel_check=self.isInterruptionRequested)
             self.check_cancel()
 
             if os.path.lexists(package_dir):
@@ -1093,8 +1096,13 @@ class ApkBackupWorker(BaseWorker):
                 fail += 1
                 cancelled += 1
             except (AdbError, OSError) as e:
-                self.log.emit('{}: {}'.format(pkg, e))
                 fail += 1
+                if self.isInterruptionRequested():
+                    cancelled += 1
+                    self.log.emit(
+                        '{}: yedekleme kullanıcı tarafından durduruldu.'.format(pkg))
+                else:
+                    self.log.emit('{}: {}'.format(pkg, e))
         if cancelled:
             self.log.emit(u'⏹ {} paket yedeklenmedi (kullanıcı durdurdu).'.format(cancelled))
         self.finished_ok.emit({'ok': ok, 'fail': fail, 'cancelled': cancelled})

@@ -466,6 +466,20 @@ class AdbEngine:
         sayilir ve kisa bir beklemeden sonra bir kez daha denenir.
         """
         import time as _time
+        target = str(target or '').strip()
+        if not self._is_network_target(target):
+            device = next((item for item in self.devices()
+                           if item['id'] == target), None)
+            if device is None:
+                raise AdbError('Cihaz ADB listesinde bulunamadı: {}'.format(target))
+            if device['state'] != 'device':
+                raise AdbError('Cihaz hazır değil ({}): {}'.format(
+                    device['state'], target))
+            state = self.run(['-s', target, 'get-state'], timeout=timeout)
+            if state.exit_code != 0 or state.output != 'device':
+                raise AdbError('Cihaz hazır değil: {} {}'.format(
+                    state.output, state.error).strip())
+            return target
         deneme = max(1, int(deneme or 1))
         son_hata = None
         for i in range(deneme):
@@ -498,6 +512,14 @@ class AdbEngine:
             return target
         raise son_hata or AdbError('Bağlantı kurulamadi: {}'.format(target))
 
+    @staticmethod
+    def _is_network_target(target):
+        """Recognize host:port endpoints while leaving USB/emulator serials alone."""
+        target = str(target or '').strip()
+        host, separator, port = target.rpartition(':')
+        return bool(separator and host and port.isdigit()
+                    and not any(ch.isspace() for ch in target))
+
     def disconnect(self, target):
         try:
             self.run(['disconnect', target], timeout=10)
@@ -517,13 +539,25 @@ class AdbEngine:
     def devices(self):
         r = self.run(['devices', '-l'], timeout=15)
         devs = []
+        states = {'device', 'offline', 'unauthorized', 'bootloader',
+                  'recovery', 'sideload', 'rescue'}
         for line in r.output.splitlines():
             line = line.strip()
             if not line or line.startswith('List of devices'):
                 continue
             parts = line.split()
-            if len(parts) >= 2 and re.search(r'[\.:]', parts[0]):
-                devs.append({'id': parts[0], 'state': parts[1], 'detail': line})
+            if len(parts) < 2:
+                continue
+            is_serial = bool(re.fullmatch(r'[A-Za-z0-9._:-]+', parts[0]))
+            is_ipv6_endpoint = bool(re.fullmatch(
+                r'\[[A-Za-z0-9:.%_-]+\]:\d{1,5}', parts[0]))
+            if not (is_serial or is_ipv6_endpoint):
+                continue
+            state = parts[1]
+            if state == 'no' and len(parts) > 2 and parts[2] == 'permissions':
+                state = 'no permissions'
+            if state in states or state == 'no permissions':
+                devs.append({'id': parts[0], 'state': state, 'detail': line})
         return devs
 
     def get_state(self, target):
@@ -1163,7 +1197,8 @@ class AdbEngine:
         Sistem uygulamalarinda 'Failure [not installed for USER_ID]' gibi
         cikti sessizce basari sayilmaz; AdbError atilir. Zaten kaldirilmis
         paket icin tekrar denemek basari sayilir (idempotent). Uygulama
-        verisini korumak icin kaldirma oncesi pm clear calistirilmaz.
+        '-k' uygulama verisi/cache'i saklamayi ister; kaldirma oncesi pm clear
+        calistirilmaz.
         """
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
@@ -1175,7 +1210,7 @@ class AdbEngine:
             self.force_stop(target, pkg, user_id=uid)
         except AdbError:
             pass
-        r = self.shell(target, 'pm', 'uninstall', '--user', str(uid), pkg)
+        r = self.shell(target, 'pm', 'uninstall', '-k', '--user', str(uid), pkg)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code == 0 and re.search(r'\bSuccess\b', text):
             if self.is_uninstalled_for_user(target, pkg, user_id=uid):

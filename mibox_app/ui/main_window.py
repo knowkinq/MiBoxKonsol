@@ -37,7 +37,10 @@ from .theme import qss_for, level_colors_for, colors_for, conn_style
 from .icons import line_icon
 from .actions_dialog import ActionsDialog
 
-IP_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d+$')
+HOST_RE = re.compile(
+    r'^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
+    r'(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$')
+DEVICE_SERIAL_RE = re.compile(r'^[A-Za-z0-9._:-]+$')
 # VERBOSE: probe/yoklama satirlari (pidof negatif vb). Varsayilan KAPALI,
 # tik acilmadikca panele basilmaz ve tampona DA yazilmaz (gürültü yok).
 LEVELS = ('INFO', 'WARN', 'ERROR', 'ADB', 'VERBOSE')
@@ -267,20 +270,30 @@ class MainWindow(QMainWindow):
             'color: {}; font-size: 14pt;'.format(colors_for(self.core.config.dark_mode)['danger']))
         self.lbl_conn_dot.setToolTip('Bağlantı durumu')
         initial_target = self.core.target or ''
-        address, separator, initial_port = initial_target.rpartition(':')
-        if not separator:
-            address, initial_port = initial_target, '5555'
-        if address.endswith('.x'):
+        initial_host = initial_target.rpartition(':')[0] if ':' in initial_target else initial_target
+        if initial_host.endswith('.x'):
             address = ''
+            initial_port = ''
+            self._target_kind = None
             self.core.target = ''
             self.core.config.last_target = ''
             self.core.config.save()
+        elif self._valid_target(initial_target):
+            address, _separator, initial_port = initial_target.rpartition(':')
+            self._target_kind = 'network'
+        else:
+            address, initial_port = initial_target, ''
+            if self._is_ipv4_address(address):
+                initial_port = '5555'
+                self._target_kind = 'network'
+            else:
+                self._target_kind = 'serial' if initial_target else None
         self.txt_target = QLineEdit(address)
-        self.txt_target.setPlaceholderText('IP adresi')
-        self.txt_target.setAccessibleName('Cihaz IP adresi')
+        self.txt_target.setPlaceholderText('IP/host veya cihaz kimliği')
+        self.txt_target.setAccessibleName('Cihaz IP adresi, host adı veya seri numarası')
         self.txt_target.setMinimumWidth(150)
         self.txt_target.setMaximumWidth(190)
-        self.txt_port = QLineEdit(initial_port or '5555')
+        self.txt_port = QLineEdit(initial_port or ('5555' if not initial_target else ''))
         self.txt_port.setAccessibleName('ADB bağlantı portu')
         self.txt_port.setMaximumWidth(68)
         self.txt_port.setMaxLength(5)
@@ -334,6 +347,8 @@ class MainWindow(QMainWindow):
             options_layout.addWidget(group, 1)
         self.device_options.hide()
         self.btn_device_options.toggled.connect(self.device_options.setVisible)
+        self.btn_device_options.toggled.connect(
+            lambda visible: self.refresh_device_combo() if visible else None)
         connection_root.addWidget(self.device_options, 0, Qt.AlignVCenter)
         root.addWidget(conn)
 
@@ -804,6 +819,7 @@ class MainWindow(QMainWindow):
         self.btn_disconnect.clicked.connect(self.on_disconnect)
         self.txt_target.editingFinished.connect(self._sync_target)
         self.txt_port.editingFinished.connect(self._sync_target)
+        self.txt_target.textEdited.connect(self._target_address_edited)
         self.btn_clear_log.clicked.connect(self._clear_log_view)
         self.btn_save_log.clicked.connect(self.save_log_to_file)
         self.cmb_devices.currentIndexChanged.connect(self._on_device_picked)
@@ -822,52 +838,140 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _sync_target(self):
         t = self._target_from_fields()
-        if self._valid_target(t):
+        if (self._valid_target(t)
+                or (self._target_kind == 'serial' and self._valid_device_serial(t))):
             if not self.core.connected and not self._connection_busy and not self._workers:
                 self.core.set_target(t)
                 self.lbl_target.setText('Hedef: ' + t)
             elif t != self.core.target:
                 self.status.showMessage('Yeni adres hazır. Geçiş için Bağlan düğmesine basın.', 5000)
         elif t:
-            self.status.showMessage('Geçerli bir IP adresi ve port yazın.', 5000)
+            self.status.showMessage(
+                'IP/host:PORT veya ADB listesindeki USB/emülatör cihaz kimliğini girin.', 5000)
 
     def _target_from_fields(self):
         """Read separate IP/port fields and accept a pasted legacy IP:port."""
         address = self.txt_target.text().strip()
         port = self.txt_port.text().strip()
-        if ':' in address:
-            host, _separator, pasted_port = address.rpartition(':')
-            if pasted_port:
-                address, port = host, pasted_port
+        if not address:
+            return ''
+        if self._target_kind == 'serial' and self._valid_device_serial(address):
+            return address
+        if self._target_kind == 'network':
+            if self._valid_target(address):
+                address, _separator, port = address.rpartition(':')
                 self.txt_target.setText(address)
                 self.txt_port.setText(port)
-        return '{}:{}'.format(address, port) if address else ''
+                return '{}:{}'.format(address, port)
+            candidate = '{}:{}'.format(address, port) if port else address
+            return candidate
+        candidate = '{}:{}'.format(address, port) if port else address
+        if self._valid_target(address):
+            address, _separator, port = address.rpartition(':')
+            self.txt_target.setText(address)
+            self.txt_port.setText(port)
+            self._target_kind = 'network'
+            return '{}:{}'.format(address, port)
+        if self._looks_like_device_serial(address):
+            self._target_kind = 'serial'
+            return address
+        if self._valid_device_serial(address) and self._device_is_listed(address):
+            self._target_kind = 'serial'
+            return address
+        if self._valid_target(candidate):
+            self._target_kind = 'network'
+            return candidate
+        if not port:
+            if self._is_ipv4_address(address):
+                self.txt_port.setText('5555')
+                self._target_kind = 'network'
+                return '{}:5555'.format(address)
+        if self._valid_device_serial(address):
+            self._target_kind = 'serial'
+            return address
+        return candidate
+
+    def _target_address_edited(self, _text):
+        self._target_kind = None
+
+    def _device_is_listed(self, target):
+        try:
+            return self.cmb_devices.findData(target) > 0
+        except (AttributeError, RuntimeError):
+            return False
+
+    @staticmethod
+    def _looks_like_device_serial(target):
+        target = str(target or '').strip()
+        return bool(
+            re.fullmatch(r'emulator-\d+', target, re.I)
+            or (re.fullmatch(r'[A-Za-z0-9_-]+', target)
+                and ('_' in target
+                     or (len(target) >= 6 and any(char.isdigit() for char in target)
+                         and target.upper() == target))))
 
     def _set_target_fields(self, target):
-        address, separator, port = str(target or '').strip().rpartition(':')
-        if not separator:
-            address, port = str(target or '').strip(), '5555'
-        if address.endswith('.x'):
-            address = ''
+        target = str(target or '').strip()
+        target_host = target.rpartition(':')[0] if ':' in target else target
+        if target_host.endswith('.x'):
+            address, port = '', ''
+            self._target_kind = None
+        elif self._valid_target(target):
+            address, _separator, port = target.rpartition(':')
+            self._target_kind = 'network'
+        else:
+            address, port = target, ''
+            if self._is_ipv4_address(address):
+                port = '5555'
+                self._target_kind = 'network'
+            else:
+                self._target_kind = 'serial' if target else None
         self.txt_target.setText(address)
-        self.txt_port.setText(port or '5555')
+        self.txt_port.setText(port)
+
+    @staticmethod
+    def _is_ipv4_address(address):
+        try:
+            return ipaddress.ip_address(str(address or '')).version == 4
+        except ValueError:
+            return False
 
     @staticmethod
     def _valid_target(target):
-        if not IP_RE.fullmatch(target):
+        target = str(target or '').strip()
+        if ':' not in target:
             return False
         address, port = target.rsplit(':', 1)
         try:
-            return ipaddress.ip_address(address).version == 4 and 1 <= int(port) <= 65535
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
+                return False
+            if address.startswith('[') and address.endswith(']'):
+                return ipaddress.ip_address(address[1:-1]).version == 6
+            try:
+                return ipaddress.ip_address(address).version == 4
+            except ValueError:
+                if ':' in address or re.fullmatch(r'[0-9.]+', address):
+                    return False
+                return bool(HOST_RE.fullmatch(address))
         except ValueError:
             return False
+
+    @staticmethod
+    def _valid_device_serial(target):
+        target = str(target or '').strip()
+        return bool(target and not target.startswith('-')
+                    and DEVICE_SERIAL_RE.fullmatch(target))
 
     def on_connect(self):
         if self._connection_busy:
             return
         t = self._target_from_fields()
-        if not self._valid_target(t):
-            QMessageBox.warning(self, 'Hedef', 'Adres IP:PORT biciminde olmali.\nOrnek: 192.0.2.1:5555')
+        if not (self._valid_target(t)
+                or (self._target_kind == 'serial' and self._valid_device_serial(t))):
+            QMessageBox.warning(
+                self, 'Hedef',
+                'Bir IP/host:PORT adresi veya USB/emülatör cihaz kimliği girin.\n'
+                'Örnek: 192.0.2.1:5555, tv.local:5555 ya da emulator-5554')
             return
         if t != self.core.target and self._workers:
             self._show_error('Cihaz değiştirilemedi', 'Çalışan işlemlerin bitmesini bekleyin veya Durdur düğmesini kullanın.')

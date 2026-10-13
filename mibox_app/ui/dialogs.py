@@ -53,6 +53,10 @@ def confirm_action(parent, action, pkgs, name_of, extra=''):
         body = u'{} uygulama — {}:\n\n{}'.format(len(pkgs), label, '\n'.join(lines))
     if action == 'clear':
         body += '\n\nUygulama verileri kalıcı olarak silinir. Durum kaydı bu verileri geri getirmez.'
+    elif action == 'uninstall':
+        body += ('\n\nAndroid uygulama verilerini korumaya çalışır; tekrar kurulumda '
+                 'kullanılabilir. Bu işlem bir veri yedeği değildir ve Android sürümü '
+                 'ile uygulama durumu geri yüklemeyi etkileyebilir.')
     if extra:
         body += u'\n\n' + extra
     ret = QMessageBox.question(parent, u'Onay — ' + label, body,
