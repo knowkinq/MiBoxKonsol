@@ -52,8 +52,13 @@ kur_onedir.bat
 ## Proje yapısı
 
 - `mibox_app/` — uygulama kaynak kodu
-- `tools/` — paketleme ve doğrulama yardımcıları
+- `tools/` — paketleme yardımcıları
 - `MiBoxKonsol.spec` — PyInstaller yapılandırması
 
 Yerel ayarlar, günlükler, anlık görüntüler ve derleme çıktıları Git dışında
 tutulur.
+
+## Lisans
+
+Bu proje MIT Lisansı altında sunulur. Ayrıntılar için [`LICENSE`](LICENSE)
+dosyasına bakın.
