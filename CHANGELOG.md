@@ -112,6 +112,13 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   kaynaktan geldiği için iki paket arasında drift olmaz. Çıktı:
   `dist-onedir\MiBoxKonsol\MiBoxKonsol.exe`. Onefile'ın `%TEMP%` altında
   geçici klasör açma zorunluluğu yoktur — kısıtlı makinelerde çalışır.
+- **ONEDIR kurulum + kısayol:** `kur_onedir.bat` + `tools/kur_onedir.ps1`.
+  Paketi `%LOCALAPPDATA%\MiBoxKonsol` içine kurar (**kullanıcı verisi
+  korunur**: ayar/log/geçmiş/snapshot/favori dosyaları üzerine yazılmaz),
+  `adb.exe` bulunursa paket yanına kopyalar, **Masaüstü** ve **Başlat menüsü**
+  kısayolu oluşturur, `kaldir.bat` bırakır (`/veri` ile veriyi de siler) ve
+  kurulum sonunda `--version` + `--selftest` ile kendini doğrular; temiz
+  kurulumda oluşan doğrulama artıkları geri temizlenir.
 - `tools/kalite_tara.py` — ölü import / aynı dosyada çakışan tanım / `print()` /
   TODO tarayıcısı (`--siki` ile bulgu varsa çıkış kodu 1).
 - Git deposu + `.gitattributes` (kaynak LF, `.bat/.ps1` CRLF).
@@ -141,6 +148,14 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   ROM paketlerini (`/system`, `/vendor`, `/product` …) **atlar**; seçim
   `/data/app` (kullanıcı uygulaması) ile sınırlıdır ve `unrestrict` hata olsa
   bile `finally` ile **mutlaka** çalışır.
+- **Tek tık kapı genişletildi:** `dogrula.bat` 5 adım (sözdizimi + selftest +
+  6 suite + kalite taraması + dil kuralı); `dogrula_exe.bat` artık
+  **onefile + onedir + kurulu kopya** için `--version` + `--selftest`
+  doğrular (onefile `%TEMP%` hatası UYARI olarak raporlanır).
+- **Kurulum doğrulaması:** `kur_onedir.bat` sonrası kurulu kopyada
+  `--version` = `MiBox Konsol v8.5.0` ve `--selftest` = `SELFTEST_OK`;
+  `dogrula_exe.bat` → `TAMAM (uyarili)` (yalnızca onefile `%TEMP%` uyarısı);
+  `dogrula.bat` → çıkış kodu 0 (274 iddia + kalite 0 bulgu).
 - Gerçek cihaz (salt-okunur ölçüm): hedefe bağlantı 0.28 sn; erişilemez
   adreste `deneme=1` → 3.0 sn, `deneme=2` → 6.3 sn (tekrar deneme çalışıyor).
 - `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin

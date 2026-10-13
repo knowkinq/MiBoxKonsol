@@ -19,6 +19,22 @@ pip install -r requirements.txt
 ADB gerektirir. Program otomatik bulur (once exe yani, sonra PATH).
 Bulunamazsa uyari gosterir; ADB sonradan kurulursa tekrar dener.
 
+### Paketlenmis kurulum (masaustu kisayollu)
+
+```bat
+build_exe_onedir.bat   :: onedir paketi uretir (gecici klasor ACMAZ)
+kur_onedir.bat         :: %LOCALAPPDATA%\MiBoxKonsol icine kurar + kisayol
+```
+
+`kur_onedir.bat` sunlari yapar:
+- paketi `%LOCALAPPDATA%\MiBoxKonsol` icine kopyalar (**kullanici verisi
+  korunur**: ayar, log, gecmis, snapshot, favori dosyalari uzerine yazilmaz),
+- `adb.exe` bulunursa paket yanina kopyalar,
+- **Masaustu** ve **Baslat menusu** kisayolu olusturur,
+- `kaldir.bat` birakir: kisayollari siler; veriyi de silmek icin `kaldir.bat /veri`,
+- kurulum sonunda `--version` + `--selftest` ile **kendini dogrular**
+  (temiz kurulumda olusan ayar/log/isaretci dosyalari geri temizlenir).
+
 ## Calistirma
 
 ```bat
@@ -323,10 +339,13 @@ mibox_app/
 - `python tools/diakritik.py` - dil kurali denetimi/duzeltmesi:
   **etiket Turkce diakritikli, veri ASCII**. Kuru calistirma varsayilan;
   karsilastirma satirlarini ve regex/raw string'leri atlar.
-- `dogrula.bat` - TEK TIK: yukaridaki uc adimi sirayla calistirir
-  (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
-- `dogrula_exe.bat` - DONMUS exe dogrulamasi: `--version` ciktisi + `--selftest`
-  isaretcisi (paketleme bozulmasi ve `%TEMP%` kisitlamasi ayrimi)
+- `dogrula.bat` - TEK TIK tam kapi (5 adim): sozdizimi + selftest + 6 suite +
+  kalite taramasi + dil kurali (cikis kodu 0 = hepsi yesil; kirmiziysa teslim yok)
+- `dogrula_exe.bat` - DONMUS paket dogrulamasi: **onefile + onedir + kurulu
+  kopya**. Her biri icin `--version` ciktisi ve `--selftest` isaretcisi
+  kontrol edilir; onefile'in `%TEMP%` kisitlamasi UYARI olarak raporlanir.
+- `kur_onedir.bat` - onedir paketi kalici konuma kurar + masaustu/Baslat menusu
+  kisayolu olusturur (ayrinti: "Kurulum" bolumu).
 - `python tools/kalite_tara.py` - olu import / cakisan tanim / print() / TODO taramasi
 - `python mibox.py --version` - surum + frozen/meipass/base_dir/log_dir teshis ciktisi
 - `python tests/device_test.py [hedef]` - GERCEK cihaz dogrulamasi (offline suite'ler
