@@ -31,7 +31,9 @@ NON_REVERSIBLE = {'clear', 'stop', 'launch'}
 
 def _path():
     from .config import BASE_DIR
-    return os.path.join(BASE_DIR, 'mibox-işlem-gecmisi.jsonl')
+    # DIKKAT: dosya adi VERIDIR (etiket degil). Cevrilirse eski gecmis
+    # dosyasi bulunamaz ve kullanici gecmisi kaybolmus gibi gorunur.
+    return os.path.join(BASE_DIR, 'mibox-islem-gecmisi.jsonl')
 
 
 def append(target, action, package, method='', ok=True):

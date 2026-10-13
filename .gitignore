@@ -18,6 +18,11 @@ _arsiv/
 mibox-ayarlar.json
 MiBox-ayarlar.json
 mibox-islem-gecmisi.jsonl
+mibox-işlem-gecmisi.jsonl
+debloat-kullanici.json
+debloat-kullanıcı.json
+mibox-gecmis.csv
+mibox-geçmiş.csv
 mibox-bilinen-uygulamalar.json
 MiBox-bilinen-uygulamalar.json
 mibox-snapshot-*.json

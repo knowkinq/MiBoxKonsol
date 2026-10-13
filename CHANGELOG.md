@@ -41,6 +41,25 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   - `tools/diakritik.py`: token (string sabiti) seviyesinde çalışır; raw/regex
     string'lere ve karşılaştırma satırlarına dokunmaz, `--uygula` olmadan kuru
     çalışır. Son durum: **0 kalıntı**.
+- **Testler kullanıcı verisine yazıyordu (veri kirliliği):** `faz2_core_test`
+  gerçek `mibox-ayarlar.json` ve gerçek işlem geçmişi dosyasına yazıyordu.
+  Sonuç: geçmişin **521 kaydından 520'si `"action": "test"`** olmuş,
+  `last_target` ve cihaz geçmişi sahte `10.0.x.y:5555` hedefleriyle dolmuştu
+  (uygulama açılınca hedef alanı sahte IP gösteriyordu). Artık:
+  - `tests/faz2_core_test.py` config ve geçmiş yollarını **geçici klasöre**
+    yönlendirir ve sonunda gerçek dosyaların **değişmediğini doğrular**
+    (`OK gercek ayar/gecmis dosyalari korundu`).
+  - `tests/faz7_quality_test.py` snapshot testi de geçici dizin kullanır
+    (test dosyası kullanıcının snapshot listesinde görünmez).
+  - Kirli veri yedeklenerek temizlendi: 520 test kaydı silindi, sahte
+    hedefler ayarlardan çıkarıldı, gerçek hedef (`192.0.2.1:5555`) geri
+    yazıldı. Yedek: `_arsiv/veri-yedegi-<tarih>/`.
+- **Dosya adları (VERİ) diakritik aracının hedefi olmaktan çıkarıldı:**
+  `mibox-islem-gecmisi.jsonl`, `debloat-kullanici.json` ve varsayılan CSV adı
+  ASCII'ye geri alındı (çevrilirse eski geçmiş/favori dosyası bulunamaz).
+  Araç artık `os.path.*`, `open()`, `QFileDialog` satırlarını ve uzantılı
+  string'leri `DOSYA-YOLU` olarak raporlayıp **atlar**; `faz10` bu adları
+  kalıcı olarak korur.
 
 ### Değiştirilen
 - **Uygulamalar sekmesi filtreleri:** ayrı `Çalışan` / `Kaldırılmış` /
@@ -76,9 +95,9 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   filtresinin satır sayısı (offline, `QT_QPA_PLATFORM=offscreen`).
 - `tests/faz9_dayaniklilik_test.py` — 22 iddia: geçici/kalıcı hata ayrımı,
   bekçi geri çekilmesi, `connect()` sözleşmesi (offline).
-- `tests/faz10_dil_test.py` — 73 iddia: dil tutarlılığı bekçisi (etiketler
+- `tests/faz10_dil_test.py` — 81 iddia: dil tutarlılığı bekçisi (etiketler
   diakritikli ve ASCII-Türkçe kalıntısız; veri anahtarları/sabitleri ASCII;
-  zaman aşımı mesajı ↔ regex uyumu).
+  dosya adları ASCII; zaman aşımı mesajı ↔ regex uyumu).
 - `tools/diakritik.py` — güvenli diakritik düzeltme aracı (kuru çalıştırma
   varsayılan, karşılaştırma satırlarını raporlar, raw/regex string'leri atlar).
 - `.gitignore` (build/dist/__pycache__/logs/ayar ve snapshot dosyaları).
@@ -101,9 +120,11 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
 - `python -m compileall mibox_app tests` → temiz.
 - `python mibox.py --selftest` → SELFTEST_OK.
 - `python tests/run_all.py` → **6 suite yeşil** (Faz2 + 106 güvenlik + 47 kalite
-  + 17 UI filtre + 22 dayanıklılık + 73 dil) → `ALL_TESTS_OK`.
+  + 17 UI filtre + 22 dayanıklılık + 81 dil) → `ALL_TESTS_OK`.
 - `python tools/kalite_tara.py --siki` → 0 bulgu.
 - `python tools/diakritik.py` (kuru) → 0 kalıntı.
+- Testlerden sonra gerçek kullanıcı verisi **değişmemiş** olarak doğrulandı
+  (faz2 "gercek ayar/gecmis dosyalari korundu"; snapshot listesi boş).
 - Gerçek cihaz (salt-okunur ölçüm): hedefe bağlantı 0.28 sn; erişilemez
   adreste `deneme=1` → 3.0 sn, `deneme=2` → 6.3 sn (tekrar deneme çalışıyor).
 - `MiBoxKonsol.exe` 24,05 MB üretildi. **Not:** Bu oturumda donmuş exe'nin

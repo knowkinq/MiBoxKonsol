@@ -318,7 +318,8 @@ mibox_app/
   - `tests/faz9_dayaniklilik_test.py` - baglanti dayanikliligi: gecici/kalici
     hata ayrimi, bekci geri cekilmesi 15->30->60 sn (22 iddia, offline)
   - `tests/faz10_dil_test.py` - dil tutarliligi bekcisi: etiketler diakritikli
-    ve ASCII-Turkce kalintisiz, veri anahtarlari ASCII (73 iddia, offline)
+    ve ASCII-Turkce kalintisiz, veri anahtarlari ve DOSYA ADLARI ASCII
+    (81 iddia, offline)
 - `python tools/diakritik.py` - dil kurali denetimi/duzeltmesi:
   **etiket Turkce diakritikli, veri ASCII**. Kuru calistirma varsayilan;
   karsilastirma satirlarini ve regex/raw string'leri atlar.

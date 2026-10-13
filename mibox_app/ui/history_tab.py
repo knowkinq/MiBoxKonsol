@@ -229,7 +229,7 @@ class HistoryTab(QWidget):
         if not self._records:
             QMessageBox.information(self, 'Aktar', 'Kayıt yok.')
             return
-        path, _ = QFileDialog.getSaveFileName(self, 'CSV Kaydet', 'mibox-geçmiş.csv', 'CSV (*.csv)')
+        path, _ = QFileDialog.getSaveFileName(self, 'CSV Kaydet', 'mibox-gecmis.csv', 'CSV (*.csv)')
         if not path:
             return
         try:

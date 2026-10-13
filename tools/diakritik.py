@@ -210,6 +210,15 @@ KELIME_RE = {k: re.compile(r'\b' + re.escape(k) + r'\b') for k in CEVIRI}
 RE_CAGRI = re.compile(r'\bre\.(compile|search|match|fullmatch|findall|finditer|'
                       r'sub|split|escape)\b')
 
+# DOSYA YOLU / dosya adi ureten satirlar: bunlar VERIDIR, cevrilmez.
+YOL_SATIRI = re.compile(
+    r'os\.path\.(join|exists|isfile|isdir|basename|dirname|abspath|splitext)|'
+    r'\bopen\(|QFileDialog|makedirs|os\.remove|send2trash')
+# Dosya uzantisi iceren string'ler de veri sayilir (or. 'rapor.csv').
+DOSYA_UZANTI = re.compile(
+    r'\.(json|jsonl|csv|txt|log|apk|apks|png|jpg|jpeg|py|bat|ps1|spec|ini|cfg|'
+    r'xml|zip|tar|gz|exe|dll|db|sqlite)\b', re.I)
+
 
 def _hedef_dosyalar():
     for hedef in HEDEFLER:
@@ -277,6 +286,11 @@ def isle(yol, uygula):
         satir = satirlar[no - 1] if 0 < no <= len(satirlar) else ''
         if RE_CAGRI.search(satir):
             # regex/desen satiri: metni degistirmek davranisi bozabilir
+            continue
+        if YOL_SATIRI.search(satir) or DOSYA_UZANTI.search(govde):
+            # dosya yolu / dosya adi: VERI, cevrilmez (elle bakilir)
+            kontroller.append((os.path.relpath(yol, ROOT), no,
+                               'DOSYA-YOLU: ' + satir.strip()[:100]))
             continue
         if KARSILASTIRMA.search(satir):
             kontroller.append((os.path.relpath(yol, ROOT), no, satir.strip()[:110]))

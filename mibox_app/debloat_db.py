@@ -318,7 +318,9 @@ _user_entries_loaded = False
 
 def _user_entries_path():
     from .config import BASE_DIR
-    return os.path.join(BASE_DIR, 'debloat-kullanıcı.json')
+    # DIKKAT: dosya adi VERIDIR (etiket degil). Cevrilirse kullanicinin
+    # kaydettigi favoriler bulunamaz.
+    return os.path.join(BASE_DIR, 'debloat-kullanici.json')
 
 
 def _load_user_entries():
