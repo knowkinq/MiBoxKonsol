@@ -160,6 +160,16 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   6 suite + kalite taraması + dil kuralı); `dogrula_exe.bat` artık
   **onefile + onedir + kurulu kopya** için `--version` + `--selftest`
   doğrular (onefile `%TEMP%` hatası UYARI olarak raporlanır).
+- **Asılı hata penceresi düzeltmesi:** GUI exe'ler `cmd` tarafından
+  beklenmediği için onefile `%TEMP%` hatasında ekranda modal "Could not create
+  temporary directory" penceresi asılı kalıyordu. Doğrulama artık
+  `tools/dogrula_exe.ps1` üzerinden çalışır: her paket **PID'e bağlı zaman
+  aşımıyla** başlatılır ve asılı kalan süreç yalnızca o PID için kapatılır
+  (başka çalışan kopyalara dokunulmaz). Koşum sonrası süreç kalmaz.
+- **Faz2 kararlılığı:** "gerçek veri korundu" kontrolü artık (var mı, boyut)
+  karşılaştırır; mtime karşılaştırması zamansal yarış yüzünden suite'i
+  dalgalı yapıyordu (aynı içeriğin yeniden yazılması zararsızdır). 3 ardışık
+  koşumda kararlı.
 - **Kurulum doğrulaması:** `kur_onedir.bat` sonrası kurulu kopyada
   `--version` = `MiBox Konsol v8.5.0` ve `--selftest` = `SELFTEST_OK`;
   `dogrula_exe.bat` → `TAMAM (uyarili)` (yalnızca onefile `%TEMP%` uyarısı);

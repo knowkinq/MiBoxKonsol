@@ -346,6 +346,8 @@ mibox_app/
 - `dogrula_exe.bat` - DONMUS paket dogrulamasi: **onefile + onedir + kurulu
   kopya**. Her biri icin `--version` ciktisi ve `--selftest` isaretcisi
   kontrol edilir; onefile'in `%TEMP%` kisitlamasi UYARI olarak raporlanir.
+  (Ic mantik: `tools/dogrula_exe.ps1` — PID'e bagli zaman asimi; basarisiz
+  GUI sureci ekranda ASILI KALMAZ.)
 - `kur_onedir.bat` - onedir paketi kalici konuma kurar + masaustu/Baslat menusu
   kisayolu olusturur (ayrinti: "Kurulum" bolumu).
 - `python tools/kalite_tara.py` - olu import / cakisan tanim / print() / TODO taramasi
