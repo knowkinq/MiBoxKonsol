@@ -4,7 +4,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QCheckBox, QPushButton, QListWidget,
-    QListWidgetItem, QMessageBox, QFileDialog,
+    QListWidgetItem, QMessageBox, QFileDialog, QPlainTextEdit, QApplication,
 )
 
 from . import kit
@@ -43,6 +43,26 @@ class SettingsTab(QWidget):
         self.lbl_paths.setTextInteractionFlags(Qt.TextSelectableByMouse)
         gf.addRow(self.lbl_paths)
         root.addWidget(g_gen)
+
+        # --- Surum / kurulum bilgisi (tek kaynak: mibox_app.diagnostics) ---
+        g_info = QGroupBox('Sürüm / Kurulum Bilgisi (destek için kopyalayın)')
+        gi = QVBoxLayout(g_info)
+        self.txt_info = QPlainTextEdit()
+        self.txt_info.setReadOnly(True)
+        self.txt_info.setMaximumHeight(180)
+        self.txt_info.setStyleSheet(kit.mono_style())
+        gi.addWidget(self.txt_info)
+        irow = QHBoxLayout()
+        self.btn_copy_info = QPushButton('Panoya Kopyala')
+        self.btn_copy_info.clicked.connect(self._copy_info)
+        self.btn_refresh_info = QPushButton('Yenile')
+        self.btn_refresh_info.clicked.connect(self._refresh_info)
+        irow.addWidget(self.btn_copy_info)
+        irow.addWidget(self.btn_refresh_info)
+        irow.addStretch()
+        gi.addLayout(irow)
+        root.addWidget(g_info)
+        self._refresh_info()
 
         # --- Koruma listesi ---
         g_prot = QGroupBox('Koruma Listesi (bu paketlere işlem uygulanmaz)')
@@ -86,11 +106,25 @@ class SettingsTab(QWidget):
         root.addWidget(self.btn_save)
 
     def apply_theme(self):
-        """Tema degisince: yol etiketi yeni palete gecer."""
+        """Tema degisince: yol etiketi + bilgi paneli yeni palete gecer."""
         try:
             self.lbl_paths.setStyleSheet(kit.muted(kit.dark_from(self)))
+            self.txt_info.setStyleSheet(kit.mono_style())
         except (RuntimeError, AttributeError):
             pass
+
+    # ------------------------------------------------------------------
+    def _refresh_info(self):
+        """Surum/kurulum bilgisini yeniden oku (tek kaynak: diagnostics)."""
+        from .. import diagnostics
+        try:
+            self.txt_info.setPlainText(diagnostics.metin())
+        except Exception as e:  # noqa: BLE001
+            self.txt_info.setPlainText('Bilgi alinamadi: {}'.format(e))
+
+    def _copy_info(self):
+        QApplication.clipboard().setText(self.txt_info.toPlainText())
+        QMessageBox.information(self, 'Tamam', 'Kurulum bilgisi panoya kopyalandi.')
 
     # ------------------------------------------------------------------
     def _on_dark(self, on):

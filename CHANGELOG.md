@@ -95,9 +95,17 @@ Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/)'a dayanır.
   filtresinin satır sayısı (offline, `QT_QPA_PLATFORM=offscreen`).
 - `tests/faz9_dayaniklilik_test.py` — 22 iddia: geçici/kalıcı hata ayrımı,
   bekçi geri çekilmesi, `connect()` sözleşmesi (offline).
-- `tests/faz10_dil_test.py` — 81 iddia: dil tutarlılığı bekçisi (etiketler
+- `tests/faz10_dil_test.py` — 99 iddia: dil tutarlılığı bekçisi (etiketler
   diakritikli ve ASCII-Türkçe kalıntısız; veri anahtarları/sabitleri ASCII;
-  dosya adları ASCII; zaman aşımı mesajı ↔ regex uyumu).
+  dosya adları ASCII; zaman aşımı mesajı ↔ regex uyumu; sürüm/ortam bilgisi
+  tek kaynak).
+- **`mibox_app/diagnostics.py` (tek kaynak):** sürüm + ortam/kurulum bilgisi.
+  Hem `mibox.py --version` hem Ayarlar sekmesindeki yeni **"Sürüm / Kurulum
+  Bilgisi"** paneli aynı listeyi kullanır (sürüm, paket modu
+  `kaynak|onefile|onedir`, Python/OS, `frozen`, `MEIPASS`, exe yolu, base dir,
+  ayar/log yolları, adb yolu, selftest işaretçisi, çalışma dizini).
+  Panelde "Panoya Kopyala" ve "Yenile" düğmeleri vardır; destek için tek
+  tıkla alınır. `paket_modu()`, onefile'ın `%TEMP%` davranışını raporlar.
 - `tools/diakritik.py` — güvenli diakritik düzeltme aracı (kuru çalıştırma
   varsayılan, karşılaştırma satırlarını raporlar, raw/regex string'leri atlar).
 - `.gitignore` (build/dist/__pycache__/logs/ayar ve snapshot dosyaları).

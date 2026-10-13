@@ -137,10 +137,13 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 $surumDosya = Join-Path $env:TEMP ('mibox-kurulum-' + [guid]::NewGuid().ToString('N') + '.txt')
 $p = Start-Process -FilePath $exeYolu -ArgumentList '--version' -RedirectStandardOutput $surumDosya -PassThru
 $p.WaitForExit(120000) | Out-Null
-$surum = (Get-Content $surumDosya -ErrorAction SilentlyContinue | Select-Object -First 1)
+$satirlar = Get-Content $surumDosya -ErrorAction SilentlyContinue
+$surum = $satirlar | Select-Object -First 1
+$mod = $satirlar | Where-Object { $_ -match '^Paket modu' } | Select-Object -First 1
 $surumKod = if ($p.HasExited) { $p.ExitCode } else { 'zaman asimi' }
 Remove-Item $surumDosya -ErrorAction SilentlyContinue
 Yaz ("--version : {0} (exit {1})" -f $surum, $surumKod)
+if ($mod) { Yaz ("            {0}" -f $mod.Trim()) }
 
 $isaret = Join-Path $Hedef 'mibox-selftest-ok.txt'
 Remove-Item $isaret -ErrorAction SilentlyContinue

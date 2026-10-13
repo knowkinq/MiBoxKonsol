@@ -211,8 +211,10 @@ gercek TV uzerinde `tests/device_test.py` ile yapilir.
    ilerleme cubugu, durdurma). Cift tiklama veya dugme ile hedef yapar.
    Kablosuz eslestirme (`adb pair`) destegi. Subnet otomatik tahmin edilir.
 9. **Ayarlar** - Acik/koyu tema (aninda uygulanir), log dosyasi ac/kapa,
-   koruma listesi, bilinen uygulama adlari (filtreli), ayar yedegi
-   disari/ice aktarma (JSON).
+   koruma listesi, **Sürüm / Kurulum Bilgisi** paneli (tek kaynak:
+   `mibox_app/diagnostics.py` — sürüm, paket modu `kaynak|onefile|onedir`,
+   Python/OS, adb yolu, log/ayar/veri yolları; "Panoya Kopyala" ile destek
+   için tek tıkla alınır), ayar yedegi disari/ice aktarma (JSON).
 
 Baglanti bekcisi: durum cubugunda canli cevrimici/cevrimdisi gostergesi,
 15 sn yoklama, kopunca otomatik yeniden baglanti.
