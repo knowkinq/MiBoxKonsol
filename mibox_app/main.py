@@ -22,7 +22,20 @@ def _print_info():
     Not: burada print() CLI ciktisi icin bilerek kullanilir; GUI log'u degildir.
     """
     from . import diagnostics
-    print(diagnostics.metin())
+    text = diagnostics.metin()
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        print(text, file=stream)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, 'encoding', None) or 'ascii'
+        stream.write(text.encode(encoding, errors='backslashreplace')
+                     .decode(encoding) + '\n')
 
 
 def _import_pkg():
