@@ -44,6 +44,11 @@ jobs:
     - name: Test Built Executable
       run: |
         .\dist\MiBoxKonsol.exe --version
+        $env:QT_QPA_PLATFORM = 'offscreen'
+        .\dist\MiBoxKonsol.exe --selftest
+        if ($LASTEXITCODE -ne 0) { throw "Packaged application selftest failed with exit code $LASTEXITCODE" }
+        if (-not (Test-Path .\dist\mibox-selftest-ok.txt)) { throw "Packaged application selftest marker was not created" }
+        Remove-Item .\dist\mibox-selftest-ok.txt -Force
 
     - name: Generate SHA-256 checksum
       shell: pwsh

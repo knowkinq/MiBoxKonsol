@@ -1,5 +1,10 @@
 # Değişiklik günlüğü
 
+## [1.2.3] - 2026-10-14
+
+- Windows EXE'nin açılışta `No module named 'email'` hatası vermesine neden olan PyInstaller dışlama ayarı düzeltildi.
+- Yayın derlemesi artık paketlenmiş EXE'yi başlatıp selftest işaretçisini doğruluyor.
+
 ## [1.2.2] - 2026-10-14
 
 - Windows konsolunda `--version` çıktısının Türkçe karakterlerde hata vermesi düzeltildi.

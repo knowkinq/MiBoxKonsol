@@ -9,7 +9,7 @@
 
 Xiaomi Mi Box, Mi TV Stick ve tüm Android TV cihazlarını yerel ağ üzerinden (ADB) yönetmek, optimize etmek ve gereksiz sistem uygulamalarından (bloatware) arındırmak için geliştirilmiş modern, açık kaynaklı Windows masaüstü yönetim merkezi.
 
-**Sürüm:** `v1.2.2`
+**Sürüm:** `v1.2.3`
 
 ---
 
