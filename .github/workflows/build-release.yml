@@ -45,8 +45,8 @@ jobs:
       run: |
         .\dist\MiBoxKonsol.exe --version
         $env:QT_QPA_PLATFORM = 'offscreen'
-        .\dist\MiBoxKonsol.exe --selftest
-        if ($LASTEXITCODE -ne 0) { throw "Packaged application selftest failed with exit code $LASTEXITCODE" }
+        $selftest = Start-Process -FilePath .\dist\MiBoxKonsol.exe -ArgumentList '--selftest' -PassThru -Wait -WindowStyle Hidden
+        if ($selftest.ExitCode -ne 0) { throw "Packaged application selftest failed with exit code $($selftest.ExitCode)" }
         if (-not (Test-Path .\dist\mibox-selftest-ok.txt)) { throw "Packaged application selftest marker was not created" }
         Remove-Item .\dist\mibox-selftest-ok.txt -Force
 
