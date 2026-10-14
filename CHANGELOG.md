@@ -1,5 +1,10 @@
 # Değişiklik günlüğü
 
+## [1.2.2] - 2026-10-14
+
+- Windows konsolunda `--version` çıktısının Türkçe karakterlerde hata vermesi düzeltildi.
+- ADB bulunmadığında selftest akışının uyarı penceresi açıp beklemesi engellendi.
+
 ## [1.2.0] - 2026-10-14
 
 Popüler TV Uygulama Marketi, Çözünürlük & DPI Yöneticisi, Canlı TV Ağ Teşhisi ve Sıfır-Kaydırma Arayüz sürümü.
