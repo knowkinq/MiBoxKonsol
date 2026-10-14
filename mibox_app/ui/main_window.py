@@ -573,7 +573,11 @@ class MainWindow(QMainWindow):
             self.append_log('Ayar kurtarma: ' + config_warning.replace('\n', ' · '), 'WARN')
             self._show_error('Ayar kurtarma', config_warning)
         if not self.core.adb_path:
-            QMessageBox.warning(self, 'ADB', self.core.engine_error or 'ADB bulunamadı.')
+            adb_warning = self.core.engine_error or 'ADB bulunamadı.'
+            if self._selftest:
+                self.append_log('ADB selftest sırasında kullanılamıyor: ' + adb_warning, 'WARN')
+            else:
+                QMessageBox.warning(self, 'ADB', adb_warning)
         if not self._selftest:
             QTimer.singleShot(600, self._startup_device_check)
 
