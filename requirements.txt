@@ -1,1 +1,7 @@
-PySide6>=6.6
+# MiBox Konsol - Bağımlılıklar (64-bit & 32-bit Otomatik Destek)
+
+# 64-bit modern sistemler (x64 / ARM64): Qt 6
+PySide6>=6.6; platform_machine != "x86" and platform_machine != "i386" and platform_machine != "i686"
+
+# 32-bit sistemler (x86 / 32-bit Windows): Qt 5
+PyQt5>=5.15; platform_machine == "x86" or platform_machine == "i386" or platform_machine == "i686"

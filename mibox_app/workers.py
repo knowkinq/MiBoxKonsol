@@ -206,7 +206,7 @@ class AppScanWorker(BaseWorker):
     def _work(self):
         self.check_cancel()
         self.log.emit('Bağlantı kontrol ediliyor...')
-        self._engine.connect(self._target)
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         self.check_cancel()
         self.log.emit('Paketler listeleniyor...')
         detailed = self._engine.list_packages_detailed(
@@ -307,7 +307,7 @@ class BulkActionWorker(BaseWorker):
             methods.append('list_packages_detailed')
         _require_user_scope(self._engine, methods, self._user_id)
         self.check_cancel()
-        self._engine.connect(self._target)
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         self.check_cancel()
         eligible = None
         package_states = {}
@@ -475,7 +475,7 @@ class PackageActionWorker(BaseWorker):
         if self._auto_snapshot:
             from . import snapshot as snapmod
             _require_user_scope(snapmod, ('take',), self._user_id)
-        self._engine.connect(self._target)
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         self.check_cancel()
         snap_name = self._take_safety_snapshot() if self._auto_snapshot else None
         self.check_cancel()
@@ -633,7 +633,7 @@ class SmartRemoveWorker(BaseWorker):
         if self._auto_snapshot:
             from . import snapshot as snapmod
             _require_user_scope(snapmod, ('take',), self._user_id)
-        self._engine.connect(self._target)
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         self.check_cancel()
         snap_name = self._take_safety_snapshot() if self._auto_snapshot else None
         snapshot_failed = self._auto_snapshot and snap_name is None
@@ -757,7 +757,9 @@ class HealthWorker(BaseWorker):
         self._target = target
 
     def _work(self):
-        self._engine.connect(self._target)
+        self.check_cancel()
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
+        self.check_cancel()
         self.finished_ok.emit(self._engine.health(self._target))
 
 
@@ -796,8 +798,9 @@ class StageWorker(BaseWorker):
         _require_user_scope(self._engine, methods, self._user_id)
         _require_user_scope(snapmod, ('take',), self._user_id)
         try:
-            self._engine.connect(self._target)
+            self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         except AdbError as e:
+            self.check_cancel()
             return {'ok': 0, 'fail': len(items),
                     'details': [(pkg, False, str(e)) for _action, pkg in items],
                     'action': 'stage', 'auto_snap': None,
@@ -939,7 +942,9 @@ class ScreenshotWorker(BaseWorker):
         self._target = target
 
     def _work(self):
-        self._engine.connect(self._target)
+        self.check_cancel()
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
+        self.check_cancel()
         data = self._engine.screenshot(self._target)
         # PNG gecerliligini worker'da dogrula (bozuk veri UI'a gitmesin)
         from .adb_engine import png_is_valid
@@ -959,8 +964,14 @@ class DeviceInfoWorker(BaseWorker):
         self._target = target
 
     def _work(self):
-        self._engine.connect(self._target)
-        info = self._engine.device_info_full(self._target)
+        self.check_cancel()
+        target = str(self._target or '').strip()
+        if not target:
+            raise AdbError('Hedef cihaz seçilmedi.')
+        self._engine.connect(target, cancel_check=self.isInterruptionRequested)
+        self.check_cancel()
+        info = self._engine.device_info_full(target)
+        self.check_cancel()
         self.finished_ok.emit(info)
 
 
@@ -1059,7 +1070,8 @@ class ApkBackupWorker(BaseWorker):
 
     def _work(self):
         import os
-        self._engine.connect(self._target)
+        self.check_cancel()
+        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
         self.check_cancel()
         os.makedirs(self._dest, exist_ok=True)
         ok = 0

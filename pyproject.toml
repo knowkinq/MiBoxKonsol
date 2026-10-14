@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mibox-konsol"
+version = "1.2.1"
+description = "Xiaomi Mi Box ve Android TV cihazları için modern, açık kaynaklı yönetim merkezi ve debloat aracı"
+readme = "README.md"
+authors = [
+    { name = "MiBox Contributors" }
+]
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+keywords = ["mibox", "android-tv", "adb", "debloat", "remote", "pyside6", "pyqt5"]
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.5.0; platform_machine != 'x86' and platform_machine != 'i686'",
+    "PyQt5>=5.15.0; platform_machine == 'x86' or platform_machine == 'i686'",
+    "shiboken6>=6.5.0; platform_machine != 'x86' and platform_machine != 'i686'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+mibox = "mibox_app.main:main"
+
+[project.urls]
+Homepage = "https://github.com/maventra-dev/MiBoxKonsol"
+Issues = "https://github.com/maventra-dev/MiBoxKonsol/issues"
+Documentation = "https://github.com/maventra-dev/MiBoxKonsol#readme"
+
+[tool.setuptools.packages.find]
+include = ["mibox_app*"]

@@ -9,7 +9,7 @@ from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QLineEdit,
-    QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy,
+    QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy, QFrame,
 )
 
 from ..workers import Worker
@@ -143,6 +143,7 @@ class NetworkTab(QWidget):
         actions.setSpacing(8)
         self.lbl_summary = kit.status_label(
             'Sonuçları çift tıklayarak veya seçip hedef yaparak bağlanın.')
+        self.lbl_summary.setWordWrap(True)
         actions.addWidget(self.lbl_summary, 1)
         self.btn_pair = QPushButton('Kablosuz Eşleştir')
         self.btn_pair.setProperty('role', 'secondary')
@@ -154,8 +155,157 @@ class NetworkTab(QWidget):
         actions.addWidget(self.btn_use)
         results_layout.addLayout(actions)
         root.addWidget(results_card)
+
+        # TV Network & WiFi Diagnostics Card
+        diag_card = QGroupBox('Canlı TV WiFi & Ağ Sağlığı Teşhisi')
+        diag_card.setObjectName('compactCard')
+        diag_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        diag_layout = QVBoxLayout(diag_card)
+        diag_layout.setContentsMargins(12, 10, 12, 10)
+        diag_layout.setSpacing(6)
+
+        diag_header = QHBoxLayout()
+        diag_title = QLabel('Bağlı Cihaz Ağ Analizi')
+        diag_title.setObjectName('cardTitle')
+        self.btn_run_diag = QPushButton('🔍 Ağı Test Et')
+        self.btn_run_diag.setToolTip('Bağlı Mi Box TV Wi-Fi sinyal kalitesini, modem pingini ve hızını test eder.')
+        self.btn_run_diag.setProperty('accent', True)
+        self.btn_run_diag.clicked.connect(self._run_diagnostics)
+        diag_header.addWidget(diag_title)
+        diag_header.addStretch(1)
+        diag_header.addWidget(self.btn_run_diag)
+        diag_layout.addLayout(diag_header)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(8)
+
+        card_defs = [
+            ('Wi-Fi Sinyali', 'lbl_wifi_signal', 'lbl_wifi_signal_detail'),
+            ('Bağlantı Hızı', 'lbl_wifi_speed', 'lbl_wifi_speed_detail'),
+            ('Modem Gecikmesi', 'lbl_gw_ping', 'lbl_gw_ping_detail'),
+            ('TV Yerel IP', 'lbl_net_ip', 'lbl_net_ip_detail'),
+        ]
+        for title, val_attr, detail_attr in card_defs:
+            m_box = QFrame()
+            m_box.setObjectName('metricCard')
+            m_box.setProperty('role', 'secondary')
+            m_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            m_lay = QVBoxLayout(m_box)
+            m_lay.setContentsMargins(10, 8, 10, 8)
+            m_lay.setSpacing(3)
+
+            m_title = QLabel(title)
+            m_title.setObjectName('metricLabel')
+            m_title.setProperty('role', 'quiet')
+
+            m_val = QLabel('—')
+            m_val.setStyleSheet('font-size: 15px; font-weight: 600;')
+            m_val.setProperty('role', 'primary')
+            setattr(self, val_attr, m_val)
+
+            m_detail = QLabel('Ölçüm bekleniyor')
+            m_detail.setProperty('role', 'quiet')
+            m_detail.setStyleSheet('font-size: 11px;')
+            m_detail.setWordWrap(True)
+            setattr(self, detail_attr, m_detail)
+
+            m_lay.addWidget(m_title)
+            m_lay.addWidget(m_val)
+            m_lay.addWidget(m_detail)
+            metrics_row.addWidget(m_box, 1)
+
+        diag_layout.addLayout(metrics_row)
+
+        self.diag_progress = QProgressBar()
+        self.diag_progress.setRange(0, 100)
+        self.diag_progress.setValue(0)
+        self.diag_progress.setMaximumHeight(8)
+        self.diag_progress.setTextVisible(False)
+        self.diag_progress.hide()
+        diag_layout.addWidget(self.diag_progress)
+
+        self.lbl_diag_advice = QLabel('Bağlı Mi Box TV’nin Wi-Fi sinyal kalitesini, modem pingini ve paket kaybını test edin.')
+        self.lbl_diag_advice.setWordWrap(True)
+        self.lbl_diag_advice.setProperty('role', 'quiet')
+        diag_layout.addWidget(self.lbl_diag_advice)
+
+        root.addWidget(diag_card)
         root.addStretch(1)
         self._stop_flag = False
+
+    def _run_diagnostics(self):
+        if not self.core.connected or not self.core.target:
+            QMessageBox.information(self, 'Bağlantı Yok', 'Ağ teşhisi yapmak için önce bir cihaza bağlanın.')
+            return
+        target = self.core.target
+        engine = self.core.engine
+
+        self.btn_run_diag.setEnabled(False)
+        self.diag_progress.setRange(0, 0)
+        self.diag_progress.show()
+        self.lbl_diag_advice.setText('Ağ ve Wi-Fi parametreleri ölçülüyor (ping, RSSI, link speed)...')
+
+        def do():
+            return engine.network_diagnostics(target)
+
+        def done(res):
+            self.btn_run_diag.setEnabled(True)
+            self.diag_progress.hide()
+
+            # Signal
+            sig_lbl = res.get('signal_label', '—')
+            rssi = res.get('rssi_dbm')
+            self.lbl_wifi_signal.setText(sig_lbl)
+            ssid = res.get('ssid', '')
+            if ssid and ssid != '—':
+                rssi_str = ' ({} dBm)'.format(rssi) if rssi is not None else ''
+                self.lbl_wifi_signal_detail.setText('{}{}'.format(ssid, rssi_str))
+            elif rssi is not None:
+                self.lbl_wifi_signal_detail.setText('{} dBm'.format(rssi))
+            else:
+                self.lbl_wifi_signal_detail.setText('Sinyal bilgisi alındı')
+
+            # Speed & Frequency
+            spd = res.get('link_speed', '—')
+            self.lbl_wifi_speed.setText(spd if spd else '—')
+            freq = res.get('frequency', '')
+            self.lbl_wifi_speed_detail.setText(freq if freq and freq != '—' else 'Wi-Fi bağlantısı')
+
+            # Ping & Loss
+            ping_ms = res.get('gateway_ping_ms')
+            loss = res.get('packet_loss_pct', 0)
+            if ping_ms is not None:
+                self.lbl_gw_ping.setText('{} ms'.format(ping_ms))
+                self.lbl_gw_ping_detail.setText('%{} paket kaybı'.format(loss))
+            else:
+                self.lbl_gw_ping.setText('—')
+                self.lbl_gw_ping_detail.setText('%{} paket kaybı'.format(loss) if loss else 'Ping ölçülemedi')
+
+            # IP & Interface
+            ip = res.get('ip', '—')
+            iface = res.get('interface', '')
+            self.lbl_net_ip.setText(ip if ip else '—')
+            if iface:
+                iface_desc = 'Wi-Fi' if 'wlan' in iface.lower() else 'Ethernet' if 'eth' in iface.lower() else iface
+                self.lbl_net_ip_detail.setText('{} ({})'.format(iface, iface_desc))
+            else:
+                self.lbl_net_ip_detail.setText('Ağ arabirimi')
+
+            rating = res.get('health_rating', 'İyi')
+            advice = res.get('advice', '')
+            color = '#4caf50' if rating == 'Mükemmel' else '#ff9800' if 'Zayıf' in rating or 'Yüksek' in rating else '#f44336'
+            self.lbl_diag_advice.setText('<b>Durum: <font color="{}">{}</font></b> — {}'.format(color, rating, advice))
+
+        def fail(err):
+            self.btn_run_diag.setEnabled(True)
+            self.diag_progress.hide()
+            self.lbl_diag_advice.setText('Teşhis tamamlanamadı: {}'.format(err))
+
+        w = Worker(do)
+        w.job_name = 'TV Ağ Teşhisi'
+        w.finished_ok.connect(done)
+        w.failed.connect(fail)
+        self.window._run(w, desc='Ağ: TV WiFi ve bağlantı kalitesi test ediliyor')
 
     def _stop_scan(self):
         self._stop_flag = True

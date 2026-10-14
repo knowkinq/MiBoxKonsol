@@ -36,8 +36,17 @@ class SettingsTab(QWidget):
         self.chk_log = kit.CheckBox('Günlük kayıtlarını logs/ klasörüne yaz')
         self.chk_log.setChecked(self.core.config.log_to_file)
         self.chk_log.toggled.connect(self._on_log_toggle)
+        self.chk_keyboard_nav = kit.CheckBox('Kumanda sekmesinde klavye ok tuşları ile yönetim')
+        self.chk_keyboard_nav.setChecked(getattr(self.core.config, 'keyboard_nav', True))
+        self.chk_keyboard_nav.toggled.connect(lambda on: (setattr(self.core.config, 'keyboard_nav', on), self.core.config.save()))
+        self.chk_grant_perms = kit.CheckBox('APK kurulumunda tüm izinleri otomatik ver (-g) · dikkat')
+        self.chk_grant_perms.setChecked(getattr(self.core.config, 'install_grant_perms', False))
+        self.chk_grant_perms.toggled.connect(lambda on: (setattr(self.core.config, 'install_grant_perms', on), self.core.config.save()))
+        self.chk_auto_connect = None
         pref_layout.addWidget(self.chk_dark)
         pref_layout.addWidget(self.chk_log)
+        pref_layout.addWidget(self.chk_keyboard_nav)
+        pref_layout.addWidget(self.chk_grant_perms)
         self.lbl_paths = QLabel('APK: {}\nEkran: {}\nLog: {}'.format(APK_DIR, SHOT_DIR, LOG_DIR))
         self.lbl_paths.setProperty('semanticRole', 'muted')
         self.lbl_paths.setStyleSheet(kit.muted(kit.dark_from(self)))
@@ -238,7 +247,8 @@ class SettingsTab(QWidget):
                         raise ValueError('Yedekte {} listesi geçersiz.'.format(k))
                     candidate[k] = list(data[k])
             for k in ('include_system', 'dark_mode', 'log_to_file',
-                      'screenshot_hd', 'auto_maint', 'show_unlisted', 'show_removed'):
+                      'screenshot_hd', 'auto_maint', 'show_unlisted', 'show_removed',
+                      'keyboard_nav', 'install_grant_perms', 'auto_connect_last'):
                 if k in data:
                     if type(data[k]) is not bool:
                         raise ValueError('Yedekte {} değeri true/false olmalıdır.'.format(k))

@@ -14,6 +14,7 @@ from . import kit
 from .flowlayout import FlowLayout
 from .optimization_tab import OptimizationTab, measurement
 from .background_panel import BackgroundPanel
+from .display_panel import DisplayPanel
 
 
 AUTO_COL_NAME = 0
@@ -57,15 +58,19 @@ class HealthTab(QWidget):
             scroll.setFrameShape(QFrame.NoFrame)
             scroll.setWidget(widget)
             self.sections.addTab(scroll, title)
-        add_page(overview, 'Genel durum')
+            return scroll
+
+        self.scroll_overview = add_page(overview, 'Genel durum')
         self.performance = OptimizationTab(self.core, self.window, embedded=True)
         self.performance.analysis_ready.connect(self._show)
-        add_page(self.performance, 'Performans ve bakım')
+        self.scroll_performance = add_page(self.performance, 'Performans ve bakım')
+        self.display_panel = DisplayPanel(self.core, self.window)
+        self.scroll_display = add_page(self.display_panel, 'Ekran & Çözünürlük')
         self.background = BackgroundPanel(self.core, self.window)
-        add_page(self.background, 'Arka plan')
+        self.scroll_bg = add_page(self.background, 'Arka plan')
         advanced_page = QWidget()
         advanced_root = kit.page(advanced_page)
-        add_page(advanced_page, 'Gelişmiş')
+        self.scroll_advanced = add_page(advanced_page, 'Gelişmiş')
         root = overview_root
         title = QLabel('Cihaz sağlığı')
         title.setObjectName('cardTitle')
@@ -120,6 +125,35 @@ class HealthTab(QWidget):
             card_layout.addWidget(detail)
             metrics.addWidget(card, 1)
         root.addLayout(metrics)
+
+        hardware_metrics = QHBoxLayout()
+        hardware_metrics.setSpacing(kit.SPACING)
+        self.lbl_display = QLabel('—')
+        self.lbl_display_detail = QLabel('Henüz ölçüm alınmadı')
+        self.lbl_cpu = QLabel('—')
+        self.lbl_cpu_detail = QLabel('Henüz ölçüm alınmadı')
+        for label, value, detail in (
+                ('Ekran & TV', self.lbl_display, self.lbl_display_detail),
+                ('İşlemci & Donanım', self.lbl_cpu, self.lbl_cpu_detail)):
+            card = QFrame()
+            card.setObjectName('metricCard')
+            card.setProperty('role', 'secondary')
+            card.setMinimumWidth(160)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setSpacing(6)
+            metric_label = QLabel(label)
+            metric_label.setObjectName('metricLabel')
+            metric_label.setProperty('role', 'quiet')
+            value.setObjectName('metricValue')
+            value.setProperty('role', 'primary')
+            detail.setWordWrap(True)
+            detail.setProperty('role', 'quiet')
+            card_layout.addWidget(metric_label)
+            card_layout.addWidget(value)
+            card_layout.addWidget(detail)
+            hardware_metrics.addWidget(card, 1)
+        root.addLayout(hardware_metrics)
         root.addWidget(kit.hint_label('Yenile ile anlık ölçümleri alın. Performans ve bakım sekmesinde '
                                      'önbellek ve animasyon adımlarını seçebilir, Arka plan sekmesinde '
                                      'uygulama izinlerini yönetebilirsiniz.'))
@@ -127,9 +161,13 @@ class HealthTab(QWidget):
         self.lbl_overview.setTextFormat(Qt.PlainText)
         root.addWidget(self.lbl_overview)
         overview_tools = FlowLayout()
-        for text, index in (('Performans ve bakım', 1), ('Arka plan yönetimi', 2)):
+        for text, scroll_widget in (
+            ('Performans ve bakım', self.scroll_performance),
+            ('Ekran ve çözünürlük', self.scroll_display),
+            ('Arka plan yönetimi', self.scroll_bg),
+        ):
             button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, i=index: self.sections.setCurrentIndex(i))
+            button.clicked.connect(lambda _checked=False, w=scroll_widget: self.sections.setCurrentWidget(w))
             overview_tools.addWidget(button)
         root.addLayout(overview_tools)
         root.addStretch()
@@ -245,22 +283,69 @@ class HealthTab(QWidget):
 
     # ------------------------------------------------------------------
     def refresh(self):
-        if self.sections.currentIndex() == 2:
+        self._refresh_hardware()
+        current_page = self.sections.currentWidget()
+        current_widget = current_page.widget() if isinstance(current_page, QScrollArea) else current_page
+        if current_widget is self.display_panel:
+            if self.core.connected and self.core.target:
+                self.display_panel.read_display()
+        elif current_widget is self.background:
             self.background.refresh()
-        else:
+        elif current_widget is self.performance or current_widget is self.scroll_overview.widget():
             self.performance.refresh()
 
-    def _connection_changed(self, _connected, _target):
+    def _connection_changed(self, connected, _target):
         self._generation += 1
         for worker in list(self._read_workers.values()):
             worker.cancel()
         self._show({})
+        self.lbl_display.setText('—')
+        self.lbl_display_detail.setText('Henüz ölçüm alınmadı')
+        self.lbl_cpu.setText('—')
+        self.lbl_cpu_detail.setText('Henüz ölçüm alınmadı')
         self.grid_top.setRowCount(0)
         self.grid_auto.setRowCount(0)
         self.lbl_perms.clear()
         self.lbl_auto_found.clear()
         self.lbl_auto_sel.clear()
         self.lbl_overview.setText('Bağlantı değişti. Mevcut cihazı yeniden ölçün.')
+        if connected:
+            self._refresh_hardware()
+
+    def _refresh_hardware(self):
+        if not self.core.connected or not self.core.target:
+            return
+        def fetch(eng, t):
+            disp = eng.display_info(t)
+            cpu = eng.cpu_info(t)
+            return disp, cpu
+        self._read('Donanım bilgisi', fetch, self._show_hardware)
+
+    def _show_hardware(self, result):
+        disp, cpu = result
+        if disp and (disp.get('width') or disp.get('sink_name')):
+            w = disp.get('width', '?')
+            h = disp.get('height', '?')
+            fps = disp.get('fps', 60)
+            sink = disp.get('sink_name') or 'Android TV'
+            dpi = disp.get('density') or '?'
+            self.lbl_display.setText('{}×{} @ {}Hz'.format(w, h, int(fps) if int(fps) == fps else fps))
+            self.lbl_display_detail.setText('{} dpi · HDMI: {}'.format(dpi, sink))
+        else:
+            self.lbl_display.setText('—')
+            self.lbl_display_detail.setText('Ekran bilgisi okunamadı')
+
+        if cpu and (cpu.get('soc') or cpu.get('cores')):
+            soc = cpu.get('soc') or 'Bilinmeyen SoC'
+            cores = cpu.get('cores', 4)
+            abi = cpu.get('abi', '')
+            temp = cpu.get('temperature_c')
+            temp_str = ' · {}°C'.format(int(temp)) if temp is not None else ''
+            self.lbl_cpu.setText('{} ({} Çekirdek)'.format(soc, cores))
+            self.lbl_cpu_detail.setText('{}{}'.format(abi, temp_str))
+        else:
+            self.lbl_cpu.setText('—')
+            self.lbl_cpu_detail.setText('İşlemci bilgisi okunamadı')
 
     def _read(self, name, func, on_ok):
         if name in self._read_workers:

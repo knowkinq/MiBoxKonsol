@@ -12,9 +12,11 @@ import re
 # Asla çalıştırılmayacaklar (alt-string değil, komut bazında)
 REFUSED_PATTERNS = [
     r'[;&|`$<>]', r'\$\(', r'\r|\n',
+    r'^\s*rm(?:\s|$)',
     r'\bwipe\b', r'factory\s*reset', r'fastboot', r'\bsu\b',
     r'bootloader', r'adb_enabled\s+0', r'recovery\s+--wipe',
     r'format\s', r'dd\s+if=', r':\(\)\{\s*:\|\:&\s*\};:',
+    r'\bmkfs\b', r'\bnewfs\b',
     r'rm\s+(-[a-z]*r[a-z]*\s+)+/(system|vendor|data|sdcard)?(\s|$)',
     r'rm\s+(-[a-z]*r[a-z]*\s+)+/(system|vendor|data|sdcard)?/',
 ]
@@ -22,19 +24,19 @@ REFUSED_PATTERNS = [
 READ_PREFIX = (
     'getprop', 'dumpsys', 'pm list', 'pm path', 'pm dump', 'cmd package query',
     'cmd package resolve', 'cmd appops get', 'cmd appops query', 'settings get',
-    'df', 'du ', 'du\t', 'ls', 'cat /proc', 'uptime', 'wm size', 'wm density',
-    'ip route', 'logcat -d', 'ps',
+    'df', 'du ', 'du\t', 'ls', 'cat /proc', 'cat /sys', 'uptime', 'wm size', 'wm density',
+    'wm overscan', 'ip route', 'logcat -d', 'ps',
 )
 
 SETTING_PREFIX = (
-    'settings put', 'wm size ', 'wm density ', 'cmd package set-home-activity',
+    'settings put', 'wm size ', 'wm density ', 'wm overscan ', 'cmd package set-home-activity',
     'cmd appops set', 'am set-standby-bucket',
 )
 
 CHANGE_PREFIX = (
     'pm disable-user', 'pm enable', 'pm uninstall', 'pm install',
-    'pm clear', 'pm trim', 'am force-stop', 'appops set', 'dpm ',
-    'cmd package install', 'input ', 'keyevent ', 'screencap',
+    'pm clear', 'pm trim', 'am force-stop', 'am kill-all', 'am start', 'appops set', 'dpm ',
+    'cmd package install', 'cmd clipboard', 'input ', 'keyevent ', 'screencap',
     'monkey ', 'reboot', 'svc ',
 )
 
@@ -60,10 +62,9 @@ def classify(cmdline):
     for pre in CHANGE_PREFIX:
         if low.startswith(pre):
             return 'CHANGE'
-    # bilinmeyen shell komutu: temkinli CHANGE
-    return 'CHANGE'
+    # Bilinmeyen komutun etkisi öngörülemez; onay kutusu bunu güvenli yapmaz.
+    return 'REFUSED'
 
 
 REFUSED_MSG = ('Bu komut kapı tarafından REDDEDİLDİ (yıkıcı/geri dönüşsüz):\n'
-               'wipe, factory reset, bootloader, su, adb kapatma gibi komutlar '
-               'asla çalıştırılmaz.')
+               'yıkıcı komutlar ve tanınmayan shell komutları çalıştırılmaz.')

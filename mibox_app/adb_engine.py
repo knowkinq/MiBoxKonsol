@@ -335,7 +335,10 @@ class AdbEngine:
             private_values = []
             for i, a in enumerate(shown):
                 # 'adb pair HOST:PORT KOD' -> host ve kodun TAMAMI maskelenir
-                if str(a).lower() in self._MASK_ARGS:
+                value = str(a).lower()
+                is_private_text = (value == 'text' and i > 0
+                                   and str(shown[i - 1]).lower() == 'input')
+                if value in self._MASK_ARGS or is_private_text:
                     for j in range(i + 1, len(shown)):
                         if shown[j]:
                             private_values.append(str(shown[j]))
@@ -431,7 +434,10 @@ class AdbEngine:
             self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman aşımı')
             shown = list(args)
             for i, arg in enumerate(shown):
-                if str(arg).lower() in self._MASK_ARGS:
+                value = str(arg).lower()
+                is_private_text = (value == 'text' and i > 0
+                                   and str(shown[i - 1]).lower() == 'input')
+                if value in self._MASK_ARGS or is_private_text:
                     for j in range(i + 1, len(shown)):
                         shown[j] = '******'
             raise AdbError('ADB zaman aşımı ({} sn): adb {}'.format(
@@ -458,7 +464,7 @@ class AdbEngine:
     # ------------------------------------------------------------------
     # Baglanti
     # ------------------------------------------------------------------
-    def connect(self, target, timeout=10, deneme=1, bekleme=0.6):
+    def connect(self, target, timeout=10, deneme=1, bekleme=0.6, cancel_check=None):
         """Baglanti kurar; basarisizsa AdbError.
 
         deneme=1 (varsayilan): tek deneme — etkilesimli 'Baglan' hizli basarisiz
@@ -475,7 +481,7 @@ class AdbEngine:
             if device['state'] != 'device':
                 raise AdbError('Cihaz hazır değil ({}): {}'.format(
                     device['state'], target))
-            state = self.run(['-s', target, 'get-state'], timeout=timeout)
+            state = self.run(['-s', target, 'get-state'], timeout=timeout, cancel_check=cancel_check)
             if state.exit_code != 0 or state.output != 'device':
                 raise AdbError('Cihaz hazır değil: {} {}'.format(
                     state.output, state.error).strip())
@@ -483,8 +489,10 @@ class AdbEngine:
         deneme = max(1, int(deneme or 1))
         son_hata = None
         for i in range(deneme):
+            if cancel_check and cancel_check():
+                raise AdbError('ADB işlemi kullanıcı tarafından durduruldu')
             try:
-                r = self.run(['connect', target], timeout=timeout)
+                r = self.run(['connect', target], timeout=timeout, cancel_check=cancel_check)
             except AdbError as e:
                 if i + 1 < deneme and is_transient_connect_error(str(e)):
                     son_hata = e
@@ -501,7 +509,7 @@ class AdbEngine:
                     _time.sleep(bekleme)
                     continue
                 raise hata
-            st = self.run(['-s', target, 'get-state'], timeout=timeout)
+            st = self.run(['-s', target, 'get-state'], timeout=timeout, cancel_check=cancel_check)
             if st.output != 'device':
                 hata = AdbError('Cihaz hazır degil: {} {}'.format(st.output, st.error))
                 if i + 1 < deneme and is_transient_connect_error('{} {}'.format(st.output, st.error)):
@@ -596,6 +604,19 @@ class AdbEngine:
         if include_system and not packages:
             raise AdbError('Sistem paket listesi boş; sonuç doğrulanamadı.')
         return packages
+
+    def is_installed(self, target, package, user_id=None):
+        """Paketin hedef cihazda kurulu olup olmadığını hızlıca sorgular (pm path)."""
+        if not is_valid_package(package):
+            return False
+        cmd = ['pm', 'path', package]
+        if user_id is not None:
+            cmd = ['pm', 'path', '--user', str(check_user_id(user_id)), package]
+        try:
+            r = self.shell(target, *cmd, timeout=10)
+            return r.exit_code == 0 and 'package:' in (r.output or '')
+        except Exception:
+            return False
 
     @staticmethod
     def _parse_package_list(output):
@@ -1438,43 +1459,77 @@ class AdbEngine:
             raise AdbError('Gonderilecek geçerli karakter yok (özel semboller atildi).')
         return self.shell(target, 'input', 'text', safe, timeout=10)
 
+    def tap(self, target, x, y, timeout=10):
+        """Ekranda belirli bir koordinata dokunur (input tap X Y)."""
+        try:
+            x_val, y_val = int(x), int(y)
+        except (TypeError, ValueError):
+            raise AdbError('Geçersiz koordinat: ({}, {})'.format(x, y))
+        if x_val < 0 or y_val < 0:
+            raise AdbError('Koordinatlar negatif olamaz: ({}, {})'.format(x_val, y_val))
+        return self.shell(target, 'input', 'tap', str(x_val), str(y_val), timeout=timeout)
+
+    def swipe(self, target, x1, y1, x2, y2, duration_ms=300, timeout=10):
+        """Ekranda kaydırma hareketi yapar (input swipe X1 Y1 X2 Y2 [duration])."""
+        try:
+            coords = [int(x1), int(y1), int(x2), int(y2), int(duration_ms)]
+        except (TypeError, ValueError):
+            raise AdbError('Geçersiz kaydırma parametresi.')
+        if any(c < 0 for c in coords):
+            raise AdbError('Parametreler negatif olamaz.')
+        args = [str(c) for c in coords]
+        return self.shell(target, 'input', 'swipe', *args, timeout=timeout)
+
     def launch(self, target, pkg, user_id=0):
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         uid = check_user_id(user_id)
-        r = self.shell(target, 'monkey', '--user', str(uid), '-p', pkg, '-c',
-                       'android.intent.category.LAUNCHER', '1', timeout=15)
+        # 1. Leanback launcher (TV) ve Standart Launcher (Mobil) kategorileri
+        for cat in ('android.intent.category.LEANBACK_LAUNCHER', 'android.intent.category.LAUNCHER'):
+            r = self.shell(target, 'monkey', '--user', str(uid), '-p', pkg, '-c',
+                           cat, '1', timeout=15)
+            text = '{} {}'.format(r.output or '', r.error or '')
+            if r.exit_code == 0 and not re.search(r'No activities found|error|exception|failed', text, re.I):
+                return r
+
+        # 2. Genel monkey fallback
+        r = self.shell(target, 'monkey', '--user', str(uid), '-p', pkg, '1', timeout=15)
         text = '{} {}'.format(r.output or '', r.error or '')
         if r.exit_code != 0 or re.search(
                 r'No activities found|error|exception|failed', text, re.I):
             raise AdbError('{} için user {} uygulaması başlatılamadı: {}'.format(
-                pkg, uid, text.strip() or 'monkey başarısız'))
+                pkg, uid, text.strip() or 'başlatma başarısız'))
         return r
 
     def launch_resolved(self, target, pkg, timeout=15, user_id=0):
-        """Once resolve-activity dener, olmazsa monkey fallback."""
+        """Once resolve-activity dener (LEANBACK_LAUNCHER ve LAUNCHER), olmazsa monkey fallback."""
         pkg = str(pkg).strip()
         if not is_valid_package(pkg):
             raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
         uid = check_user_id(user_id)
         try:
-            r = self.shell(target, 'cmd', 'package', 'resolve-activity',
-                           '--brief', '--user', str(uid), '-c',
-                           'android.intent.category.LAUNCHER', pkg,
-                           timeout=timeout)
-            resolved = next((line.strip() for line in (r.output or '').splitlines()
-                             if home_pkg_of(line.strip()) == pkg), None)
-            if r.exit_code == 0 and resolved:
-                r2 = self.shell(target, 'am', 'start', '--user', str(uid), '-n', resolved,
-                                timeout=timeout)
-                if (r2.exit_code == 0 and not re.search(
-                        r'error|exception|failed',
-                        '{} {}'.format(r2.output or '', r2.error or ''), re.I)):
-                    return r2
+            for cat in ('android.intent.category.LEANBACK_LAUNCHER', 'android.intent.category.LAUNCHER'):
+                r = self.shell(target, 'cmd', 'package', 'resolve-activity',
+                               '--brief', '--user', str(uid), '-c',
+                               cat, pkg,
+                               timeout=timeout)
+                resolved = next((line.strip() for line in (r.output or '').splitlines()
+                                 if home_pkg_of(line.strip()) == pkg), None)
+                if r.exit_code == 0 and resolved:
+                    r2 = self.shell(target, 'am', 'start', '--user', str(uid), '-n', resolved,
+                                    timeout=timeout)
+                    if (r2.exit_code == 0 and not re.search(
+                            r'error|exception|failed',
+                            '{} {}'.format(r2.output or '', r2.error or ''), re.I)):
+                        return r2
         except AdbError:
             pass
         return self.launch(target, pkg, user_id=uid)
+
+    def launch_app(self, target, pkg, timeout=15, user_id=0):
+        """Uygulamayı TV ekranında başlatır (launch_resolved takma adı)."""
+        return self.launch_resolved(target, pkg, timeout=timeout, user_id=user_id)
 
     # ------------------------------------------------------------------
     # Donanim / sistem
@@ -1824,7 +1879,8 @@ class AdbEngine:
     # ------------------------------------------------------------------
     # APK kurulum + HOME launcher + hizlandirma (v8: AppControl/tvboxtools)
     # ------------------------------------------------------------------
-    def install_apk(self, target, local_path, reinstall=True, timeout=120):
+    def install_apk(self, target, local_path, reinstall=True, grant_perms=False,
+                    allow_downgrade=False, timeout=120):
         """Tek APK kur. Donus: AdbResult (Success kontrolu yapilir)."""
         import os as _os
         lp = str(local_path or '').strip()
@@ -1837,6 +1893,10 @@ class AdbEngine:
         args = ['install']
         if reinstall:
             args.append('-r')
+        if grant_perms:
+            args.append('-g')
+        if allow_downgrade:
+            args.append('-d')
         args.append(lp)
         r = self.run(['-s', target] + args, timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
@@ -1844,6 +1904,27 @@ class AdbEngine:
             raise AdbError('Kurulum başarısız ({}): {}'.format(
                 local_path.rsplit('\\', 1)[-1].rsplit('/', 1)[-1],
                 text.strip() or 'bilinmeyen hata'))
+        return r
+
+    def install_remote_apk(self, target, remote_path, reinstall=True,
+                           grant_perms=False, allow_downgrade=False, timeout=180):
+        """Cihaz üzerindeki bir APK dosyasını doğrudan kurar (pm install)."""
+        rp = safe_remote_path(remote_path)
+        if not rp.lower().endswith('.apk'):
+            raise AdbError('Geçersiz uzak APK yolu: {!r}'.format(remote_path))
+        args = ['pm', 'install']
+        if reinstall:
+            args.append('-r')
+        if grant_perms:
+            args.append('-g')
+        if allow_downgrade:
+            args.append('-d')
+        args.append(_quoted_remote_path(rp))
+        r = self.shell(target, *args, timeout=timeout)
+        text = '{} {}'.format(r.output or '', r.error or '')
+        if r.exit_code != 0 or not re.search(r'\bSuccess\b', text):
+            raise AdbError('Cihazda kurulum başarısız ({}): {}'.format(
+                remote_path.rsplit('/', 1)[-1], text.strip() or 'bilinmeyen hata'))
         return r
 
     def _bundletool_command(self):
@@ -1878,7 +1959,8 @@ class AdbEngine:
         except OSError as exc:
             raise AdbError('Bundletool {} çalıştırılamadı: {}'.format(operation, exc)) from exc
 
-    def _install_apks_archive(self, target, archive_path, timeout):
+    def _install_apks_archive(self, target, archive_path, timeout, reinstall=True,
+                              grant_perms=False, allow_downgrade=False):
         """Install only the APKs bundletool selects for this exact device."""
         import tempfile as _tempfile
         prefix = self._bundletool_command()
@@ -1919,10 +2001,16 @@ class AdbEngine:
             if not selected:
                 raise AdbError('Bundletool {} için uyumlu APK bulamadı.'.format(serial))
             if len(selected) == 1:
-                return self.install_apk(target, selected[0], timeout=timeout)
-            return self.install_multiple(target, selected, timeout=timeout)
+                return self.install_apk(
+                    target, selected[0], reinstall=reinstall,
+                    grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                    timeout=timeout)
+            return self.install_multiple(
+                target, selected, reinstall=reinstall, grant_perms=grant_perms,
+                allow_downgrade=allow_downgrade, timeout=timeout)
 
-    def _install_universal_apks(self, target, archive_path, timeout):
+    def _install_universal_apks(self, target, archive_path, timeout, reinstall=True,
+                                grant_perms=False, allow_downgrade=False):
         """Use a single explicitly universal APK when bundletool is absent."""
         import zipfile
         import tempfile as _tempfile
@@ -1944,13 +2032,16 @@ class AdbEngine:
                     path = os.path.join(folder, 'universal.apk')
                     with archive.open(entry) as source, open(path, 'wb') as dest:
                         shutil.copyfileobj(source, dest, length=1024 * 1024)
-                    return self.install_apk(target, path, timeout=timeout)
+                    return self.install_apk(
+                        target, path, reinstall=reinstall, grant_perms=grant_perms,
+                        allow_downgrade=allow_downgrade, timeout=timeout)
         except AdbError:
             raise
         except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
             raise AdbError('.apks arşivi açılamadı: {}'.format(exc)) from exc
 
-    def install_multiple(self, target, apk_path, timeout=180):
+    def install_multiple(self, target, apk_path, reinstall=True,
+                         grant_perms=False, allow_downgrade=False, timeout=180):
         """Install a flat APK set (adb install-multiple) or .apkm/.xapk archive.
 
         apk_path tek tek dosya listesi, dizin (icindeki *.apk'lar) veya
@@ -1962,10 +2053,14 @@ class AdbEngine:
         if isinstance(apk_path, str) and apk_path.lower().endswith('.apks'):
             if not _os.path.isfile(apk_path):
                 raise AdbError('.apks arşivi bulunamadı: ' + apk_path)
-            result = self._install_apks_archive(target, apk_path, timeout)
+            result = self._install_apks_archive(
+                target, apk_path, timeout, reinstall=reinstall,
+                grant_perms=grant_perms, allow_downgrade=allow_downgrade)
             if result is not None:
                 return result
-            return self._install_universal_apks(target, apk_path, timeout)
+            return self._install_universal_apks(
+                target, apk_path, timeout, reinstall=reinstall,
+                grant_perms=grant_perms, allow_downgrade=allow_downgrade)
         if isinstance(apk_path, str) and apk_path.lower().endswith(('.apkm', '.xapk')):
             import zipfile
             import tempfile
@@ -1986,7 +2081,9 @@ class AdbEngine:
                             with archive.open(entry) as source, open(path, 'wb') as dest:
                                 shutil.copyfileobj(source, dest, length=1024 * 1024)
                             extracted.append(path)
-                        return self.install_multiple(target, extracted, timeout=timeout)
+                        return self.install_multiple(target, extracted, reinstall=reinstall,
+                                                    grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                                                    timeout=timeout)
             except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
                 raise AdbError('APK arşivi açılamadı: {}'.format(exc)) from exc
         if isinstance(apk_path, (list, tuple)):
@@ -2008,7 +2105,14 @@ class AdbEngine:
         files = clean
         if not files:
             raise AdbError('Kurulacak APK bulunamadı: ' + str(apk_path))
-        args = ['install-multiple', '-r'] + files
+        args = ['install-multiple']
+        if reinstall:
+            args.append('-r')
+        if grant_perms:
+            args.append('-g')
+        if allow_downgrade:
+            args.append('-d')
+        args.extend(files)
         r = self.run(['-s', target] + args, timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or not re.search(r'\bSuccess\b', text):
@@ -2418,4 +2522,494 @@ class AdbEngine:
             info['screen'] = wm2.strip().splitlines()[0] if wm2.strip() else '?'
         except AdbError:
             info['screen'] = '?'
+        return info
+
+    def display_details(self, target, timeout=15):
+        """Ayrintili ekran bilgisi: physical/override size, physical/override density, overscan, fps, sink_name."""
+        out = {
+            'physical_width': 1920,
+            'physical_height': 1080,
+            'override_width': None,
+            'override_height': None,
+            'width': 1920,
+            'height': 1080,
+            'physical_density': 320,
+            'override_density': None,
+            'density': 320,
+            'fps': 60.0,
+            'overscan': None,
+            'sink_name': '',
+            'screen_str': '1920x1080 @ 60Hz',
+            'read_errors': [],
+        }
+        try:
+            result = self.shell(target, 'wm', 'size', timeout=timeout)
+            if result.exit_code != 0:
+                raise AdbError(result.error or result.output or 'wm size okunamadı')
+            size_out = (result.output or '').strip()
+            m_phys = re.search(r'Physical size:\s*(\d+)x(\d+)', size_out)
+            if m_phys:
+                out['physical_width'] = int(m_phys.group(1))
+                out['physical_height'] = int(m_phys.group(2))
+                out['width'] = out['physical_width']
+                out['height'] = out['physical_height']
+            else:
+                m_gen = re.search(r'size:\s*(\d+)x(\d+)', size_out)
+                if m_gen:
+                    out['physical_width'] = int(m_gen.group(1))
+                    out['physical_height'] = int(m_gen.group(2))
+                    out['width'] = out['physical_width']
+                    out['height'] = out['physical_height']
+            m_over = re.search(r'Override size:\s*(\d+)x(\d+)', size_out)
+            if m_over:
+                out['override_width'] = int(m_over.group(1))
+                out['override_height'] = int(m_over.group(2))
+                out['width'] = out['override_width']
+                out['height'] = out['override_height']
+            if not m_phys and not m_gen:
+                raise AdbError('wm size çıktısı çözümlenemedi')
+        except AdbError:
+            out['read_errors'].append('size')
+
+        try:
+            result = self.shell(target, 'wm', 'density', timeout=timeout)
+            if result.exit_code != 0:
+                raise AdbError(result.error or result.output or 'wm density okunamadı')
+            dens_out = (result.output or '').strip()
+            m_phys = re.search(r'Physical density:\s*(\d+)', dens_out)
+            if m_phys:
+                out['physical_density'] = int(m_phys.group(1))
+                out['density'] = out['physical_density']
+            else:
+                m_gen = re.search(r'density:\s*(\d+)', dens_out)
+                if m_gen:
+                    out['physical_density'] = int(m_gen.group(1))
+                    out['density'] = out['physical_density']
+            m_over = re.search(r'Override density:\s*(\d+)', dens_out)
+            if m_over:
+                out['override_density'] = int(m_over.group(1))
+                out['density'] = out['override_density']
+            if not m_phys and not m_gen:
+                raise AdbError('wm density çıktısı çözümlenemedi')
+        except AdbError:
+            out['read_errors'].append('density')
+
+        try:
+            result = self.shell(target, 'wm', 'overscan', timeout=timeout)
+            if result.exit_code != 0:
+                raise AdbError(result.error or result.output or 'wm overscan okunamadı')
+            overscan_out = (result.output or '').strip()
+            m_ov = re.search(r'overscan:\s*(-?\d+),(-?\d+),(-?\d+),(-?\d+)', overscan_out, re.I)
+            if m_ov:
+                out['overscan'] = [int(m_ov.group(i)) for i in range(1, 5)]
+            else:
+                raise AdbError('wm overscan çıktısı çözümlenemedi')
+        except AdbError:
+            out['read_errors'].append('overscan')
+
+        try:
+            disp_out = (self.shell(target, 'dumpsys', 'display', timeout=timeout).output or '')
+            m = re.search(r'(?:renderFrameRate|fps[=:])\s*([\d\.]+)', disp_out)
+            if m:
+                out['fps'] = round(float(m.group(1)), 1)
+            m_name = re.search(r'DeviceProductInfo\{name=([^,\}]+)', disp_out)
+            if m_name:
+                out['sink_name'] = m_name.group(1).strip()
+        except AdbError:
+            pass
+
+        fps_val = int(out['fps']) if out['fps'].is_integer() else out['fps']
+        screen_parts = ['{}x{} @ {}Hz ({} DPI)'.format(
+            out['width'], out['height'], fps_val, out['density']
+        )]
+        if out['override_width'] or out['override_density']:
+            screen_parts.append('(Özel Ölçek)')
+        if out['sink_name']:
+            screen_parts.append('· ' + out['sink_name'])
+        out['screen_str'] = ' '.join(screen_parts)
+        return out
+
+    def display_info(self, target, timeout=15):
+        """Ekran cozunurlugu, yenileme hizi (Hz), yogunluk (DPI) ve bagli ekran bilgisi."""
+        return self.display_details(target, timeout=timeout)
+
+    def set_display_size(self, target, width, height, timeout=15):
+        """wm size <width>x<height> uygular."""
+        if not (isinstance(width, int) and isinstance(height, int) and 320 <= width <= 7680 and 240 <= height <= 4320):
+            raise AdbError('Geçersiz çözünürlük boyutları.')
+        res = self.shell(target, 'wm', 'size', f'{width}x{height}', timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('Çözünürlük uygulanamadı: ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def reset_display_size(self, target, timeout=15):
+        """wm size reset ile fabrika cozunurlugune doner."""
+        res = self.shell(target, 'wm', 'size', 'reset', timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('Çözünürlük sıfırlanamadı: ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def set_display_density(self, target, density, timeout=15):
+        """wm density <val> uygular."""
+        if not (isinstance(density, int) and 72 <= density <= 1000):
+            raise AdbError('Geçersiz DPI değeri (72-1000 arası olmalı).')
+        res = self.shell(target, 'wm', 'density', str(density), timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('DPI uygulanamadı: ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def reset_display_density(self, target, timeout=15):
+        """wm density reset ile fabrika DPI degerine doner."""
+        res = self.shell(target, 'wm', 'density', 'reset', timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('DPI sıfırlanamadı: ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def set_display_overscan(self, target, left, top, right, bottom, timeout=15):
+        """wm overscan left,top,right,bottom uygular (Android 10 ve alti)."""
+        for v in (left, top, right, bottom):
+            if not (isinstance(v, int) and -300 <= v <= 300):
+                raise AdbError('Geçersiz overscan değeri (-300 ile +300 arası olmalı).')
+        res = self.shell(target, 'wm', 'overscan', f'{left},{top},{right},{bottom}', timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('Overscan uygulanamadı (cihaz desteklemiyor olabilir): ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def reset_display_overscan(self, target, timeout=15):
+        """wm overscan reset ile kenar bosluklarini sifirlar."""
+        res = self.shell(target, 'wm', 'overscan', 'reset', timeout=timeout)
+        if res.exit_code != 0:
+            raise AdbError('Overscan sıfırlanamadı: ' + (res.output or ''))
+        return self.display_details(target, timeout=timeout)
+
+    def network_diagnostics(self, target, timeout=15):
+        """Cihazin WiFi, yerel IP, ag gecidi (gateway) ve erisim sagligini olcer."""
+        diag = {
+            'target': target,
+            'interface': 'wlan0',
+            'ip': '—',
+            'gateway': '—',
+            'ssid': '—',
+            'rssi': None,
+            'signal_pct': 0,
+            'signal_label': 'Bilinmiyor',
+            'link_speed': '—',
+            'frequency': '—',
+            'gateway_ping_ms': None,
+            'packet_loss_pct': 0,
+            'health_rating': 'İyi',
+            'advice': 'Ağ bağlantısı normal görünüyor.',
+        }
+        # 1. IP ve Gateway bilgisi (ip route & ip addr)
+        try:
+            route_out = (self.shell(target, 'ip', 'route', timeout=timeout).output or '')
+            m_gw = re.search(r'default\s+via\s+([0-9\.]+)\s+dev\s+([a-zA-Z0-9_]+)', route_out)
+            if m_gw:
+                diag['gateway'] = m_gw.group(1)
+                diag['interface'] = m_gw.group(2)
+        except AdbError:
+            pass
+
+        try:
+            addr_out = (self.shell(target, 'ip', '-o', '-4', 'addr', 'show', diag['interface'], timeout=timeout).output or '')
+            m_ip = re.search(r'inet\s+([0-9\.]+)/(\d+)', addr_out)
+            if m_ip:
+                diag['ip'] = m_ip.group(1)
+        except AdbError:
+            pass
+
+        # 2. WiFi Sinyal ve Detaylari (dumpsys wifi)
+        if 'wlan' in diag['interface']:
+            try:
+                wifi_out = (self.shell(target, 'dumpsys', 'wifi', timeout=timeout).output or '')
+                m_ssid = re.search(r'mWifiInfo\s+SSID:\s*"?([^",\r\n]+)"?', wifi_out)
+                if not m_ssid:
+                    m_ssid = re.search(r'SSID:\s*"?([^",\r\n]+)"?', wifi_out)
+                if m_ssid:
+                    diag['ssid'] = m_ssid.group(1).strip()
+
+                m_rssi = re.search(r'RSSI:\s*(-?\d+)', wifi_out)
+                if m_rssi:
+                    rssi = int(m_rssi.group(1))
+                    diag['rssi'] = rssi
+                    pct = max(0, min(100, int(2 * (rssi + 100))))
+                    diag['signal_pct'] = pct
+                    if rssi >= -60:
+                        diag['signal_label'] = f'Mükemmel ({rssi} dBm)'
+                    elif rssi >= -70:
+                        diag['signal_label'] = f'İyi ({rssi} dBm)'
+                    elif rssi >= -80:
+                        diag['signal_label'] = f'Orta / Zayıf ({rssi} dBm)'
+                    else:
+                        diag['signal_label'] = f'Çok Zayıf ({rssi} dBm)'
+
+                m_spd = re.search(r'(?:Link speed|txLinkSpeedMbps):\s*(\d+)\s*(?:Mbps)?', wifi_out, re.I)
+                if m_spd:
+                    diag['link_speed'] = m_spd.group(1) + ' Mbps'
+
+                m_freq = re.search(r'(?:Frequency|mFrequency):\s*(\d+)\s*MHz', wifi_out, re.I)
+                if m_freq:
+                    freq = int(m_freq.group(1))
+                    band = '5 GHz' if freq >= 4900 else '2.4 GHz'
+                    diag['frequency'] = f'{band} ({freq} MHz)'
+            except AdbError:
+                pass
+        else:
+            diag['ssid'] = 'Kablolu Bağlantı (Ethernet)'
+            diag['signal_pct'] = 100
+            diag['signal_label'] = 'Kablolu (Mükemmel)'
+
+        # 3. TV -> Gateway Ping & Packet Loss
+        if diag['gateway'] != '—':
+            try:
+                ping_out = (self.shell(target, 'ping', '-c', '3', '-W', '2', diag['gateway'], timeout=timeout).output or '')
+                m_loss = re.search(r'(\d+)%\s+packet\s+loss', ping_out)
+                if m_loss:
+                    diag['packet_loss_pct'] = int(m_loss.group(1))
+                m_rtt = re.search(r'rtt\s+min/avg/max/mdev\s*=\s*[\d\.]+/([\d\.]+)/', ping_out)
+                if m_rtt:
+                    diag['gateway_ping_ms'] = round(float(m_rtt.group(1)), 1)
+            except AdbError:
+                pass
+
+        # 4. Teşhis Analizi ve Tavsiye
+        if diag['packet_loss_pct'] > 0:
+            diag['health_rating'] = 'Kritik / Paket Kaybı Var'
+            diag['advice'] = f"TV ile modem arasında %{diag['packet_loss_pct']} paket kaybı tespit edildi! Wi-Fi paraziti veya sinyal zayıflığı video akışlarında donmaya yol açabilir."
+        elif diag['rssi'] is not None and diag['rssi'] < -80:
+            diag['health_rating'] = 'Zayıf Sinyal'
+            diag['advice'] = f"Wi-Fi sinyali çok zayıf ({diag['rssi']} dBm). Mi Box’ı modeme yaklaştırın veya 5GHz kanalını kontrol edin."
+        elif diag['gateway_ping_ms'] is not None and diag['gateway_ping_ms'] > 35:
+            diag['health_rating'] = 'Yüksek Gecikme'
+            diag['advice'] = f"Modeme ping gecikmesi yüksek ({diag['gateway_ping_ms']} ms). Ağ trafiği yoğun veya kablosuz kanal parazitli olabilir."
+        else:
+            diag['health_rating'] = 'Mükemmel'
+            diag['advice'] = 'Ağ ve sinyal durumu gayet iyi. 4K HDR yayın ve akıcı oynatma için uygundur.'
+
+        return diag
+
+    def cpu_info(self, target, timeout=15):
+        """Islemci SoC modeli, mimari (ABI), cekirdek sayisi ve sicaklik."""
+        out = {
+            'abi': self.getprop(target, 'ro.product.cpu.abi') or '?',
+            'soc': self.getprop(target, 'ro.soc.model') or self.getprop(target, 'ro.board.platform') or '?',
+            'cores': 4,
+            'temp': '?',
+        }
+        try:
+            cpu_out = self.shell(target, 'cat', '/proc/cpuinfo', timeout=timeout).output or ''
+            cores = len(re.findall(r'(?m)^processor\s*:', cpu_out))
+            if cores > 0:
+                out['cores'] = cores
+            m_hw = re.search(r'(?m)^Hardware\s*:\s*(.+)$', cpu_out)
+            if m_hw and out['soc'] == '?':
+                out['soc'] = m_hw.group(1).strip()
+        except AdbError:
+            pass
+
+        for zone in ('/sys/class/thermal/thermal_zone0/temp',
+                     '/sys/devices/virtual/thermal/thermal_zone0/temp'):
+            try:
+                r = self.shell(target, 'cat', zone, timeout=5)
+                val = (r.output or '').strip()
+                if val.isdigit():
+                    num = int(val)
+                    deg = round(num / 1000.0 if num > 200 else float(num), 1)
+                    out['temp'] = '{}°C'.format(deg)
+                    break
+            except AdbError:
+                pass
+        return out
+
+    def usb_storages(self, target, timeout=15):
+        """Bagli harici USB bellek veya tasinabilir diskleri listeler."""
+        storages = []
+        try:
+            r = self.shell(target, 'ls', '-1', '/storage', timeout=timeout)
+            for line in (r.output or '').splitlines():
+                name = line.strip()
+                if not name or name in ('emulated', 'self', 'sdcard', 'knox-emulated'):
+                    continue
+                full_path = '/storage/' + name
+                df_r = self.shell(target, 'df', full_path, timeout=5)
+                lines = [l for l in (df_r.output or '').splitlines() if full_path in l]
+                total_kb, avail_kb = 0, 0
+                if lines:
+                    parts = lines[-1].split()
+                    if len(parts) >= 4:
+                        try:
+                            total_kb = int(parts[1])
+                            avail_kb = int(parts[3])
+                        except ValueError:
+                            pass
+                storages.append({
+                    'name': 'USB Disk ({})'.format(name),
+                    'path': full_path,
+                    'total_kb': total_kb,
+                    'avail_kb': avail_kb,
+                })
+        except AdbError:
+            pass
+        return storages
+
+    def private_dns_get(self, target, timeout=10):
+        """Ozel DNS (Private DNS) durumunu okur."""
+        try:
+            mode = (self.shell(target, 'settings', 'get', 'global', 'private_dns_mode', timeout=timeout).output or '').strip()
+            spec = (self.shell(target, 'settings', 'get', 'global', 'private_dns_specifier', timeout=timeout).output or '').strip()
+            if mode == 'null' or not mode:
+                mode = 'off'
+            if spec == 'null':
+                spec = ''
+            return {'mode': mode, 'specifier': spec}
+        except AdbError:
+            return {'mode': 'off', 'specifier': ''}
+
+    def private_dns_set(self, target, mode, specifier='', timeout=15):
+        """Ozel DNS ayarini gunceller (off / opportunistic / hostname).
+        AdGuard: mode='hostname', specifier='dns.adguard.com'
+        Cloudflare: mode='hostname', specifier='1dot1dot1dot1.cloudflare-dns.com'
+        """
+        if mode not in ('off', 'opportunistic', 'hostname'):
+            raise AdbError('Gecersiz DNS modu: {!r}'.format(mode))
+        result = self.shell(
+            target, 'settings', 'put', 'global', 'private_dns_mode', mode,
+            timeout=timeout)
+        if result.exit_code != 0:
+            detail = (result.error or result.output or 'settings put başarısız').strip()
+            raise AdbError('Özel DNS modu ayarlanamadı: {}'.format(detail[:300]))
+        if mode == 'hostname' and specifier:
+            result = self.shell(
+                target, 'settings', 'put', 'global', 'private_dns_specifier',
+                specifier.strip(), timeout=timeout)
+            if result.exit_code != 0:
+                detail = (result.error or result.output or 'settings put başarısız').strip()
+                raise AdbError('Özel DNS sunucusu ayarlanamadı: {}'.format(detail[:300]))
+        elif mode == 'off':
+            result = self.shell(
+                target, 'settings', 'delete', 'global', 'private_dns_specifier',
+                timeout=timeout)
+            if result.exit_code != 0:
+                detail = (result.error or result.output or 'settings delete başarısız').strip()
+                raise AdbError('Özel DNS sunucusu silinemedi: {}'.format(detail[:300]))
+
+        mode_result = self.shell(
+            target, 'settings', 'get', 'global', 'private_dns_mode', timeout=timeout)
+        if mode_result.exit_code != 0:
+            detail = (mode_result.error or mode_result.output or 'settings get başarısız').strip()
+            raise AdbError('Özel DNS modu doğrulanamadı: {}'.format(detail[:300]))
+        spec_result = self.shell(
+            target, 'settings', 'get', 'global', 'private_dns_specifier', timeout=timeout)
+        if spec_result.exit_code != 0:
+            detail = (spec_result.error or spec_result.output or 'settings get başarısız').strip()
+            raise AdbError('Özel DNS sunucusu doğrulanamadı: {}'.format(detail[:300]))
+
+        applied_mode = (mode_result.output or '').strip()
+        applied_specifier = (spec_result.output or '').strip()
+        if applied_mode == 'null' or not applied_mode:
+            applied_mode = 'off'
+        if applied_specifier == 'null':
+            applied_specifier = ''
+        expected_specifier = None
+        if mode == 'off':
+            expected_specifier = ''
+        elif mode == 'hostname' and specifier:
+            expected_specifier = specifier.strip()
+        if (applied_mode != mode
+                or (expected_specifier is not None
+                    and applied_specifier != expected_specifier)):
+            raise AdbError(
+                'Özel DNS ayarı uygulanmadı (istenen: mode={!r}, specifier={!r}; '
+                'uygulanan: mode={!r}, specifier={!r}).'.format(
+                    mode, expected_specifier, applied_mode, applied_specifier))
+        return {'mode': applied_mode, 'specifier': applied_specifier}
+
+    def quick_boost(self, target, timeout=40):
+        """Tek tikla kapsamli sistem hizlandirma:
+        1. Onbellekleri temizle (pm trim-caches)
+        2. Arka plan sureclerini sonlandir (am kill-all)
+        3. Animasyon olceklerini optimize et (0.5x)
+        4. Bellek durumunu raporla
+        """
+        summary = []
+        health_before = self.health(target, timeout=15)
+
+        try:
+            self.trim_caches(target, timeout=20)
+            summary.append('Uygulama onbellekleri temizlendi.')
+        except Exception as e:
+            summary.append('Onbellek temizleme: {}'.format(e))
+
+        try:
+            self.shell(target, 'am', 'kill-all', timeout=15)
+            summary.append('Arka plan bosta kalan surecler sonlandirildi.')
+        except Exception as e:
+            summary.append('Surec sonlandirma: {}'.format(e))
+
+        try:
+            self.set_animator_scales(target, '0.5', timeout=15)
+            summary.append('Animasyon hizlari 0.5x (hizli) yapildi.')
+        except Exception as e:
+            summary.append('Animasyon olcekleri: {}'.format(e))
+
+        health_after = self.health(target, timeout=15)
+        before_avail = health_before.get('mem_avail_kb', 0)
+        after_avail = health_after.get('mem_avail_kb', 0)
+        diff_kb = after_avail - before_avail
+        freed_mb = round(diff_kb / 1024.0, 1) if diff_kb > 0 else 0.0
+
+        return {
+            'freed_mb': freed_mb,
+            'summary': summary,
+            'health_before': health_before,
+            'health_after': health_after,
+        }
+
+    @staticmethod
+    def read_apk_metadata(local_path):
+        """Yerel APK dosyasindan paket adi, surum, etiket ve min SDK okur."""
+        import os
+        import zipfile
+        info = {
+            'package': '',
+            'version_name': '',
+            'version_code': '',
+            'app_name': '',
+            'min_sdk': '',
+            'target_sdk': '',
+            'size_bytes': 0,
+        }
+        if not local_path or not os.path.isfile(local_path):
+            return info
+        try:
+            info['size_bytes'] = os.path.getsize(local_path)
+        except OSError:
+            pass
+
+        try:
+            from androguard.core.apk import APK
+            apk = APK(local_path)
+            info['package'] = apk.get_package() or ''
+            info['version_name'] = str(apk.get_androidversion_name() or '')
+            info['version_code'] = str(apk.get_androidversion_code() or '')
+            info['app_name'] = apk.get_app_name() or ''
+            info['min_sdk'] = str(apk.get_min_sdk_version() or '')
+            info['target_sdk'] = str(apk.get_target_sdk_version() or '')
+            if info['package']:
+                return info
+        except Exception:
+            pass
+
+        try:
+            with zipfile.ZipFile(local_path, 'r') as zf:
+                if 'AndroidManifest.xml' in zf.namelist():
+                    data = zf.read('AndroidManifest.xml')
+                    found = re.findall(b'([a-zA-Z0-9_]+(?:\\.[a-zA-Z0-9_]+)+)', data)
+                    for item in found:
+                        s = item.decode('latin1', 'ignore')
+                        if PKG_RE.match(s) and not s.startswith('android.') and not s.startswith('schemas.'):
+                            info['package'] = s
+                            break
+        except Exception:
+            pass
         return info

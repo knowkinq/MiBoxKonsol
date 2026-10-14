@@ -1,5 +1,5 @@
 @echo off
-REM MiBox Konsol - optimize tek dosya .exe olusturur.
+REM MiBox Konsol - optimize .exe olusturur (64-bit ve 32-bit x86 otomatik algilar).
 REM Kullanim: build_exe.bat
 setlocal
 set "MIBOX_DIR_PUSHED=0"
@@ -19,12 +19,38 @@ if not defined PY (
   goto :fail
 )
 
+REM --- Mimari tespiti (32-bit x86 / 64-bit x64) ---
+set "PY_BITS=64"
+for /f "tokens=*" %%a in ('"%PY%" -c "import struct; print(struct.calcsize('P')*8)" 2^>nul') do set "PY_BITS=%%a"
+
+echo ========================================================
+echo   MiBox Konsol Derleyici - %PY_BITS%-bit mimari algilandi
+echo ========================================================
+
+if "%PY_BITS%"=="32" goto :setup_32
+goto :setup_64
+
+:setup_32
+echo [BILGI] 32-bit [x86] Windows icin derleme baslatiliyor.
+"%PY%" -c "import PyQt5" >nul 2>nul
+if errorlevel 1 (
+  echo PyQt5 bulunamadi. 32-bit Qt5 bagimliliklari kuruluyor...
+  "%PY%" -m pip install "PyQt5>=5.15"
+  if errorlevel 1 goto :fail
+)
+goto :check_pyinstaller
+
+:setup_64
+echo [BILGI] 64-bit [x64] Windows icin derleme baslatiliyor.
 "%PY%" -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
   echo PySide6 bulunamadi. Bagimliliklar kuruluyor...
   "%PY%" -m pip install -r requirements.txt
   if errorlevel 1 goto :fail
 )
+goto :check_pyinstaller
+
+:check_pyinstaller
 
 "%PY%" -m PyInstaller --version >nul 2>nul
 if errorlevel 1 (
@@ -45,7 +71,7 @@ echo UPX istersen su komutu calistir: winget install upx.upx
 echo Temizlik: eski build kalintilari siliniyor...
 if exist build rmdir /s /q build
 
-echo PyInstaller ile derleniyor...
+echo PyInstaller ile derleniyor (%PY_BITS%-bit)...
 "%PY%" -m PyInstaller --noconfirm MiBoxKonsol.spec
 if errorlevel 1 goto :fail
 
@@ -55,16 +81,25 @@ if exist dist\MiBox-ayarlar.json del /q dist\MiBox-ayarlar.json
 if exist dist\mibox-bilinen-uygulamalar.json del /q dist\mibox-bilinen-uygulamalar.json
 if exist dist\MiBox-bilinen-uygulamalar.json del /q dist\MiBox-bilinen-uygulamalar.json
 
+if "%PY_BITS%"=="32" (
+  if exist dist\MiBoxKonsol_x86.exe (
+    copy /y dist\MiBoxKonsol_x86.exe dist\MiBoxKonsol.exe >nul 2>nul
+  )
+) else (
+  if exist dist\MiBoxKonsol.exe (
+    copy /y dist\MiBoxKonsol.exe dist\MiBoxKonsol_x64.exe >nul 2>nul
+  )
+)
+
 echo.
-for %%F in (dist\MiBoxKonsol.exe) do echo Boyut: %%~zF bayt
-echo TAMAM: dist\MiBoxKonsol.exe
-echo Not: adb.exe dosyasini exe yanina kopyalayin.
-pause
-popd
+for %%F in (dist\MiBoxKonsol*.exe) do echo Uretildi: %%~nxF (%%~zF bayt)
+echo.
+echo TAMAM: %PY_BITS%-bit calistirilabilir dosya basariyla olusturuldu.
+if "%MIBOX_DIR_PUSHED%"=="1" popd
 exit /b 0
 
 :fail
-echo Derleme basarisiz.
-pause
+echo.
+echo [HATA] Derleme basarisiz oldu.
 if "%MIBOX_DIR_PUSHED%"=="1" popd
 exit /b 1

@@ -1,0 +1,2 @@
+# MiBox Konsol - 32-bit (x86) Windows Bağımlılıkları
+PyQt5>=5.15

@@ -17,6 +17,8 @@ Cikti:
 """
 import os
 import re
+import glob
+import shutil
 import subprocess
 import sys
 
@@ -67,9 +69,17 @@ def _temizle(paket_dir):
     build_exe.bat ile ayni disiplin: kisisel ayarlar ve test izleri dagitilan
     pakete girmesin.
     """
+    dist_root = os.path.realpath(DIST)
+    paket_dir = os.path.realpath(paket_dir)
+    if os.path.dirname(paket_dir) != dist_root or os.path.basename(paket_dir) != 'MiBoxKonsol':
+        raise ValueError('Paket temizleme yolu dist-onedir/MiBoxKonsol dışında olamaz.')
+
     gereksiz = ('mibox-ayarlar.json', 'MiBox-ayarlar.json',
                 'mibox-bilinen-uygulamalar.json', 'MiBox-bilinen-uygulamalar.json',
-                'mibox-selftest-ok.txt', 'surum.txt')
+                'mibox-islem-gecmisi.jsonl', 'mibox-işlem-geçmişi.jsonl',
+                'mibox-gecmis.csv', 'mibox-geçmiş.csv',
+                'debloat-kullanici.json', 'debloat-kullanıcı.json',
+                'mibox-selftest-ok.txt', 'mibox-logcat.txt', 'surum.txt')
     silinen = []
     for ad in gereksiz:
         yol = os.path.join(paket_dir, ad)
@@ -79,6 +89,24 @@ def _temizle(paket_dir):
                 silinen.append(ad)
             except OSError as e:
                 print('uyari: {} silinemedi: {}'.format(ad, e))
+
+    for ad in ('logs', 'snapshots', 'ekran-goruntuleri', 'indirilen-apklar',
+               'apk-yedekleri', '_arsiv'):
+        yol = os.path.join(paket_dir, ad)
+        if os.path.islink(yol) or os.path.isfile(yol):
+            os.remove(yol)
+            silinen.append(ad)
+        elif os.path.isdir(yol):
+            shutil.rmtree(yol)
+            silinen.append(ad)
+
+    for pattern in ('mibox-ayarlar.json.*', 'MiBox-ayarlar.json.*',
+                    'mibox-snapshot-*.json', '*.apk', '*.apks', '*.xapk',
+                    '*.log', '*.jsonl', '*.csv'):
+        for yol in glob.glob(os.path.join(paket_dir, pattern)):
+            if os.path.isfile(yol) or os.path.islink(yol):
+                os.remove(yol)
+                silinen.append(os.path.basename(yol))
     if silinen:
         print('temizlenen dosyalar:', ', '.join(silinen))
 

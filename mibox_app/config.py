@@ -24,6 +24,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, 'mibox-ayarlar.json')
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 SHOT_DIR = os.path.join(BASE_DIR, 'ekran-goruntuleri')
 APK_DIR = os.path.join(BASE_DIR, 'apk-yedekleri')
+DOWNLOADS_DIR = os.path.join(BASE_DIR, 'indirilen-apklar')
 # Eski buyuk harfli dosya adiyla geriye uyumluluk (kullanicida varsa oku).
 LEGACY_CONFIG_PATH = os.path.join(BASE_DIR, 'MiBox-ayarlar.json')
 
@@ -34,8 +35,18 @@ DEFAULT_FRIENDLY = {
     'ar.tvplayer.tv': 'TiviMate',
     'com.lagradost.cloudstream3': 'CloudStream',
     'com.spocky.projengmenu': 'Projectivy Launcher',
+    'com.spocky.projmenu': 'Projectivy Launcher',
+    'me.efdev.flauncher': 'FLauncher',
+    'com.teamsmart.videomanager.tv': 'SmartTube',
+    'com.liskovsoft.smarttubetv.beta': 'SmartTube Beta',
     'org.smarttube.stable': 'SmartTube',
     'org.smarttube': 'SmartTube (beta)',
+    'com.liskovsoft.videomanager': 'SmartTube',
+    'org.courville.nova': 'Nova Video Player',
+    'com.yablio.sendfilestotv': 'Send Files to TV',
+    'cm.aptoidetv.pt': 'Aptoide TV',
+    'com.aurora.store': 'Aurora Store',
+    'flar2.homebutton': 'Button Mapper',
     'com.google.android.tv': 'Android TV (Launcher)',
     'com.google.android.apps.youtube.tv': 'YouTube TV',
     'com.netflix.ninja': 'Netflix',
@@ -120,6 +131,37 @@ DEFAULT_FRIENDLY = {
     'com.google.android.apps.gmdm': 'Google Device Manager',
     'com.google.android.gsf': 'Google Hesap Servisleri',
     'com.google.android.gsf.login': 'Google Login',
+    'com.inat.box': 'İnat Box TV',
+    'com.inat.boxtv': 'İnat Box TV',
+    'com.rectv.shot': 'Rec TV Ekran Aracı',
+    'me.flauncher.flauncher': 'FLauncher',
+    'com.google.android.apps.tv.launcherx': 'Google TV Home',
+    'com.google.android.apps.tv.launcherx.playnext': 'Google TV Sırada Ne Var',
+    'com.google.android.katniss': 'Google Asistan (TV Sesli Arama)',
+    'com.google.android.apps.tv.dreamx': 'Google TV Ekran Koruyucu',
+    'com.brouken.player': 'Just Player',
+    'com.mitv.videoplayer': 'Mi Video Oynatıcı',
+    'com.mitv.gallery': 'Mi Galeri',
+    'com.xiaomi.mimusic2': 'Mi Müzik 2',
+    'com.mitv.tvhome.atv': 'Mi TV Home (Android TV)',
+    'com.mitv.tvhome.michannel': 'Mi Kanal',
+    'com.mitv.tvhome.mitvplus': 'Mi TV Plus',
+    'com.xiaomi.statistic': 'Xiaomi İstatistik / Telemetri',
+    'com.miui.tv.analytics': 'MIUI TV Analitik',
+    'com.xiaomo.tv.milegal': 'Xiaomi TV Sözleşme & Yasal',
+    'com.xiaomi.tvqs.overseas': 'Xiaomi TV Hızlı Ayarlar',
+    'com.xiaomi.mitv.smartshare': 'Mi Smart Share',
+    'com.xiaomi.mitv.mediaexplorer': 'Mi Medya Tarayıcı',
+    'com.xiaomi.android.tvsetup.partnercustomizer': 'Xiaomi TV Partner Kurulumu',
+    'com.android.adservices.api': 'Android Reklam Servisleri',
+    'com.dolby.android.audio.service': 'Dolby Audio Servisi',
+    'com.droidlogic': 'Droidlogic Amlogic Platform',
+    'com.droidlogic.systemui.overlay': 'Droidlogic Sistem Arayüzü',
+    'com.google.android.youtube.tvmusic': 'YouTube Music TV',
+    'com.netflix.tokenmanager': 'Netflix Belirteç Yöneticisi',
+    'com.google.android.tvlauncher': 'Android TV Başlatıcı',
+    'com.google.android.apps.mediashell': 'Chromecast Built-in',
+    'com.mi.bluetooth': 'Xiaomi Bluetooth Kumanda Servisi',
 }
 
 DEFAULT_PROTECTED = []  # Kullanıcı kendi koruma listesini oluşturur.
@@ -149,6 +191,9 @@ class Config:
         self.user_id = 0
         self.show_unlisted = False
         self.show_removed = False  # kaldirilmislar varsayilan gizli
+        self.keyboard_nav = True   # Kumanda sekmesinde klavye yon tuslari ile yonetim
+        self.install_grant_perms = False  # -g varsayılan kapalı; kullanıcı ayardan açabilir
+        self.auto_connect_last = False   # Acilista son baglanilan cihaza otomatik baglan
         # Bekci baglantiyi geri getirdiginde cihazi uyandir (uyku modundan cikar)
         self.wake_on_reconnect = True
         self.load_warning = ''
@@ -227,6 +272,12 @@ class Config:
                 self.show_unlisted = bool(data['show_unlisted'])
             if data.get('show_removed') is not None:
                 self.show_removed = bool(data['show_removed'])
+            if data.get('keyboard_nav') is not None:
+                self.keyboard_nav = bool(data['keyboard_nav'])
+            if data.get('install_grant_perms') is not None:
+                self.install_grant_perms = bool(data['install_grant_perms'])
+            if data.get('auto_connect_last') is not None:
+                self.auto_connect_last = bool(data['auto_connect_last'])
         # NOT: mibox-bilinen-uygulamalar.json ARTIK OKUNMUYOR/YAZILMIYOR.
         # Adlar cihazdan gelir; bu dosya varsa yoksayilir (asagida
         # save_known_apps artik dosyayi SILER).
@@ -247,6 +298,9 @@ class Config:
                 'user_id': self.user_id,
                 'show_unlisted': self.show_unlisted,
                 'show_removed': self.show_removed,
+                'keyboard_nav': self.keyboard_nav,
+                'install_grant_perms': self.install_grant_perms,
+                'auto_connect_last': self.auto_connect_last,
             }
 
     @staticmethod

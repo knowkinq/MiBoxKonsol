@@ -352,46 +352,12 @@ class MainWindow(QMainWindow):
         connection_root.addWidget(self.device_options, 0, Qt.AlignVCenter)
         root.addWidget(conn)
 
-        self.activity_box = QWidget()
-        self.activity_box.setObjectName('connectionCard')
-        activity_layout = QHBoxLayout(self.activity_box)
-        activity_layout.setContentsMargins(10, 7, 10, 7)
-        self.lbl_activity = QLabel()
-        self.lbl_activity.setTextFormat(Qt.PlainText)
-        self.lbl_activity.setMinimumWidth(0)
-        self.lbl_activity.setWordWrap(True)
-        self.activity_progress = QProgressBar()
-        self.activity_progress.setMaximumWidth(150)
-        self.activity_progress.setRange(0, 0)
-        self.activity_progress.setTextVisible(False)
-        activity_layout.addWidget(self.lbl_activity, 1)
-        activity_layout.addWidget(self.activity_progress)
-        self.activity_box.hide()
-        root.addWidget(self.activity_box)
-
-        self.error_box = QWidget()
-        self.error_box.setObjectName('errorBanner')
-        error_layout = QHBoxLayout(self.error_box)
-        error_layout.setContentsMargins(10, 7, 10, 7)
-        self.lbl_error = QLabel()
-        self.lbl_error.setWordWrap(True)
-        self.lbl_error.setTextFormat(Qt.PlainText)
-        self.lbl_error.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        error_layout.addWidget(self.lbl_error, 1)
-        details = QPushButton('Günlüğü aç')
-        details.clicked.connect(lambda: self._toggle_log_panel(True))
-        error_layout.addWidget(details)
-        dismiss = QPushButton('Kapat')
-        dismiss.clicked.connect(self.error_box.hide)
-        error_layout.addWidget(dismiss)
-        self.error_box.hide()
-        root.addWidget(self.error_box)
-
         # --- Sekmeler + log (splitter: log paneli kapatilabilir) ---
         self.splitter = QSplitter(Qt.Vertical)
         self.tabs = QTabWidget()
         self.tab_apps = AppsTab(self.core, self)
         self.tab_remote = self._scroll_wrap(RemoteTab(self.core, self))
+        self.tab_remote.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tab_remote_inner = self.tab_remote.widget()
         self.tab_debloat = DebloatTab(self.core, self)
         self.tab_debloat_page = self._scroll_wrap(self.tab_debloat)
@@ -522,6 +488,24 @@ class MainWindow(QMainWindow):
             pass
         root.addWidget(self.splitter, 1)
 
+        self.error_box = QWidget()
+        self.error_box.setObjectName('errorBanner')
+        error_layout = QHBoxLayout(self.error_box)
+        error_layout.setContentsMargins(10, 6, 10, 6)
+        self.lbl_error = QLabel()
+        self.lbl_error.setWordWrap(True)
+        self.lbl_error.setTextFormat(Qt.PlainText)
+        self.lbl_error.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        error_layout.addWidget(self.lbl_error, 1)
+        details = QPushButton('Günlüğü aç')
+        details.clicked.connect(lambda: self._toggle_log_panel(True))
+        error_layout.addWidget(details)
+        dismiss = QPushButton('Kapat')
+        dismiss.clicked.connect(self.error_box.hide)
+        error_layout.addWidget(dismiss)
+        self.error_box.hide()
+        root.addWidget(self.error_box)
+
         # --- Durdur: calisan arka plan islerini iptal et (Faz 3) ---
         self.btn_stop = QPushButton('Durdur')
         self.btn_stop.setToolTip('Çalışan arka plan islerini durdur')
@@ -532,12 +516,31 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self.cancel_workers)
         conn_layout.addWidget(self.btn_stop)
 
-        # --- Status bar: solda SON KULLANICI ISLEMI, sagda sistem ---
+        # --- Status bar: solda SON KULLANICI ISLEMI, sagda aktivite ve sistem ---
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.lbl_last_action = QLabel('Hazır')
         self.lbl_last_action.setToolTip('Kullanicinin yaptigi son işlem')
         self.status.addWidget(self.lbl_last_action, 1)
+
+        self.activity_box = QWidget()
+        self.activity_box.setObjectName('statusActivity')
+        activity_layout = QHBoxLayout(self.activity_box)
+        activity_layout.setContentsMargins(4, 0, 4, 0)
+        activity_layout.setSpacing(6)
+        self.lbl_activity = QLabel()
+        self.lbl_activity.setTextFormat(Qt.PlainText)
+        self.activity_progress = QProgressBar()
+        self.activity_progress.setMaximumWidth(130)
+        self.activity_progress.setMinimumWidth(80)
+        self.activity_progress.setMaximumHeight(14)
+        self.activity_progress.setRange(0, 0)
+        self.activity_progress.setTextVisible(False)
+        activity_layout.addWidget(self.lbl_activity)
+        activity_layout.addWidget(self.activity_progress)
+        self.activity_box.hide()
+        self.status.addPermanentWidget(self.activity_box)
+
         self.lbl_clock = QLabel('')
         self.status.addPermanentWidget(self.lbl_clock)
         self.lbl_adb = QLabel('ADB hazır' if self.core.adb_path else 'ADB bulunamadı')
@@ -571,18 +574,36 @@ class MainWindow(QMainWindow):
             self._show_error('Ayar kurtarma', config_warning)
         if not self.core.adb_path:
             QMessageBox.warning(self, 'ADB', self.core.engine_error or 'ADB bulunamadı.')
-        # NOT: acilis OTOMATIK BAGLANTI YOK (v8.3). Kullanici Baglan'a basar.
-        # Hedef kutusu kayitli degerle dolar ama baglanti kurulmaz.
+        if not self._selftest:
+            QTimer.singleShot(600, self._startup_device_check)
 
-    def _auto_connect_startup(self):
-        # LEGACY: cagrilmiyor; eski davranis burada durur (geri donus icin).
-        return
+    def _startup_device_check(self):
+        if self._closing or not self.core.adb_path:
+            return
+        def do():
+            try:
+                return self.core.engine.devices()
+            except Exception:
+                return []
+        def done(devs):
+            if self._closing:
+                return
+            self._fill_device_combo(devs)
+            target = (self.core.target or '').strip()
+            if not target and len(devs) == 1 and devs[0].get('state') == 'device':
+                cand = devs[0].get('id')
+                if cand:
+                    self._set_target_fields(cand)
+                    self._sync_target()
+                    self.append_log('Tek bağlı cihaz algılandı: ' + cand, 'INFO')
+        self._run(Worker(do), on_ok=done)
 
     @staticmethod
     def _scroll_wrap(widget):
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setFrameShape(QScrollArea.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         area.setWidget(widget)
         return area
 
@@ -1442,7 +1463,7 @@ class MainWindow(QMainWindow):
         token = id(worker)
         if track:
             self._activity[token] = (str(label), 0, 0)
-            QTimer.singleShot(250, self, lambda: self._update_activity() if token in self._activity else None)
+            QTimer.singleShot(250, lambda: self._update_activity() if token in self._activity else None)
         try:
             self.append_log(u'▶ İstek: {}'.format(label), 'INFO')
         except Exception:
@@ -1510,75 +1531,13 @@ class MainWindow(QMainWindow):
             pass
         worker.start()
 
-    def _finish_close_when_workers_stop(self):
-        if not self._close_pending or self._close_scheduled:
-            return
-        try:
-            if any(w.isRunning() for w in self._workers):
-                return
-        except RuntimeError:
-            pass
-        self._close_scheduled = True
-        QTimer.singleShot(0, self, self.close)
-
-    def closeEvent(self, e):
-        if self._closing:
-            e.accept()
-            return
-        running = []
-        for worker in list(self._workers):
-            try:
-                if worker.isRunning():
-                    running.append(worker)
-            except RuntimeError:
-                pass
-        if running:
-            if not self._close_pending:
-                self._close_pending = True
-                self.status.showMessage(
-                    'Çalışan işler durduruluyor; tamamlanınca pencere kapanacak.')
-                try:
-                    self.append_log(
-                        'Kapanış istendi; çalışan işler iptal ediliyor.', 'WARN')
-                except Exception:
-                    pass
-                try:
-                    self.tab_remote_inner._stop_hold()
-                except Exception:
-                    pass
-                for worker in running:
-                    try:
-                        # Closing suppresses new UI flows (including chained
-                        # work) while worker log messages remain visible.
-                        worker.finished_ok.disconnect()
-                    except (AttributeError, RuntimeError, TypeError):
-                        pass
-                    try:
-                        worker.failed.disconnect()
-                    except (AttributeError, RuntimeError, TypeError):
-                        pass
-                    try:
-                        if hasattr(worker, 'cancel'):
-                            worker.cancel()
-                        else:
-                            worker.requestInterruption()
-                    except (AttributeError, RuntimeError):
-                        pass
-                    try:
-                        worker.finished.connect(self._finish_close_when_workers_stop)
-                    except (AttributeError, RuntimeError):
-                        pass
-                # Cover the race where a worker finished just before the
-                # finished signal was connected above.
-                QTimer.singleShot(50, self, self._finish_close_when_workers_stop)
-                self.setEnabled(False)
-            e.ignore()
-            return
-
+    def _finalize_close(self):
+        """Workers are stopped; release UI timers and save settings before closing."""
+        self._closing = True
         self._close_pending = False
         self._close_scheduled = False
-        self._closing = True
-        # timer'lari durdur (kapanis sirasinda panele/sinyale dokunulmasin)
+
+        # 1. Timer'ları durdur (kapanış sırasında panele/sinyale dokunulmasın)
         for _t in (getattr(self, '_log_timer', None),
                    getattr(self, '_clock', None),
                    getattr(self, '_watch', None)):
@@ -1587,8 +1546,14 @@ class MainWindow(QMainWindow):
                     _t.stop()
             except Exception:
                 pass
-        # ADB ve Core sinyallerini kapat (kapanis sirasinda yeni UI isi
-        # baslamasin ve silinen widget'lara callback gitmesin).
+
+        # 2. Kumanda basılı tutma timer'ını durdur
+        try:
+            self.tab_remote_inner._stop_hold()
+        except Exception:
+            pass
+
+        # 3. ADB ve Core sinyallerini kapat
         for signal, slot in (
                 (self.core.adb_trace, self._on_adb_trace),
                 (self.core.log, self.append_log),
@@ -1597,11 +1562,91 @@ class MainWindow(QMainWindow):
                 signal.disconnect(slot)
             except (TypeError, RuntimeError):
                 pass
+
+        # 4. Ayarları kaydet
         try:
             self.core.config.save()
             self.core.config.save_known_apps()
         except Exception:
             pass
+
+    def _finish_close_when_workers_stop(self):
+        if not self._close_pending or self._close_scheduled:
+            return
+        running = []
+        for w in list(self._workers):
+            try:
+                if w.isRunning():
+                    running.append(w)
+            except RuntimeError:
+                pass
+        if not running:
+            self._close_scheduled = True
+            self._finalize_close()
+            QTimer.singleShot(0, self.close)
+        else:
+            QTimer.singleShot(50, self._finish_close_when_workers_stop)
+
+    def closeEvent(self, e):
+        if self._closing:
+            e.accept()
+            return
+
+        # Kapanış iptali sürerken tekrar [X]'e basılırsa beklemeyi bozma.
+        if self._close_pending:
+            e.ignore()
+            return
+
+        running = []
+        for worker in list(self._workers):
+            try:
+                if worker.isRunning():
+                    running.append(worker)
+            except RuntimeError:
+                pass
+
+        if running:
+            self._close_pending = True
+            self.status.showMessage(
+                'Çalışan işler durduruluyor; tamamlanınca pencere kapanacak.')
+            try:
+                self.append_log(
+                    'Kapanış istendi; çalışan işler iptal ediliyor.', 'WARN')
+            except Exception:
+                pass
+            try:
+                self.tab_remote_inner._stop_hold()
+            except Exception:
+                pass
+            for worker in running:
+                try:
+                    worker.finished_ok.disconnect()
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+                try:
+                    worker.failed.disconnect()
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+                try:
+                    if hasattr(worker, 'cancel'):
+                        worker.cancel()
+                    else:
+                        worker.requestInterruption()
+                except (AttributeError, RuntimeError):
+                    pass
+                try:
+                    worker.finished.connect(self._finish_close_when_workers_stop)
+                except (AttributeError, RuntimeError):
+                    pass
+
+            # Uzun işler iptali güvenli bir aşamada işler; tamamlanana kadar
+            # pencereyi ve uygulama kaynaklarını canlı tut.
+            self.setEnabled(False)
+            QTimer.singleShot(50, self._finish_close_when_workers_stop)
+            e.ignore()
+            return
+
+        self._finalize_close()
         e.accept()
 
 

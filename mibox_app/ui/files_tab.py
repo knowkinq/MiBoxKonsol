@@ -5,7 +5,7 @@ import posixpath
 import tempfile
 import unicodedata
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QMessageBox,
@@ -100,15 +100,16 @@ class FilesTab(QWidget):
         roots_title.setObjectName('metricLabel')
         roots_title.setProperty('role', 'quiet')
         nv.addWidget(roots_title)
-        roots_row = kit.action_bar()
+        self.roots_row = kit.action_bar()
+        self._usb_buttons = []
         for r in self.ROOTS:
             names = {'/sdcard': 'Depolama', '/sdcard/Download': 'İndirilenler',
                      '/sdcard/Movies': 'Filmler', '/sdcard/DCIM': 'Kamera'}
             b = QPushButton(names.get(r, r.rsplit('/', 1)[-1] or '/'))
             b.setToolTip(r)
             b.clicked.connect(lambda _=False, p=r: self._go(p))
-            roots_row.addWidget(b)
-        nv.addLayout(roots_row)
+            self.roots_row.addWidget(b)
+        nv.addLayout(self.roots_row)
         root.addWidget(navigation)
 
         self.txt_filter = QLineEdit()
@@ -126,10 +127,14 @@ class FilesTab(QWidget):
         hdr.setSectionResizeMode(COL_MTIME, QHeaderView.ResizeToContents)
         self.grid.doubleClicked.connect(self._on_double)
         self.grid.itemSelectionChanged.connect(self._update_action_buttons)
+        self.setAcceptDrops(True)
+        self.grid.setAcceptDrops(True)
+        self.grid.viewport().installEventFilter(self)
+        self.grid.installEventFilter(self)
         root.addWidget(self.grid, 1)
 
         transfer, tv = card('Dosya aktarımı')
-        transfer_hint = QLabel('Dosyaları bu klasöre gönderin veya seçili bir dosyayı bilgisayara indirin.')
+        transfer_hint = QLabel('Dosyaları bu klasöre gönderin, seçili bir dosyayı indirin veya sürükleyip bırakın.')
         transfer_hint.setWordWrap(True)
         transfer_hint.setProperty('role', 'quiet')
         tv.addWidget(transfer_hint)
@@ -139,8 +144,12 @@ class FilesTab(QWidget):
         self.btn_push.clicked.connect(self._push)
         self.btn_pull = QPushButton('Seçili Dosyayı İndir')
         self.btn_pull.clicked.connect(self._pull)
+        self.btn_install_remote = QPushButton('Cihazda Kur (APK)')
+        self.btn_install_remote.setToolTip('Seçili APK dosyasını bilgisayara indirmeden doğrudan TV üzerinde kur')
+        self.btn_install_remote.clicked.connect(self._install_remote_apk)
         flow_row.addWidget(self.btn_push)
         flow_row.addWidget(self.btn_pull)
+        flow_row.addWidget(self.btn_install_remote)
         tv.addLayout(flow_row)
         root.addWidget(transfer)
 
@@ -219,7 +228,10 @@ class FilesTab(QWidget):
         self.btn_mkdir.setEnabled(can_mutate)
         self.btn_del.setEnabled(can_mutate and self._selected() is not None)
         entry = self._selected()
-        self.btn_pull.setEnabled(can_mutate and bool(entry) and not entry.get('dir'))
+        is_file = bool(entry) and not entry.get('dir')
+        self.btn_pull.setEnabled(can_mutate and is_file)
+        is_apk = is_file and str(entry.get('name', '')).lower().endswith('.apk')
+        self.btn_install_remote.setEnabled(can_mutate and is_apk)
 
     def _clear_view(self, title, description):
         self._loaded = False
@@ -240,6 +252,7 @@ class FilesTab(QWidget):
             self._update_action_buttons()
             return
         self.lbl_status.setText('{}: okunuyor…'.format(cwd))
+        self._check_usb_storages(target)
 
         def do():
             return request_id, target, cwd, self.core.engine.file_list(target, cwd)
@@ -279,6 +292,69 @@ class FilesTab(QWidget):
         self.lbl_status.setText(
             'Bağlantı değişti: {}. Yenile ile listeleyin.'.format(target)
             if connected else 'Cihaz bağlantısı kesildi.')
+        self._update_usb_buttons([])
+        if connected and target:
+            self._check_usb_storages(target)
+
+    def _check_usb_storages(self, target):
+        if not target or self._connection_problem():
+            return
+        def do():
+            try:
+                return self.core.engine.usb_storages(target)
+            except Exception:
+                return []
+        w = Worker(do)
+        w.job_name = 'USB kontrolü'
+        w.finished_ok.connect(self._update_usb_buttons)
+        self.window._run(w, desc='USB sürücü kontrolü')
+
+    def _update_usb_buttons(self, storages):
+        for b in list(self._usb_buttons):
+            self.roots_row.removeWidget(b)
+            b.deleteLater()
+        self._usb_buttons.clear()
+        for s in (storages or []):
+            path = s.get('path')
+            if not path:
+                continue
+            name = s.get('name') or path.rsplit('/', 1)[-1]
+            free = _fmt_size(s.get('free', 0))
+            btn = QPushButton('💾 USB: {}'.format(name))
+            btn.setToolTip('{} (Boş alan: {})'.format(path, free))
+            btn.clicked.connect(lambda _=False, p=path: self._go(p))
+            self.roots_row.addWidget(btn)
+            self._usb_buttons.append(btn)
+
+    def eventFilter(self, watched, event):
+        if watched in (self.grid, self.grid.viewport()):
+            if event.type() == QEvent.DragEnter:
+                if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+                    event.acceptProposedAction()
+                    return True
+            elif event.type() == QEvent.Drop:
+                urls = event.mimeData().urls()
+                paths = [u.toLocalFile() for u in urls if u.isLocalFile()]
+                if paths:
+                    event.acceptProposedAction()
+                    self._push_paths(paths)
+                    return True
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+            if paths:
+                event.acceptProposedAction()
+                self._push_paths(paths)
+                return
+        super().dropEvent(event)
 
     def _update_breadcrumb(self):
         parts = [part for part in self._cwd.strip('/').split('/') if part]
@@ -361,8 +437,15 @@ class FilesTab(QWidget):
     def _push(self):
         if not self._can_mutate():
             return
-        target, cwd = self.core.target, self._cwd
         paths, _ = QFileDialog.getOpenFileNames(self, 'Cihaza Yükle', '', 'Tümü (*.*)')
+        if paths:
+            self._push_paths(paths)
+
+    def _push_paths(self, paths):
+        if not self._can_mutate():
+            return
+        target, cwd = self.core.target, self._cwd
+        paths = [os.path.abspath(p) for p in paths if os.path.exists(p)]
         if not paths:
             return
         if not self._can_mutate(target):
@@ -508,3 +591,34 @@ class FilesTab(QWidget):
         self._start_mutation(
             w, 'Dosyalar: siliniyor: ' + full,
             lambda _: (self.lbl_status.setText('Silindi: ' + full), self.refresh()))
+
+    def _install_remote_apk(self):
+        if not self._can_mutate():
+            return
+        e = self._selected()
+        if not e or e.get('dir') or not str(e.get('name', '')).lower().endswith('.apk'):
+            QMessageBox.information(self, 'Seçim', 'Kurulacak bir APK dosyası seçin.')
+            return
+        target, cwd = self.core.target, self._cwd
+        remote = self._remote_child(cwd, e['name'])
+        if QMessageBox.question(
+                self, 'Onay — Cihazda Kur',
+                'Bu APK doğrudan TV üzerinde kurulsun mu?\n\n• {}'.format(remote),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if not self._can_mutate(target):
+            return
+
+        grant = getattr(self.core.config, 'install_grant_perms', True)
+
+        def do():
+            return self.core.engine.install_remote_apk(target, remote, grant_perms=grant)
+
+        w = Worker(do)
+        w.job_name = 'Cihazda APK kurma'
+        self._start_mutation(
+            w, 'Dosyalar: Cihazda kuruluyor: ' + e['name'],
+            lambda res: (self.lbl_status.setText('Cihazda kuruldu: ' + str(res)),
+                         QMessageBox.information(self, 'Kurulum Tamamlandı',
+                                                 'APK başarıyla TV üzerinde kuruldu:\n\n' + e['name'])),
+            on_fail=lambda error: QMessageBox.critical(self, 'Kurulum Hatası', str(error)))

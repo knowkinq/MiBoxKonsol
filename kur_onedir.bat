@@ -21,6 +21,27 @@ if not defined PY (
   pause
   exit /b 1
 )
+REM --- Mimari tespiti (32-bit x86 veya 64-bit x64) ---
+set "PY_BITS=64"
+for /f "tokens=*" %%a in ('"%PY%" -c "import struct; print(struct.calcsize('P')*8)" 2^>nul') do set "PY_BITS=%%a"
+
+if "%PY_BITS%"=="32" goto :deps_32
+goto :deps_64
+
+:deps_32
+"%PY%" -c "import PyQt5" >nul 2>nul
+if errorlevel 1 (
+  echo 32-bit Qt5 bileseni [PyQt5] bulunamadi. Kuruluyor...
+  "%PY%" -m pip install "PyQt5>=5.15"
+  if errorlevel 1 (
+    echo [HATA] 32-bit bagimliliklar kurulamadi.
+    pause
+    exit /b 1
+  )
+)
+goto :check_pyinstaller
+
+:deps_64
 "%PY%" -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
   echo PySide6 bulunamadi. Bagimliliklar kuruluyor...
@@ -31,6 +52,9 @@ if errorlevel 1 (
     exit /b 1
   )
 )
+goto :check_pyinstaller
+
+:check_pyinstaller
 "%PY%" -m PyInstaller --version >nul 2>nul
 if errorlevel 1 (
   echo PyInstaller bulunamadi. Kuruluyor...

@@ -57,11 +57,15 @@ def _selftest_yolu():
 def ortam_bilgisi():
     """[(etiket, deger)] — sirali; arayuz ve CLI ayni listeyi kullanir."""
     from .config import BASE_DIR, CONFIG_PATH, LOG_DIR
+    from .qt_compat import get_qt_info
+    qt_info = get_qt_info()
     return [
         ('Sürüm', '{} v{}'.format(APP_NAME, __version__)),
+        ('Mimari', qt_info['arch']),
         ('Paket modu', paket_modu()),
-        ('Python', platform.python_version()),
-        ('İşletim sistemi', '{} {}'.format(platform.system(), platform.release())),
+        ('Qt motoru', '{} (Qt {})'.format(qt_info['api'], qt_info['version'])),
+        ('Python', '{} ({})'.format(platform.python_version(), qt_info['arch'])),
+        ('İşletim sistemi', '{} {} ({})'.format(platform.system(), platform.release(), platform.machine())),
         ('Frozen', str(bool(getattr(sys, 'frozen', False)))),
         ('MEIPASS', getattr(sys, '_MEIPASS', '-') or '-'),
         ('Çalıştırılabilir', sys.executable),
@@ -77,3 +81,6 @@ def ortam_bilgisi():
 def metin():
     """Insan-okur cok satirli metin (CLI ciktisi / panoya kopyalama)."""
     return '\n'.join('{:<20}: {}'.format(k, v) for k, v in ortam_bilgisi())
+
+
+rapor_metni = metin

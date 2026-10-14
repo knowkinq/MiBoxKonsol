@@ -1,31 +1,48 @@
-# --- Python ---
+# --- Python & Bytecode ---
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# --- Virtual Environments ---
 .venv/
 venv/
+venv32/
+.venv32/
 env/
-__pycache__/
+ENV/
+
+# --- Testing & Linting Artifacts ---
 .pytest_cache/
 .mypy_cache/
 .coverage
+htmlcov/
+.tox/
+.nox/
 
-# --- PyInstaller ciktilari ---
-build/
-dist/
+# --- PyInstaller / Exe Build Artifacts ---
+*.manifest
 dist-onedir/
 dist-onedir-*/
-*.manifest
+*.spec.bak
 
-# --- Calisma zamani verileri (kisisel / uretilen) ---
+# --- Runtime & User Data ---
 logs/
 snapshots/
+ekran-goruntuleri/
+indirilen-apklar/
 *.log
 *.csv
 *.jsonl
 _arsiv/
 mibox-ayarlar.json
 MiBox-ayarlar.json
+mibox-ayarlar.json.*
+MiBox-ayarlar.json.*
 mibox-islem-gecmisi.jsonl
 mibox-işlem-gecmisi.jsonl
 debloat-kullanici.json
@@ -39,10 +56,20 @@ mibox-selftest-ok.txt
 mibox-*.csv
 mibox-logcat.txt
 uad_exported_selection.txt
-ekran-goruntuleri/
 
-# --- Editör / OS ---
+# --- Binary / Downloaded Packages ---
+*.apk
+*.apks
+*.xapk
+*.zip
+*.tar.gz
+
+# --- IDE & OS Cache ---
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.DS_Store
 Thumbs.db
 desktop.ini

@@ -60,6 +60,7 @@ QLabel#emptyState { color: $muted; background: transparent; font-size: 11pt; }
 QWidget#remotePad { background: $surface_alt; border: 1px solid $border; border-radius: 24px; }
 QWidget#errorBanner { background: $danger_surface; border: 1px solid $danger; border-radius: 10px; }
 QPushButton#remoteKey { min-width: 38px; min-height: 38px; border-radius: 20px; }
+QPushButton[compact="true"] { padding: 4px 7px; }
 QPushButton[role="primary"] { color: $accent_ink; background: $accent; border-color: $accent; font-weight: 600; }
 QPushButton[role="primary"]:hover { background: $accent_hover; }
 QPushButton[role="quiet"] { color: $muted; background: transparent; border-color: transparent; }

@@ -74,13 +74,17 @@ class LogcatTab(QWidget):
         self.btn_crash = QPushButton('Çökme Avcısı')
         self.btn_crash.setToolTip('Son FATAL/AndroidRuntime izlerini getirir')
         self.btn_crash.clicked.connect(self._crash)
-        self.btn_clear_dev = QPushButton('Logu Temizle')
+        self.btn_clear_screen = QPushButton('Ekranı Temizle')
+        self.btn_clear_screen.setToolTip('Log ekranını anında temizler')
+        self.btn_clear_screen.clicked.connect(self._clear_screen)
+        self.btn_clear_dev = QPushButton('Cihaz Logunu Temizle')
         self.btn_clear_dev.setProperty('danger', True)
-        self.btn_clear_dev.setToolTip('Cihaz log tamponunu temizle')
+        self.btn_clear_dev.setToolTip('Cihazdaki log tamponunu ve ekranı temizle')
         self.btn_clear_dev.clicked.connect(self._clear_device)
         self.btn_save = QPushButton('Kaydet')
         self.btn_save.clicked.connect(self._save)
         tools.addWidget(self.btn_crash)
+        tools.addWidget(self.btn_clear_screen)
         tools.addWidget(self.btn_clear_dev)
         tools.addStretch(1)
         tools.addWidget(self.btn_save)
@@ -184,21 +188,27 @@ class LogcatTab(QWidget):
         self._append(text)
         self.lbl_status.setText('Son çökme izleri gösteriliyor.')
 
+    def _clear_screen(self):
+        """Log goruntuleme kutusunu ve yinelenen filtre tamponunu aninda temizler."""
+        self.txt_log.clear()
+        self._prev_lines = []
+        self.lbl_status.setText('Log ekranı temizlendi.')
+
     def _clear_device(self):
-        # Cihaz tamponu silinir: onaysiz yapma (cokme izleri gidebilir).
-        if QMessageBox.question(
-                self, u'Onay — Cihaz Logunu Temizle',
-                u'Cihazdaki log tamponu silinsin mi?\n(İncelenmemis çökme izleri kaybolur.)',
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No) != QMessageBox.Yes:
+        # Ekranı anında temizle ve tamponu sıfırla
+        self.txt_log.clear()
+        self._prev_lines = []
+        target = getattr(self.core, 'target', None)
+        if not getattr(self.core, 'connected', False) or not target:
+            self.lbl_status.setText('Log ekranı temizlendi (cihaza bağlı değil).')
             return
 
         def do():
-            self.core.engine.logcat_clear(self.core.target)
+            self.core.engine.logcat_clear(target)
             return 'temizlendi'
         w = Worker(do)
         w.job_name = 'Logcat temizleme'
-        w.finished_ok.connect(lambda _: self.lbl_status.setText('Cihaz log tamponu temizlendi.'))
+        w.finished_ok.connect(lambda _: self.lbl_status.setText('Cihaz log tamponu ve ekran temizlendi.'))
         self.window._run(w, desc='Logcat: cihaz tamponu temizleniyor')
 
     def _save(self):

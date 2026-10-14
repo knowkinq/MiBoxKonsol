@@ -102,10 +102,10 @@ class AppsTab(QWidget):
         self.cmb_status.currentIndexChanged.connect(self._on_status_combo)
         self._restore_status_from_config()
         self.btn_system = QPushButton('Sistem')
+        self.btn_system.setObjectName('btnSystemFilter')
         self.btn_system.setCheckable(True)
         self.btn_system.setChecked(True)
-        self.btn_system.setToolTip('Sistem uygulamalarını listeye dahil et. Kapalıyken yalnızca kullanıcı uygulamaları gösterilir.')
-        self.btn_system.toggled.connect(self._apply_filter_now)
+        self.btn_system.toggled.connect(self._on_system_toggle)
         self.btn_refresh = QPushButton('Yenile')
         self.btn_refresh.setProperty('accent', True)
         self.btn_refresh.clicked.connect(self.refresh)
@@ -204,6 +204,7 @@ class AppsTab(QWidget):
         root.addWidget(self.lbl_summary)
         kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
                         'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
+        self._update_system_btn()
 
     def _remote_tab(self):
         inner = getattr(self.window, 'tab_remote_inner', None)
@@ -387,10 +388,92 @@ class AppsTab(QWidget):
     def _apply_filter(self):
         self._filter_timer.start()
 
+    def _on_system_toggle(self, _checked):
+        self._update_system_btn()
+        self._apply_filter_now()
+
+    def _update_system_btn(self):
+        """Sistem filtresi dügmesini aktif/inaktif durumuna göre görsel olarak özellestirir."""
+        count = sum(bool(a.get('system')) and a.get('installed_user0', True) for a in self._apps)
+        checked = self.btn_system.isChecked()
+        dark = kit.dark_from(self)
+
+        if checked:
+            self.btn_system.setText('✓ Sistem ({})'.format(count))
+            self.btn_system.setToolTip(
+                'Sistem uygulamaları dahil (gösteriliyor — {} paket).\n'
+                'Yalnızca kullanıcı uygulamalarını görmek için tıklayın.'.format(count))
+            if dark:
+                self.btn_system.setStyleSheet('''
+                    QPushButton#btnSystemFilter {
+                        background-color: #38457c;
+                        color: #ffffff;
+                        border: 1.5px solid #8795ff;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-weight: 600;
+                    }
+                    QPushButton#btnSystemFilter:hover {
+                        background-color: #46569a;
+                        border-color: #a0abff;
+                    }
+                ''')
+            else:
+                self.btn_system.setStyleSheet('''
+                    QPushButton#btnSystemFilter {
+                        background-color: #5365d8;
+                        color: #ffffff;
+                        border: 1.5px solid #4253bb;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-weight: 600;
+                    }
+                    QPushButton#btnSystemFilter:hover {
+                        background-color: #4253bb;
+                    }
+                ''')
+        else:
+            self.btn_system.setText('○ Sistem: Gizli ({})'.format(count))
+            self.btn_system.setToolTip(
+                'Sistem uygulamaları gizlendi ({} paket gizli).\n'
+                'Sistem uygulamalarını listeye dahil etmek için tıklayın.'.format(count))
+            if dark:
+                self.btn_system.setStyleSheet('''
+                    QPushButton#btnSystemFilter {
+                        background-color: rgba(255, 255, 255, 0.03);
+                        color: #828c9f;
+                        border: 1px dashed #454c5c;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-weight: normal;
+                    }
+                    QPushButton#btnSystemFilter:hover {
+                        background-color: rgba(255, 255, 255, 0.08);
+                        color: #edf0f7;
+                        border-color: #636b7b;
+                    }
+                ''')
+            else:
+                self.btn_system.setStyleSheet('''
+                    QPushButton#btnSystemFilter {
+                        background-color: transparent;
+                        color: #778297;
+                        border: 1px dashed #bcc5d7;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-weight: normal;
+                    }
+                    QPushButton#btnSystemFilter:hover {
+                        background-color: #e8ebf3;
+                        color: #202637;
+                    }
+                ''')
+
     def apply_theme(self):
         """Tema degisince: secim etiketi + tablo on renklerini yeni palete gecir."""
         try:
             self.lbl_sel.setStyleSheet(kit.faint(kit.dark_from(self)))
+            self._update_system_btn()
         except (RuntimeError, AttributeError):
             return
         try:
@@ -489,8 +572,7 @@ class AppsTab(QWidget):
         self.lbl_summary.setText(
             'Gösterilen: {}  |  Kullanıcı: {}  |  Sistem: {}{}{}'.format(
                 self.grid.rowCount(), self.grid.rowCount() - shown_system, shown_system, suffix, scan_time))
-        self.btn_system.setText('Sistem ({})'.format(sum(
-            bool(a.get('system')) and a.get('installed_user0', True) for a in self._apps)))
+        self._update_system_btn()
         if self._apps and not self.grid.rowCount():
             if only_run:
                 eligible = [a for a in self._apps
