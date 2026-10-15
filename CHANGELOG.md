@@ -1,6 +1,6 @@
 # Değişiklik günlüğü
 
-## Henüz sürümlenmemiş
+## [1.3.1] - 2026-10-15
 
 - Açık ve koyu temalar, sol menü, kartlar ve sekmeler ortak lacivert/mor tasarımla yenilendi.
 - Kumandaya geniş tıklama alanlı dairesel yön tuşları ve cihazın gerçek ses kademeleri eklendi.
