@@ -3102,38 +3102,37 @@ class AdbEngine:
             pass
         return 50
 
-    def set_volume(self, target, percent, timeout=10):
-        """Medya ses seviyesini 0-100 arası bir yüzde olarak ayarlar.
-
-        Android TV / Xiaomi / Google TV cihazlarında ses donanımına (HDMI CEC,
-        Soundbar, dahili hoparlör) tam uyumlu olarak Volume Up (24) / Down (25)
-        tuş adımlarıyla hassas ve kararlı şekilde uygular.
-        """
+    def _set_volume_steps(self, target, level, current, minimum, maximum, timeout):
+        """Okunmuş cihaz aralığındaki tam ses kademesini uygular."""
         import time as _time
+        if maximum <= minimum or not minimum <= current <= maximum:
+            raise AdbError('TV ses aralığı geçersiz; ses değiştirilmedi.')
+        if not minimum <= level <= maximum:
+            raise AdbError('Ses seviyesi cihazın izin verdiği aralığın dışında.')
+        diff = level - current
+        key = '24' if diff > 0 else '25'
+        for _ in range(abs(diff)):
+            result = self.shell(target, 'input', 'keyevent', key, timeout=timeout)
+            if result.exit_code != 0:
+                raise AdbError(result.error or result.output or 'Ses tuşu başarısız oldu.')
+            _time.sleep(0.05)
+        return True
+
+    def set_volume_level(self, target, level, timeout=10):
+        """Medya sesini cihazın tam sayı kademesiyle ayarlar (örn. 0–15)."""
+        try:
+            cur_idx, mn, mx = self.get_volume_info(target, timeout=timeout)
+            return self._set_volume_steps(target, int(level), cur_idx, mn, mx, timeout)
+        except Exception as e:
+            raise AdbError('Ses seviyesi ayarlanamadı: {}'.format(e))
+
+    def set_volume(self, target, percent, timeout=10):
+        """Yüzde kullanan çağrılar için uyumluluk: medya sesini 0–100 ile ayarlar."""
         try:
             pct = max(0, min(100, int(percent)))
             cur_idx, mn, mx = self.get_volume_info(target, timeout=timeout)
-            if mx <= mn or not mn <= cur_idx <= mx:
-                raise AdbError('TV ses aralığı geçersiz; ses değiştirilmedi.')
-            target_idx = int(round(mn + (pct / 100.0) * (mx - mn)))
-            target_idx = max(mn, min(mx, target_idx))
-
-            diff = target_idx - cur_idx
-            if diff > 0:
-                steps = min(mx, diff)
-                for _ in range(steps):
-                    result = self.shell(target, 'input', 'keyevent', '24', timeout=timeout)
-                    if result.exit_code != 0:
-                        raise AdbError(result.error or result.output or 'Ses artırma tuşu başarısız oldu.')
-                    _time.sleep(0.05)
-            elif diff < 0:
-                steps = min(mx, abs(diff))
-                for _ in range(steps):
-                    result = self.shell(target, 'input', 'keyevent', '25', timeout=timeout)
-                    if result.exit_code != 0:
-                        raise AdbError(result.error or result.output or 'Ses azaltma tuşu başarısız oldu.')
-                    _time.sleep(0.05)
-            return True
+            level = int(round(mn + (pct / 100.0) * (mx - mn)))
+            return self._set_volume_steps(target, level, cur_idx, mn, mx, timeout)
         except Exception as e:
             raise AdbError('Ses seviyesi ayarlanamadı: {}'.format(e))
 

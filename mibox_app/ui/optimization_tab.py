@@ -203,7 +203,9 @@ class OptimizationTab(QWidget):
         health = getattr(self.window, 'tab_health_inner', None)
         if health is not None:
             self.window.tabs.setCurrentWidget(self.window.tab_health)
-            if hasattr(health, 'scroll_bg'):
+            if all(hasattr(health, name) for name in ('_open_section', 'scroll_bg', 'background')):
+                health._open_section(health.scroll_bg, health.background)
+            elif hasattr(health, 'scroll_bg'):
                 health.sections.setCurrentWidget(health.scroll_bg)
             else:
                 health.sections.setCurrentIndex(3)

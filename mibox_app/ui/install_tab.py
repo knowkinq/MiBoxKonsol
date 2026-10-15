@@ -8,7 +8,7 @@ import os
 import glob
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QComboBox,
@@ -314,6 +314,12 @@ class InstallTab(QWidget):
             self._info.setStyleSheet(kit.muted(dark))
             self._info2.setStyleSheet(kit.muted(dark))
             self.txt_out.setStyleSheet(kit.mono_style())
+            palette = kit.colors(self)
+            for row in range(self.table_catalog.rowCount()):
+                status = self.table_catalog.item(row, 4)
+                if status is not None:
+                    status.setForeground(QColor(
+                        palette['success'] if status.data(Qt.UserRole) else palette['muted']))
         except (RuntimeError, AttributeError):
             pass
 
@@ -481,6 +487,7 @@ class InstallTab(QWidget):
 
         self.table_catalog.setRowCount(0)
         self.table_catalog.setRowCount(len(items))
+        action_width = 220
 
         for row, item in enumerate(items):
             # Col 0: Uygulama (Icon + Name)
@@ -504,23 +511,30 @@ class InstallTab(QWidget):
             # Col 4: Durum
             is_installed = self._is_catalog_item_installed(item)
             it_status = QTableWidgetItem('✓ TV\'de Kurulu' if is_installed else 'Kurulu Değil')
-            it_status.setForeground(Qt.green if is_installed else Qt.gray)
+            it_status.setData(Qt.UserRole, is_installed)
+            palette = kit.colors(self)
+            it_status.setForeground(QColor(palette['success'] if is_installed else palette['muted']))
             self.table_catalog.setItem(row, 4, it_status)
 
             # Col 5: İşlem Butonları
             cell_widget = QWidget()
+            cell_widget.setObjectName('catalogActions')
+            cell_widget.setStyleSheet('''
+                QWidget#catalogActions { background: transparent; }
+                QPushButton#catalogAction { border-radius: 6px; padding: 4px 12px; }
+            ''')
             cell_layout = QHBoxLayout(cell_widget)
-            cell_layout.setContentsMargins(4, 2, 4, 2)
-            cell_layout.setSpacing(4)
+            cell_layout.setContentsMargins(8, 6, 8, 6)
+            cell_layout.setSpacing(8)
 
             if is_installed:
                 btn_open = QPushButton('TV\'de Aç')
-                btn_open.setProperty('accent', True)
+                btn_open.setProperty('role', 'secondary')
                 btn_open.clicked.connect(lambda _, it=item: self._launch_catalog_app(it))
                 cell_layout.addWidget(btn_open)
 
                 btn_reinstall = QPushButton('Yeniden Kur')
-                btn_reinstall.setProperty('role', 'quiet')
+                btn_reinstall.setProperty('role', 'secondary')
                 btn_reinstall.clicked.connect(lambda _, it=item: self._install_catalog_app(it))
                 cell_layout.addWidget(btn_reinstall)
             else:
@@ -529,8 +543,26 @@ class InstallTab(QWidget):
                 btn_inst.clicked.connect(lambda _, it=item: self._install_catalog_app(it))
                 cell_layout.addWidget(btn_inst)
 
+            for index in range(cell_layout.count()):
+                button = cell_layout.itemAt(index).widget()
+                button.setObjectName('catalogAction')
+                button.setProperty('compact', True)
+                button.ensurePolished()
+                button.setFixedHeight(max(36, button.fontMetrics().height() + 14))
+                button.setMinimumWidth(max(
+                    button.sizeHint().width(),
+                    button.fontMetrics().horizontalAdvance(button.text()) + 24,
+                ))
+            cell_widget.ensurePolished()
             self.table_catalog.setCellWidget(row, 5, cell_widget)
-            self.table_catalog.setRowHeight(row, 42)
+            self.table_catalog.setRowHeight(row, max(52, cell_widget.sizeHint().height() + 4))
+            margins = cell_layout.contentsMargins()
+            required_width = sum(
+                cell_layout.itemAt(index).widget().minimumWidth()
+                for index in range(cell_layout.count())
+            ) + margins.left() + margins.right() + cell_layout.spacing() * (cell_layout.count() - 1)
+            action_width = max(action_width, required_width + 8, cell_widget.sizeHint().width() + 8)
+        self.table_catalog.setColumnWidth(5, action_width)
 
     def _is_catalog_item_installed(self, item):
         candidates = [item['package']] + item.get('alt_packages', [])

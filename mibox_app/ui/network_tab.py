@@ -7,7 +7,7 @@ import socket
 from PySide6.QtCore import Slot, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTableWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QLineEdit,
     QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy, QFrame,
 )
@@ -44,22 +44,34 @@ class NetworkTab(QWidget):
         self._current_worker = None
         self._stop_flag = False
         self._build()
+        for button in self.findChildren(QPushButton):
+            if button.maximumHeight() <= 34:
+                button.setProperty('compact', True)
         self.core.connection_changed.connect(self._on_connection_changed)
 
     def _build(self):
         root = kit.page(self)
-        root.setSpacing(8)
+        root.setSpacing(12)
         self._root_layout = root
 
-        # 1. BİRLEŞİK KART: LAN Cihaz Keşfi ve Port Taraması
-        self.scan_card = QGroupBox('🔍 LAN Cihaz Keşfi · Port Taraması')
-        self.scan_card.setObjectName('compactCard')
-        self.scan_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.results_card = self.scan_card  # Geriye dönük uyumluluk referansı
+        def card(title):
+            frame = QFrame()
+            frame.setObjectName('contentCard')
+            frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            layout = QVBoxLayout(frame)
+            layout.setContentsMargins(16, 14, 16, 14)
+            layout.setSpacing(10)
+            heading = QLabel(title)
+            heading.setObjectName('networkCardTitle')
+            heading.setStyleSheet('font-weight: 600; font-size: 15px;')
+            heading.setWordWrap(True)
+            heading.setMinimumWidth(0)
+            layout.addWidget(heading)
+            return frame, layout
 
-        card_layout = QVBoxLayout(self.scan_card)
-        card_layout.setContentsMargins(14, 12, 14, 12)
-        card_layout.setSpacing(10)
+        # 1. BİRLEŞİK KART: LAN Cihaz Keşfi ve Port Taraması
+        self.scan_card, card_layout = card('🔍 LAN Cihaz Keşfi · Port Taraması')
+        self.results_card = self.scan_card  # Geriye dönük uyumluluk referansı
 
         # Üst Bilgi Satırı
         hint_label = kit.hint_label(
@@ -67,73 +79,18 @@ class NetworkTab(QWidget):
         hint_label.setWordWrap(True)
         card_layout.addWidget(hint_label)
 
-        # Tüm kontroller tek satırda yan yana (Kompakt, dar IP aralığı ve ferah yerleşim)
-        spin_compact_style = '''
-QSpinBox {
-    padding-left: 6px;
-    padding-right: 20px;
-    padding-top: 1px;
-    padding-bottom: 1px;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    background: #0f172a;
-    color: #f8fafc;
-    font-size: 12px;
-}
-QSpinBox:focus {
-    border: 1.5px solid #6366f1;
-}
-QSpinBox::up-button {
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    width: 17px;
-    height: 13px;
-    border-left: 1px solid #334155;
-    border-bottom: 1px solid #334155;
-    border-top-right-radius: 5px;
-    background: #1e293b;
-}
-QSpinBox::down-button {
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    width: 17px;
-    height: 13px;
-    border-left: 1px solid #334155;
-    border-bottom-right-radius: 5px;
-    background: #1e293b;
-}
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-    background: #475569;
-}
-QSpinBox::up-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #cbd5e1;
-}
-QSpinBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #cbd5e1;
-}
-'''
-
+        # Keep labels and controls together on one row.
         ctrl_row = QHBoxLayout()
-        ctrl_row.setContentsMargins(0, 2, 0, 2)
-        ctrl_row.setSpacing(6)
+        ctrl_row.setContentsMargins(0, 4, 0, 4)
+        ctrl_row.setSpacing(10)
 
         lbl_prefix = QLabel('Ağ Öneki:')
         lbl_prefix.setStyleSheet('font-weight: 600; font-size: 11.5px;')
 
         self.txt_subnet = QLineEdit(local_subnet_guess())
         self.txt_subnet.setPlaceholderText('192.168.1.')
-        self.txt_subnet.setFixedWidth(105)
-        self.txt_subnet.setFixedHeight(28)
+        self.txt_subnet.setFixedWidth(150)
+        self.txt_subnet.setFixedHeight(36)
         self.txt_subnet.setToolTip('Taranacak yerel ağ öneki (Örn: 192.168.1.)')
 
         lbl_range = QLabel('IP Aralığı:')
@@ -143,9 +100,8 @@ QSpinBox::down-arrow {
         self.spn_from.setRange(1, 254)
         self.spn_from.setValue(1)
         self.spn_from.setPrefix('')
-        self.spn_from.setFixedWidth(62)
-        self.spn_from.setFixedHeight(28)
-        self.spn_from.setStyleSheet(spin_compact_style)
+        self.spn_from.setFixedWidth(76)
+        self.spn_from.setFixedHeight(36)
         self.spn_from.setToolTip('Başlangıç IP son hanesi')
 
         lbl_dash = QLabel('—')
@@ -155,9 +111,8 @@ QSpinBox::down-arrow {
         self.spn_to.setRange(1, 254)
         self.spn_to.setValue(254)
         self.spn_to.setPrefix('')
-        self.spn_to.setFixedWidth(62)
-        self.spn_to.setFixedHeight(28)
-        self.spn_to.setStyleSheet(spin_compact_style)
+        self.spn_to.setFixedWidth(76)
+        self.spn_to.setFixedHeight(36)
         self.spn_to.setToolTip('Bitiş IP son hanesi')
 
         lbl_port = QLabel('Port:')
@@ -166,40 +121,45 @@ QSpinBox::down-arrow {
         self.spn_port = QSpinBox()
         self.spn_port.setRange(1, 65535)
         self.spn_port.setValue(5555)
-        self.spn_port.setFixedWidth(78)
-        self.spn_port.setFixedHeight(28)
-        self.spn_port.setStyleSheet(spin_compact_style)
+        self.spn_port.setFixedWidth(94)
+        self.spn_port.setFixedHeight(36)
         self.spn_port.setToolTip('ADB bağlantı portu (Standart: 5555)')
 
         self.btn_scan = QPushButton('🔍 Ağda Ara')
         self.btn_scan.setProperty('primary', True)
-        self.btn_scan.setFixedHeight(28)
-        self.btn_scan.setFixedWidth(105)
+        self.btn_scan.setFixedHeight(36)
+        self.btn_scan.setMinimumWidth(116)
         self.btn_scan.setStyleSheet('font-weight: bold; background: #6366f1; color: white;')
         self.btn_scan.clicked.connect(self.scan)
         self.btn_scan.setToolTip('Belirtilen aralıkta açık ADB portlu TV cihazlarını ara')
 
         self.btn_stop = QPushButton('⏹ Durdur')
         self.btn_stop.setProperty('role', 'danger')
-        self.btn_stop.setFixedHeight(28)
-        self.btn_stop.setFixedWidth(90)
+        self.btn_stop.setFixedHeight(36)
+        self.btn_stop.setMinimumWidth(96)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop_scan)
         self.btn_stop.setToolTip('Devam eden ağ taramasını durdur')
 
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+        range_row.addWidget(self.spn_from)
+        range_row.addWidget(lbl_dash)
+        range_row.addWidget(self.spn_to)
+        scan_actions = QHBoxLayout()
+        scan_actions.setSpacing(10)
+        scan_actions.addWidget(self.btn_scan)
+        scan_actions.addWidget(self.btn_stop)
         ctrl_row.addWidget(lbl_prefix)
         ctrl_row.addWidget(self.txt_subnet)
         ctrl_row.addSpacing(6)
         ctrl_row.addWidget(lbl_range)
-        ctrl_row.addWidget(self.spn_from)
-        ctrl_row.addWidget(lbl_dash)
-        ctrl_row.addWidget(self.spn_to)
+        ctrl_row.addLayout(range_row)
         ctrl_row.addSpacing(6)
         ctrl_row.addWidget(lbl_port)
         ctrl_row.addWidget(self.spn_port)
-        ctrl_row.addSpacing(10)
-        ctrl_row.addWidget(self.btn_scan)
-        ctrl_row.addWidget(self.btn_stop)
+        ctrl_row.addSpacing(6)
+        ctrl_row.addLayout(scan_actions)
         ctrl_row.addStretch(1)
 
         card_layout.addLayout(ctrl_row)
@@ -225,9 +185,7 @@ QSpinBox::down-arrow {
 
         # Bulunan Cihazlar Tablosu (Konforlu ve Dengeli Yükseklik)
         self.grid = kit.single_table(3, ['IP Adresi', 'Durum', 'Gecikme'])
-        self.grid.setMinimumHeight(150)
-        self.grid.setMaximumHeight(260)
-        self.grid.setFixedHeight(175)
+        self.grid.setFixedHeight(120)
         kit.empty_state(self.grid, 'Ağdaki TV\'leri Keşfedin',
                         'Yukarıdaki "Ağda Ara" butonuna basarak ağınızdaki cihazları otomatik bulun.')
         self.grid.horizontalHeader().setSectionResizeMode(COL_IP, QHeaderView.Stretch)
@@ -248,15 +206,15 @@ QSpinBox::down-arrow {
 
         self.btn_pair = QPushButton('📱 Eşleştir')
         self.btn_pair.setProperty('role', 'secondary')
-        self.btn_pair.setFixedHeight(32)
+        self.btn_pair.setFixedHeight(36)
         self.btn_pair.setToolTip('Android 11+ Kablosuz Eşleştirme (6 haneli kod)')
         self.btn_pair.clicked.connect(self._pair)
 
         self.btn_connect = QPushButton('🔗 Bağlan')
-        self.btn_connect.setProperty('primary', True)
-        self.btn_connect.setFixedHeight(32)
+        self.btn_connect.setProperty('accent', True)
+        self.btn_connect.setFixedHeight(36)
         self.btn_connect.setMinimumWidth(110)
-        self.btn_connect.setStyleSheet('font-weight: bold; background: #10b981; color: white; padding: 0 16px;')
+        self.btn_connect.setStyleSheet('font-weight: bold; padding: 0 16px;')
         self.btn_connect.setToolTip('Seçili TV cihazına hemen bağlan')
         self.btn_connect.clicked.connect(self._use_selected)
         self.btn_use = self.btn_connect  # Geriye dönük uyumluluk referansı
@@ -269,30 +227,21 @@ QSpinBox::down-arrow {
         root.addWidget(self.scan_card)
 
         # TV Network & WiFi Diagnostics Card (Sol Kart)
-        diag_card = QGroupBox('📶 Canlı TV WiFi · Ağ Sağlığı Teşhisi')
-        diag_card.setObjectName('compactCard')
-        diag_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        diag_layout = QVBoxLayout(diag_card)
-        diag_layout.setContentsMargins(12, 10, 12, 10)
-        diag_layout.setSpacing(6)
+        diag_card, diag_layout = card('📶 Canlı TV WiFi · Ağ Sağlığı Teşhisi')
 
         diag_header = QHBoxLayout()
-        diag_hint = QLabel('Sinyal · Modem Pingi')
-        diag_hint.setStyleSheet('font-weight: 600; font-size: 11.5px;')
-        diag_hint.setWordWrap(True)
-        diag_hint.setMinimumWidth(0)
         self.btn_run_diag = QPushButton('🔍 Test Et')
         self.btn_run_diag.setToolTip('Bağlı Mi Box TV Wi-Fi sinyal kalitesini, modem pingini ve hızını test eder.')
         self.btn_run_diag.setProperty('accent', True)
-        self.btn_run_diag.setFixedHeight(26)
+        self.btn_run_diag.setFixedHeight(36)
         self.btn_run_diag.clicked.connect(self._run_diagnostics)
-        diag_header.addWidget(diag_hint)
-        diag_header.addStretch(1)
+        diag_header.addWidget(diag_layout.takeAt(0).widget(), 1)
+        diag_header.setSpacing(12)
         diag_header.addWidget(self.btn_run_diag)
         diag_layout.addLayout(diag_header)
 
         metrics_grid = QGridLayout()
-        metrics_grid.setSpacing(8)
+        metrics_grid.setSpacing(10)
 
         card_defs = [
             ('Wi-Fi Sinyali', 'lbl_wifi_signal', 'lbl_wifi_signal_detail'),
@@ -306,21 +255,21 @@ QSpinBox::down-arrow {
             m_box.setProperty('role', 'secondary')
             m_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             m_lay = QVBoxLayout(m_box)
-            m_lay.setContentsMargins(8, 6, 8, 6)
-            m_lay.setSpacing(2)
+            m_lay.setContentsMargins(12, 8, 12, 8)
+            m_lay.setSpacing(4)
 
             m_title = QLabel(title)
             m_title.setObjectName('metricLabel')
             m_title.setProperty('role', 'quiet')
 
             m_val = QLabel('—')
-            m_val.setStyleSheet('font-size: 14px; font-weight: 600;')
+            m_val.setStyleSheet('font-size: 20px; font-weight: 600;')
             m_val.setProperty('role', 'primary')
             setattr(self, val_attr, m_val)
 
             m_detail = QLabel('Ölçüm bekleniyor')
             m_detail.setProperty('role', 'quiet')
-            m_detail.setStyleSheet('font-size: 10.5px;')
+            m_detail.setStyleSheet('font-size: 12px;')
             m_detail.setWordWrap(True)
             setattr(self, detail_attr, m_detail)
 
@@ -347,24 +296,15 @@ QSpinBox::down-arrow {
         diag_layout.addStretch(1)
 
         # DNS & Reklam Engelleyici Kartı (Sağ Kart)
-        dns_card = QGroupBox('🛡️ Özel DNS · Reklam Engelleme')
-        dns_card.setObjectName('compactCard')
-        dns_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        dns_layout = QVBoxLayout(dns_card)
-        dns_layout.setContentsMargins(12, 10, 12, 10)
-        dns_layout.setSpacing(6)
+        dns_card, dns_layout = card('🛡️ Özel DNS · Reklam Engelleme')
 
         dns_header = QHBoxLayout()
-        dns_hint = QLabel('AdGuard · Cloudflare')
-        dns_hint.setStyleSheet('font-weight: 600; font-size: 11.5px;')
-        dns_hint.setWordWrap(True)
-        dns_hint.setMinimumWidth(0)
         self.btn_refresh_dns = QPushButton('🔄 DNS Oku')
-        self.btn_refresh_dns.setFixedHeight(26)
+        self.btn_refresh_dns.setFixedHeight(36)
         self.btn_refresh_dns.setProperty('role', 'secondary')
         self.btn_refresh_dns.clicked.connect(self._fetch_dns_status)
-        dns_header.addWidget(dns_hint)
-        dns_header.addStretch(1)
+        dns_header.addWidget(dns_layout.takeAt(0).widget(), 1)
+        dns_header.setSpacing(12)
         dns_header.addWidget(self.btn_refresh_dns)
         dns_layout.addLayout(dns_header)
 
@@ -375,28 +315,28 @@ QSpinBox::down-arrow {
 
         # Preset Butonları (2x2 Dengeli Izgara)
         presets_grid = QGridLayout()
-        presets_grid.setSpacing(6)
+        presets_grid.setSpacing(10)
 
         self.btn_dns_adguard = QPushButton('🛡️ AdGuard')
-        self.btn_dns_adguard.setFixedHeight(30)
+        self.btn_dns_adguard.setFixedHeight(38)
         self.btn_dns_adguard.setProperty('primary', True)
         self.btn_dns_adguard.setToolTip('AdGuard DNS: Reklam ve takipçileri engeller')
         self.btn_dns_adguard.clicked.connect(lambda: self._set_dns_preset('hostname', 'dns.adguard-dns.com', 'AdGuard DNS'))
 
         self.btn_dns_cloudflare = QPushButton('⚡ Cloudflare')
-        self.btn_dns_cloudflare.setFixedHeight(30)
+        self.btn_dns_cloudflare.setFixedHeight(38)
         self.btn_dns_cloudflare.setProperty('role', 'secondary')
         self.btn_dns_cloudflare.setToolTip('Cloudflare 1.1.1.1: Hızlı ve güvenli DNS')
         self.btn_dns_cloudflare.clicked.connect(lambda: self._set_dns_preset('hostname', '1dot1dot1dot1.cloudflare-dns.com', 'Cloudflare DNS'))
 
         self.btn_dns_google = QPushButton('🔍 Google DNS')
-        self.btn_dns_google.setFixedHeight(30)
+        self.btn_dns_google.setFixedHeight(38)
         self.btn_dns_google.setProperty('role', 'secondary')
         self.btn_dns_google.setToolTip('Google DNS: dns.google')
         self.btn_dns_google.clicked.connect(lambda: self._set_dns_preset('hostname', 'dns.google', 'Google DNS'))
 
         self.btn_dns_off = QPushButton('❌ Kapat')
-        self.btn_dns_off.setFixedHeight(30)
+        self.btn_dns_off.setFixedHeight(38)
         self.btn_dns_off.setProperty('role', 'secondary')
         self.btn_dns_off.setToolTip('Özel DNS kapatılır, modem varsayılanı kullanılır')
         self.btn_dns_off.clicked.connect(lambda: self._set_dns_preset('off', '', 'Kapalı'))
@@ -409,13 +349,13 @@ QSpinBox::down-arrow {
 
         # Özel DNS Giriş Satırı
         custom_row = QHBoxLayout()
-        custom_row.setSpacing(6)
+        custom_row.setSpacing(10)
         self.txt_custom_dns = QLineEdit()
         self.txt_custom_dns.setPlaceholderText('Özel DNS (örn. dns.nextdns.io)...')
-        self.txt_custom_dns.setFixedHeight(28)
+        self.txt_custom_dns.setFixedHeight(36)
 
         self.btn_apply_custom_dns = QPushButton('Uygula')
-        self.btn_apply_custom_dns.setFixedHeight(28)
+        self.btn_apply_custom_dns.setFixedHeight(36)
         self.btn_apply_custom_dns.clicked.connect(self._apply_custom_dns)
 
         custom_row.addWidget(QLabel('Özel:'))
@@ -432,12 +372,29 @@ QSpinBox::down-arrow {
 
         # Alt Bölüm: WiFi Teşhisi ve Özel DNS Yan Yana (Kullanıcı İsteği)
         side_layout = QHBoxLayout()
-        side_layout.setSpacing(10)
+        self._side_layout = side_layout
+        side_layout.setSpacing(12)
         side_layout.addWidget(diag_card, 1)
         side_layout.addWidget(dns_card, 1)
         root.addLayout(side_layout)
         root.addStretch(1)
         self._stop_flag = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_side_layout'):
+            direction = (QBoxLayout.TopToBottom if self.width() < 900
+                         else QBoxLayout.LeftToRight)
+            self._side_layout.setDirection(direction)
+
+    def apply_theme(self):
+        palette = kit.colors(self)
+        for row in range(self.grid.rowCount()):
+            status = self.grid.item(row, COL_STATE)
+            if status is not None:
+                status.setForeground(QColor(palette['success']))
+        self.lbl_dns_current.setStyleSheet(
+            'font-size: 11px; font-weight: 600; color: {};'.format(palette['muted']))
 
     def _on_connection_changed(self, connected=False, target=None):
         if getattr(self.core, 'connected', False) and getattr(self.core, 'target', None):
@@ -464,7 +421,8 @@ QSpinBox::down-arrow {
                     name = f'🔍 Google DNS ({spec}) - Aktif'
                 else:
                     name = f'Özel DNS: {spec} (Aktif)'
-                self.lbl_dns_current.setText(f'Mevcut DNS: <font color="#4ade80"><b>{name}</b></font>')
+                color = kit.colors(self)['success']
+                self.lbl_dns_current.setText(f'Mevcut DNS: <font color="{color}"><b>{name}</b></font>')
             elif mode == 'opportunistic':
                 self.lbl_dns_current.setText('Mevcut DNS: <b>Otomatik (Fırsatçı)</b>')
             else:
@@ -608,7 +566,7 @@ QSpinBox::down-arrow {
         # Arayüzü sıfırla ve yeni taramaya hazırla
         self._found = []
         self.grid.setRowCount(0)
-        self.grid.setFixedHeight(175)
+        self.grid.setFixedHeight(120)
         kit.empty_state(self.grid, 'Ağ taranıyor...', 'Açık ADB portlu (5555) cihazlar aranıyor...')
 
         self.lbl_summary.setText(f'🔍 Taranıyor: {prefix}{start}-{end} :{port} ...')
@@ -639,9 +597,9 @@ QSpinBox::down-arrow {
         item_ip.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         item_ip.setData(Qt.UserRole, ip)
 
-        item_state = QTableWidgetItem(f'🟢 {state}')
+        item_state = QTableWidgetItem(f'● {state}')
         item_state.setTextAlignment(Qt.AlignCenter)
-        item_state.setForeground(QColor('#10b981'))
+        item_state.setForeground(QColor(kit.colors(self)['success']))
 
         item_lat = QTableWidgetItem(f'{lat} ms')
         item_lat.setTextAlignment(Qt.AlignCenter)
@@ -654,7 +612,7 @@ QSpinBox::down-arrow {
         row_height = self.grid.verticalHeader().defaultSectionSize() or 34
         header_height = self.grid.horizontalHeader().height() or 30
         desired_height = header_height + (r + 1) * row_height + 10
-        self.grid.setFixedHeight(min(260, max(175, desired_height)))
+        self.grid.setFixedHeight(min(200, max(120, desired_height)))
 
         # İlk bulunan cihazı otomatik seç, kullanıcı doğrudan Enter veya "Bağlan" butonu ile bağlanabilsin
         if r == 0:

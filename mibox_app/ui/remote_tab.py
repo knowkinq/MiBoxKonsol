@@ -10,7 +10,7 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QSize, QPoint
-from PySide6.QtGui import QPixmap, QImage, QColor, QPainter, QPen
+from PySide6.QtGui import QPixmap, QImage, QColor, QPainter, QPen, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QLineEdit, QComboBox, QMessageBox,
@@ -174,6 +174,10 @@ class RemoteTab(QWidget):
         self._hold_timer.setSingleShot(True)
         self._hold_timer.timeout.connect(self._hold_tick)
         self._apps_load_generation = 0
+        self._volume_generation = 0
+        self._vol_edit_revision = 0
+        self._vol_setting = False
+        self._vol_reading = False
 
         # Canlı Ekran Önizleme durumları
         self._live_timer = QTimer(self)
@@ -312,6 +316,12 @@ class RemoteTab(QWidget):
 
     def _connection_changed(self, connected=False, target=None):
         self._stop_hold()
+        self._volume_generation += 1
+        self._vol_setting = False
+        self._vol_reading = False
+        self._vol_debounce_timer.stop()
+        self.slider_vol.setEnabled(False)
+        self.lbl_vol_val.setText('— / {}'.format(self.slider_vol.maximum()))
         self._live_timer.stop()
         if hasattr(self, 'btn_live_stream'):
             self.btn_live_stream.setChecked(False)
@@ -345,73 +355,90 @@ class RemoteTab(QWidget):
         return b
 
     def _style_arrow(self, b, dark):
-        if dark:
-            b.setStyleSheet('''
-                QPushButton#dpadArrow {
-                    min-width: 44px; max-width: 44px;
-                    min-height: 44px; max-height: 44px;
-                    border-radius: 22px;
-                    padding: 0px; margin: 0px;
-                    background-color: #232838;
-                    color: #ffffff;
-                    border: 1px solid #3d4560;
-                    font-size: 18px;
-                    font-weight: bold;
-                }
-                QPushButton#dpadArrow:hover { background-color: #2e355c; border-color: #6366f1; }
-                QPushButton#dpadArrow:pressed { background-color: #1a1e2c; }
-            ''')
-        else:
-            b.setStyleSheet('''
-                QPushButton#dpadArrow {
-                    min-width: 44px; max-width: 44px;
-                    min-height: 44px; max-height: 44px;
-                    border-radius: 22px;
-                    padding: 0px; margin: 0px;
-                    background-color: #ffffff;
-                    color: #1e293b;
-                    border: 1px solid #cbd5e1;
-                    font-size: 18px;
-                    font-weight: bold;
-                }
-                QPushButton#dpadArrow:hover { background-color: #e0e7ff; border-color: #4f46e5; }
-                QPushButton#dpadArrow:pressed { background-color: #cbd5e1; }
-            ''')
+        palette = kit.colors(self)
+        hover, pressed = ('#3a476b', '#596aa0') if dark else ('#d8def5', '#b9c5ec')
+        b.setStyleSheet(f"""
+            QPushButton#dpadArrow {{
+                min-width: 0; min-height: 0;
+                padding: 0; margin: 0; border: 1px solid transparent;
+                border-radius: 20px; background: {'#2c344d' if dark else '#e2e7f5'};
+            }}
+            QPushButton#dpadArrow:hover {{ background: {hover}; }}
+            QPushButton#dpadArrow:pressed {{ background: {pressed}; }}
+            QPushButton#dpadArrow:focus {{ border: 1px solid {palette['accent']}; }}
+        """)
+        points = {
+            19: ((16, 34), (28, 22), (40, 34)),
+            20: ((16, 22), (28, 34), (40, 22)),
+            21: ((34, 16), (22, 28), (34, 40)),
+            22: ((22, 16), (34, 28), (22, 40)),
+        }.get(b.property('keyCode'))
+        if points:
+            pixmap = QPixmap(56, 56)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor(palette['text']), 4, Qt.SolidLine,
+                                Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(QPoint(*points[0]), QPoint(*points[1]))
+            painter.drawLine(QPoint(*points[1]), QPoint(*points[2]))
+            painter.end()
+            pixmap.setDevicePixelRatio(2)
+            b.setIcon(QIcon(pixmap))
+            b.setIconSize(QSize(32, 32))
+
+    def _style_navigation_disc(self):
+        dark = kit.dark_from(self)
+        top, bottom = ('#29334a', '#192132') if dark else ('#f4f6ff', '#e4e9f7')
+        ring = ('#6474a7', '#465785') if dark else ('#8899cb', '#6376b0')
+        gradient = f'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ring[0]}, stop:1 {ring[1]})'
+        self._navigation_disc.setStyleSheet(f"""
+            QWidget#navigationDisc {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 {top}, stop:1 {bottom});
+                border: 1.5px solid {gradient}; border-radius: 100px;
+            }}
+        """)
+        palette = kit.colors(self)
+        hover, pressed = ('#3a476b', '#596aa0') if dark else ('#d8def5', '#b9c5ec')
+        self.btn_ok.setStyleSheet(f"""
+            QPushButton#dpadOk {{
+                min-width: 0; min-height: 0;
+                border-radius: 36px; padding: 0; margin: 0;
+                background: {'#414e7c' if dark else '#cbd5f3'}; color: {palette['text']};
+                border: 2px solid {gradient}; font-size: 15px; font-weight: 600;
+            }}
+            QPushButton#dpadOk:hover {{ background: {hover}; }}
+            QPushButton#dpadOk:pressed {{ background: {pressed}; }}
+            QPushButton#dpadOk:focus {{ border-color: {palette['accent']}; }}
+        """)
 
     def _make_ok_btn(self, parent):
         b = QPushButton('OK', parent)
         b.setObjectName('dpadOk')
-        b.setGeometry(68, 68, 64, 64)
-        b.setStyleSheet('''
-            QPushButton#dpadOk {
-                min-width: 64px; max-width: 64px;
-                min-height: 64px; max-height: 64px;
-                border-radius: 32px;
-                padding: 0px; margin: 0px;
-                background-color: #6366f1;
-                color: #ffffff;
-                border: 2px solid #818cf8;
-                font-size: 15px;
-                font-weight: bold;
-            }
-            QPushButton#dpadOk:hover { background-color: #4f46e5; border-color: #a5b4fc; }
-            QPushButton#dpadOk:pressed { background-color: #4338ca; border-color: #c7d2fe; }
-        ''')
+        b.setGeometry(64, 64, 72, 72)
+        b.setFixedSize(72, 72)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setAccessibleName('Tamam')
         b.setToolTip('OK (key 23)')
         self._bind_key(b, 23, 'OK')
         return b
 
     def _make_arrow_btn(self, parent, label, code, name, x, y):
-        b = QPushButton(label, parent)
+        b = QPushButton('', parent)
+        b.setAccessibleName(name)
+        b.setCursor(Qt.PointingHandCursor)
         b.setObjectName('dpadArrow')
-        b.setGeometry(x, y, 44, 44)
+        b.setFixedSize(72 if code in (19, 20) else 56,
+                       56 if code in (19, 20) else 72)
+        b.move(x, y)
         b.setToolTip('{} (key {})'.format(name, code))
         try:
             dark = kit.dark_from(self)
         except Exception:
             dark = getattr(self.core.config, 'dark_mode', False)
-        self._style_arrow(b, dark)
         self._bind_key(b, code, name)
+        self._style_arrow(b, dark)
         if not hasattr(self, '_arrow_buttons'):
             self._arrow_buttons = []
         self._arrow_buttons.append(b)
@@ -466,15 +493,16 @@ class RemoteTab(QWidget):
 
         # 2. D-Pad (Yön Gezinme Takımı)
         pad_box = QWidget()
-        pad_box.setObjectName('remotePad')
+        pad_box.setObjectName('navigationDisc')
+        self._navigation_disc = pad_box
         pad_box.setFixedSize(200, 200)
-        pad_box.setStyleSheet('background: rgba(99, 102, 241, 0.08); border: 1.5px solid rgba(99, 102, 241, 0.25); border-radius: 100px;')
 
         self.btn_ok = self._make_ok_btn(pad_box)
-        self.btn_up = self._make_arrow_btn(pad_box, '↑', 19, 'Yukarı', 78, 10)
-        self.btn_down = self._make_arrow_btn(pad_box, '↓', 20, 'Aşağı', 78, 146)
-        self.btn_left = self._make_arrow_btn(pad_box, '←', 21, 'Sol', 10, 78)
-        self.btn_right = self._make_arrow_btn(pad_box, '→', 22, 'Sağ', 146, 78)
+        self.btn_up = self._make_arrow_btn(pad_box, '↑', 19, 'Yukarı', 64, 4)
+        self.btn_down = self._make_arrow_btn(pad_box, '↓', 20, 'Aşağı', 64, 140)
+        self.btn_left = self._make_arrow_btn(pad_box, '←', 21, 'Sol', 4, 64)
+        self.btn_right = self._make_arrow_btn(pad_box, '→', 22, 'Sağ', 140, 64)
+        self._style_navigation_disc()
         rl.addWidget(pad_box, 0, Qt.AlignHCenter)
 
         # 3. Ana Gezinme
@@ -513,10 +541,15 @@ class RemoteTab(QWidget):
         self.btn_mute.clicked.connect(self._toggle_mute)
 
         self.slider_vol = QSlider(Qt.Horizontal)
-        self.slider_vol.setRange(0, 100)
-        self.slider_vol.setValue(50)
-        self.slider_vol.setFixedHeight(22)
-        self.slider_vol.setToolTip('TV Ses Seviyesi (Kaydırarak veya tıklayarak ayarlayın)')
+        self.slider_vol.setRange(0, 15)
+        self.slider_vol.setValue(0)
+        self.slider_vol.setSingleStep(1)
+        self.slider_vol.setPageStep(1)
+        self.slider_vol.setTickInterval(1)
+        self.slider_vol.setTickPosition(QSlider.TicksBelow)
+        self.slider_vol.setFixedHeight(30)
+        self.slider_vol.setEnabled(False)
+        self.slider_vol.setToolTip('Ses kademesi: 0 sessiz, 1–15 arası birer adım. Cihaz bağlanınca gerçek aralık okunur.')
         self._vol_debounce_timer = QTimer(self)
         self._vol_debounce_timer.setSingleShot(True)
         self._vol_debounce_timer.setInterval(250)
@@ -524,8 +557,8 @@ class RemoteTab(QWidget):
         self.slider_vol.valueChanged.connect(self._on_volume_slider_changed)
         self.slider_vol.sliderReleased.connect(self._on_volume_slider_released)
 
-        self.lbl_vol_val = QLabel('%50')
-        self.lbl_vol_val.setFixedWidth(36)
+        self.lbl_vol_val = QLabel('— / 15')
+        self.lbl_vol_val.setFixedWidth(46)
         self.lbl_vol_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.lbl_vol_val.setStyleSheet('font-size: 11px; font-weight: bold; color: #94a3b8;')
 
@@ -926,6 +959,9 @@ class RemoteTab(QWidget):
         content_row.addWidget(remote_box, 0, Qt.AlignTop)
         content_row.addLayout(right_panel, 1)
         root.addLayout(content_row)
+        for button in self.findChildren(QPushButton):
+            if button.maximumHeight() <= 34:
+                button.setProperty('compact', True)
 
     # ------------------------------------------------------------------
     # Canlı Ekran & Etkileşim (Tap & Swipe & Scrcpy)
@@ -1183,6 +1219,7 @@ class RemoteTab(QWidget):
             dark = kit.dark_from(self)
             self.lbl_text_hint.setStyleSheet(kit.faint(dark))
             self.lbl_status.setStyleSheet(kit.muted(dark))
+            self._style_navigation_disc()
             for b in getattr(self, '_arrow_buttons', []):
                 self._style_arrow(b, dark)
             if hasattr(self, 'btn_mute'):
@@ -1497,8 +1534,9 @@ class RemoteTab(QWidget):
         self.window._run(w, desc='Turbo Hızlandırma')
 
     def _on_volume_slider_changed(self, v):
-        self.lbl_vol_val.setText(f'%{v}')
-        if not self.slider_vol.signalsBlocked():
+        self.lbl_vol_val.setText('{} / {}'.format(v, self.slider_vol.maximum()))
+        self._vol_edit_revision += 1
+        if not self.slider_vol.isSliderDown():
             self._vol_debounce_timer.start(250)
 
     def _toggle_mute(self):
@@ -1514,22 +1552,32 @@ class RemoteTab(QWidget):
 
     def _on_volume_slider_released(self):
         self._vol_debounce_timer.stop()
-        if not self.core.connected or not self.core.target:
+        if not self.core.connected or not self.core.target or not self.slider_vol.isEnabled():
             return
         if getattr(self, '_vol_setting', False):
             return
         self._vol_setting = True
         val = self.slider_vol.value()
         target = self.core.target
-        w = Worker(lambda: self.core.engine.set_volume(target, val), silent=True)
+        generation = self._volume_generation
+        w = Worker(lambda: self.core.engine.set_volume_level(target, val), silent=True)
         w.job_name = 'Ses Ayarla'
         def on_done(_):
+            if generation != self._volume_generation or target != self.core.target:
+                return
             self._vol_setting = False
-            self.lbl_status.setText(f'TV ses seviyesi %{val} yapıldı.')
-            QTimer.singleShot(250, self._fetch_volume)
+            self.lbl_status.setText('TV ses seviyesi {} / {} yapıldı.'.format(val, self.slider_vol.maximum()))
+            if self.slider_vol.value() != val:
+                if not self.slider_vol.isSliderDown():
+                    self._on_volume_slider_released()
+            else:
+                QTimer.singleShot(250, self._fetch_volume)
         def on_fail(err):
+            if generation != self._volume_generation or target != self.core.target:
+                return
             self._vol_setting = False
             self.lbl_status.setText('Ses ayarlanamadı.')
+            QTimer.singleShot(250, self._fetch_volume)
         w.finished_ok.connect(on_done)
         w.failed.connect(on_fail)
         self.window._run(w, silent=True)
@@ -1537,19 +1585,44 @@ class RemoteTab(QWidget):
     def _fetch_volume(self):
         if not self.core.connected or not self.core.target:
             return
-        if getattr(self, '_vol_setting', False):
+        if (self._vol_setting or self._vol_reading or self.slider_vol.isSliderDown()
+                or self._vol_debounce_timer.isActive()):
             return
+        self._vol_reading = True
         target = self.core.target
+        generation = self._volume_generation
+        revision = self._vol_edit_revision
         def do():
-            return self.core.engine.get_volume(target)
+            return self.core.engine.get_volume_info(target)
         w = Worker(do, silent=True)
         w.job_name = 'Ses Seviyesi'
-        def on_ok(val):
+        def on_ok(info):
+            if generation != self._volume_generation or target != self.core.target:
+                return
+            self._vol_reading = False
+            if (revision != self._vol_edit_revision or self._vol_setting
+                    or self.slider_vol.isSliderDown() or self._vol_debounce_timer.isActive()):
+                return
+            val, minimum, maximum = info
+            if maximum <= minimum or not minimum <= val <= maximum:
+                self.slider_vol.setEnabled(False)
+                self.lbl_vol_val.setText('—')
+                return
             self.slider_vol.blockSignals(True)
-            self.slider_vol.setValue(val)
-            self.lbl_vol_val.setText(f'%{val}')
-            self.slider_vol.blockSignals(False)
+            try:
+                self.slider_vol.setRange(minimum, maximum)
+                self.slider_vol.setValue(val)
+                self.lbl_vol_val.setText('{} / {}'.format(val, maximum))
+                self.slider_vol.setToolTip('Ses kademesi: {}–{}, birer adım.'.format(minimum, maximum))
+                self.slider_vol.setEnabled(True)
+            finally:
+                self.slider_vol.blockSignals(False)
+        def on_fail(_):
+            if generation == self._volume_generation and target == self.core.target:
+                self._vol_reading = False
+                self.lbl_status.setText('Ses seviyesi okunamadı; Ses − / Ses + tuşlarını kullanabilirsiniz.')
         w.finished_ok.connect(on_ok)
+        w.failed.connect(on_fail)
         self.window._run(w, silent=True)
 
     def _toggle_screen_recording(self):

@@ -15,6 +15,8 @@ Xiaomi Mi Box, Mi TV Stick ve tüm Android TV cihazlarını yerel ağ üzerinden
 
 ## 📸 Ekran Görüntüleri
 
+Görseller yeni arayüzü örnek verilerle gösterir; gerçek cihaz veya kişisel bilgiler içermez. Açık ve koyu tema desteklenir.
+
 <table>
   <tr>
     <td width="50%" align="center">

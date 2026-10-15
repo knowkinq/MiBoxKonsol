@@ -1,5 +1,14 @@
 # Değişiklik günlüğü
 
+## Henüz sürümlenmemiş
+
+- Açık ve koyu temalar, sol menü, kartlar ve sekmeler ortak lacivert/mor tasarımla yenilendi.
+- Kumandaya geniş tıklama alanlı dairesel yön tuşları ve cihazın gerçek ses kademeleri eklendi.
+- Sağlık bölümü üç ana sekmede toplandı; bölüm kısayolları ilgili başlığa yönlendirilir.
+- Ağ panelindeki başlık çakışmaları, metin alanlarının kırpılması ve katalog düğmelerinin taşması düzeltildi.
+- Uygulama listesinde sağ tık artık kutucukları işaretlemez; menüden APK yedekleme yalnızca ilgili uygulamayı hedefler.
+- Tema değiştiğinde katalog ve ağ durumu renkleri güncellenir; ekran görüntüleri kişisel veri içermeyen örneklerle yenilendi.
+
 ## [1.3.0] - 2026-10-15
 
 Büyük Modernizasyon, Canlı TV Ekranı & Dokunmatik Kontrol, ADB Shell Terminali ve Yeni Özellikler Sürümü.

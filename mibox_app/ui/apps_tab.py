@@ -760,7 +760,9 @@ class AppsTab(QWidget):
         QMessageBox.information(self, 'Tamam', format_action_result(res))
 
     def _backup_apk(self):
-        pkgs = self._selected_packages()
+        self._backup_packages(self._selected_packages())
+
+    def _backup_packages(self, pkgs):
         if not pkgs:
             QMessageBox.information(self, 'Seçim', 'Önce APK yedeklenecek uygulamaları seçin.')
             return
@@ -873,18 +875,6 @@ class AppsTab(QWidget):
             return
         except Exception:
             return
-        try:
-            chk = self.grid.item(row, COL_CHECK)
-            if chk and (chk.flags() & Qt.ItemIsUserCheckable):
-                self.grid.blockSignals(True)
-                try:
-                    chk.setCheckState(Qt.Checked)
-                finally:
-                    self.grid.blockSignals(False)
-        except RuntimeError:
-            return
-        except Exception:
-            pass
         menu = QMenu(self)
         # kaldirilmis mi? (user 0 listesinde yoksa)
         removed = False
@@ -907,7 +897,7 @@ class AppsTab(QWidget):
         menu.addAction('Aktif et', lambda: self._pkg_action_single('enable', p))
         menu.addAction('Kaldır (user)', lambda: self._pkg_action_single('uninstall', p))
         menu.addAction('Geri Yükle', lambda: self._pkg_action_single('restore', p))
-        menu.addAction('APK Yedekle', lambda: self._backup_apk())
+        menu.addAction('APK Yedekle', lambda: self._backup_packages([p]))
         menu.exec(self.grid.viewport().mapToGlobal(pos))
 
     def _pkg_action_single(self, action, pkg):

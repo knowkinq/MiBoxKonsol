@@ -2,7 +2,7 @@
 """Sağlık sekmesi: cihaz ölçümleri, bakım ve gelişmiş taramalar."""
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QProgressBar, QMessageBox, QLineEdit,
@@ -48,6 +48,27 @@ class HealthTab(QWidget):
     def _build(self):
         root = kit.page(self)
         self.sections = QTabWidget()
+        self.sections.setObjectName('healthSections')
+        self.sections.setDocumentMode(True)
+        navigation = self.sections.tabBar()
+        navigation.setObjectName('healthNavigation')
+        navigation.setAccessibleName('Sağlık bölümleri')
+        navigation.setExpanding(True)
+        navigation.setDrawBase(False)
+        navigation.setElideMode(Qt.ElideNone)
+        self.sections.setStyleSheet('''
+            QTabWidget#healthSections::pane { border: none; }
+            QTabBar#healthNavigation::tab {
+                min-height: 24px;
+                padding: 10px 16px;
+                margin-right: 4px;
+                border-radius: 8px;
+            }
+            QTabBar#healthNavigation::tab:selected {
+                border-bottom: 3px solid #818cf8;
+                font-weight: 600;
+            }
+        ''')
         self.sections.setMinimumHeight(260)
         root.addWidget(self.sections, 1)
         overview = QWidget()
@@ -61,16 +82,54 @@ class HealthTab(QWidget):
             return scroll
 
         self.scroll_overview = add_page(overview, 'Genel durum')
+        devices_page = QWidget()
+        devices_root = kit.page(devices_page)
+        self.scroll_devices = add_page(devices_page, 'Cihaz ayarları')
+        maintenance_page = QWidget()
+        maintenance_root = kit.page(maintenance_page)
+        self.scroll_maintenance = add_page(maintenance_page, 'Bakım ve analiz')
+
         self.performance = OptimizationTab(self.core, self.window, embedded=True)
         self.performance.analysis_ready.connect(self._show)
-        self.scroll_performance = add_page(self.performance, 'Performans ve bakım')
+        self.scroll_performance = self.scroll_maintenance
         self.display_panel = DisplayPanel(self.core, self.window)
-        self.scroll_display = add_page(self.display_panel, 'Ekran & Çözünürlük')
+        self.scroll_display = self.scroll_devices
+        devices_root.addWidget(self.display_panel)
         self.background = BackgroundPanel(self.core, self.window)
-        self.scroll_bg = add_page(self.background, 'Arka plan')
+        self.scroll_bg = self.scroll_devices
+        devices_root.addWidget(self.background)
         advanced_page = QWidget()
         advanced_root = kit.page(advanced_page)
-        self.scroll_advanced = add_page(advanced_page, 'Gelişmiş')
+        self.scroll_advanced = self.scroll_maintenance
+
+        def section_links(layout, page, entries):
+            links = QHBoxLayout()
+            links.setSpacing(10)
+            for text, target in entries:
+                button = QPushButton(text)
+                button.setMinimumHeight(36)
+                button.setProperty('role', 'secondary')
+                button.clicked.connect(
+                    lambda _checked=False, page=page, target=target:
+                    self._open_section(page, target)
+                )
+                links.addWidget(button, 1)
+            layout.insertLayout(0, links)
+
+        section_links(devices_root, self.scroll_devices, (
+            ('Ekran ayarları', self.display_panel),
+            ('Arka plan izinleri', self.background),
+        ))
+        section_links(maintenance_root, self.scroll_maintenance, (
+            ('Performans ve bakım', self.performance),
+            ('Uygulama taramaları', advanced_page),
+        ))
+        for index, description in enumerate((
+            'Depolama, bellek ve donanım ölçümleri',
+            'Ekran ayarları ve uygulamaların arka plan izinleri',
+            'Performans işlemleri, depolama ve uygulama taramaları',
+        )):
+            self.sections.setTabToolTip(index, description)
         root = overview_root
         title = QLabel('Cihaz sağlığı')
         title.setObjectName('cardTitle')
@@ -154,20 +213,23 @@ class HealthTab(QWidget):
             card_layout.addWidget(detail)
             hardware_metrics.addWidget(card, 1)
         root.addLayout(hardware_metrics)
-        root.addWidget(kit.hint_label('Yenile ile anlık ölçümleri alın. Performans ve bakım sekmesinde '
-                                     'önbellek ve animasyon adımlarını seçebilir, Arka plan sekmesinde '
-                                     'uygulama izinlerini yönetebilirsiniz.'))
+        root.addWidget(kit.hint_label('Yenile ile anlık ölçümleri alın. Bakım ve analiz sekmesinde '
+                                     'performans adımlarını ve uygulama taramalarını, Cihaz ayarları '
+                                     'sekmesinde görüntü ayarları ile arka plan izinlerini yönetebilirsiniz.'))
         self.lbl_overview = kit.status_label('Henüz ölçüm alınmadı.')
         self.lbl_overview.setTextFormat(Qt.PlainText)
         root.addWidget(self.lbl_overview)
         overview_tools = FlowLayout()
-        for text, scroll_widget in (
-            ('Performans ve bakım', self.scroll_performance),
-            ('Ekran ve çözünürlük', self.scroll_display),
-            ('Arka plan yönetimi', self.scroll_bg),
+        for text, page, target in (
+            ('Performans ve bakım', self.scroll_performance, self.performance),
+            ('Ekran ve çözünürlük', self.scroll_display, self.display_panel),
+            ('Arka plan yönetimi', self.scroll_bg, self.background),
         ):
             button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, w=scroll_widget: self.sections.setCurrentWidget(w))
+            button.clicked.connect(
+                lambda _checked=False, page=page, target=target:
+                self._open_section(page, target)
+            )
             overview_tools.addWidget(button)
         root.addLayout(overview_tools)
         root.addStretch()
@@ -272,6 +334,18 @@ class HealthTab(QWidget):
         av.addLayout(flow6)
         root.addWidget(advanced)
         root.addStretch()
+        maintenance_root.addWidget(self.performance)
+        maintenance_root.addWidget(advanced_page)
+        maintenance_root.addStretch()
+
+    def _open_section(self, page, target):
+        self.sections.setCurrentWidget(page)
+        QTimer.singleShot(
+            0,
+            lambda: page.verticalScrollBar().setValue(
+                target.mapTo(page.widget(), QPoint()).y())
+            if self.sections.currentWidget() is page else None,
+        )
 
     def apply_theme(self):
         """Tema degisince: bilgi/seçim etiketleri yeni palete gecer."""
@@ -285,13 +359,11 @@ class HealthTab(QWidget):
     def refresh(self):
         self._refresh_hardware()
         current_page = self.sections.currentWidget()
-        current_widget = current_page.widget() if isinstance(current_page, QScrollArea) else current_page
-        if current_widget is self.display_panel:
+        if current_page is self.scroll_devices:
             if self.core.connected and self.core.target:
                 self.display_panel.read_display()
-        elif current_widget is self.background:
             self.background.refresh()
-        elif current_widget is self.performance or current_widget is self.scroll_overview.widget():
+        elif current_page in (self.scroll_performance, self.scroll_overview):
             self.performance.refresh()
 
     def _connection_changed(self, connected, _target):
