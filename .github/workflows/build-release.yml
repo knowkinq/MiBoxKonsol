@@ -48,8 +48,8 @@ jobs:
       run: |
         $exe = '.\dist-onedir\MiBoxKonsol\MiBoxKonsol.exe'
         if (-not (Test-Path $exe)) { throw 'Packaged executable was not created' }
-        & $exe --version
-        if ($LASTEXITCODE -ne 0) { throw "Version check failed with exit code $LASTEXITCODE" }
+        $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version' -PassThru -Wait -WindowStyle Hidden
+        if ($versionCheck.ExitCode -ne 0) { throw "Version check failed with exit code $($versionCheck.ExitCode)" }
         $env:QT_QPA_PLATFORM = 'offscreen'
         $selftest = Start-Process -FilePath $exe -ArgumentList '--selftest' -PassThru -Wait -WindowStyle Hidden
         if ($selftest.ExitCode -ne 0) { throw "Packaged application selftest failed with exit code $($selftest.ExitCode)" }
