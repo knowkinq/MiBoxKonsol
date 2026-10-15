@@ -114,30 +114,6 @@ class OptimizationTab(QWidget):
         plan.addLayout(plan_buttons)
         root.addWidget(tuning)
 
-        dns_group = QGroupBox('Özel Güvenli DNS & Reklam Engelleme')
-        dns_layout = QVBoxLayout(dns_group)
-        dns_hint = kit.hint_label('Özel DNS ile TV uygulamalarındaki reklam ve izleyicileri sistem genelinde engelleyin.')
-        dns_layout.addWidget(dns_hint)
-        dns_row = QHBoxLayout()
-        self.cmb_dns = QComboBox()
-        self.cmb_dns.addItem('🛡️ AdGuard DNS (Reklam & İzleyici Engelleme)', 'dns.adguard.com')
-        self.cmb_dns.addItem('⚡ Cloudflare DNS (1.1.1.1 Hızlı & Güvenli)', '1dot1dot1dot1.cloudflare-dns.com')
-        self.cmb_dns.addItem('🌐 Google DNS (dns.google)', 'dns.google')
-        self.cmb_dns.addItem('Kapalı (Varsayılan Ağ DNS)', 'off')
-        self.btn_apply_dns = QPushButton('DNS Uygula')
-        self.btn_apply_dns.setProperty('role', 'primary')
-        self.btn_apply_dns.clicked.connect(self._apply_dns)
-        self.btn_check_dns = QPushButton('DNS Sorgula')
-        self.btn_check_dns.clicked.connect(self._check_dns)
-        dns_row.addWidget(self.cmb_dns, 1)
-        dns_row.addWidget(self.btn_apply_dns)
-        dns_row.addWidget(self.btn_check_dns)
-        dns_layout.addLayout(dns_row)
-        self.lbl_dns_info = QLabel('Mevcut DNS durumu henüz sorgulanmadı.')
-        self.lbl_dns_info.setProperty('role', 'quiet')
-        dns_layout.addWidget(self.lbl_dns_info)
-        root.addWidget(dns_group)
-
         # Ekran Çözünürlüğü ve Görüntü Ayarları (DPI / Ekran Boyutu)
         disp_group = QGroupBox('Ekran Çözünürlüğü ve Görüntü Ayarları (DPI / Ekran Boyutu)')
         disp_layout = QVBoxLayout(disp_group)
@@ -248,7 +224,6 @@ class OptimizationTab(QWidget):
             label.setText('Henüz ölçülmedi')
         self.lbl_findings.setText('Bağlantı değişti. Mevcut cihazı yeniden analiz edin.')
         self.lbl_status.setText('Bağlantı değişti. Mevcut cihazı yeniden analiz edin.')
-        self.lbl_dns_info.setText('Bağlantı değişti. Mevcut cihazı yeniden sorgulayın.')
         self.lbl_disp_current.setText('Bağlantı değişti. Mevcut cihazı yeniden okuyun.')
         self.txt_report.clear()
 
@@ -319,7 +294,7 @@ class OptimizationTab(QWidget):
     def _set_busy(self, busy):
         self._busy = bool(busy)
         for widget in (self.btn_analyze, self.btn_apply, self.btn_reboot, self.chk_cache, self.chk_animation,
-                       self.btn_boost, self.btn_apply_dns, self.btn_check_dns,
+                       self.btn_boost,
                        self.btn_apply_disp, self.btn_read_disp, self.btn_reset_disp_all):
             widget.setEnabled(not busy)
         self.cmb_animation.setEnabled(not busy and self.chk_animation.isChecked())
@@ -541,63 +516,6 @@ class OptimizationTab(QWidget):
         worker.finished_ok.connect(done)
         worker.failed.connect(fail)
         self.window._run(worker, desc='Süper Hızlandırma')
-
-    def _check_dns(self):
-        if not self._ready():
-            return
-        target = self.core.target
-        engine = self.core.engine
-
-        def do():
-            return engine.private_dns_get(target)
-
-        worker = Worker(do)
-        worker.job_name = 'DNS Sorgulama'
-
-        def done(info):
-            mode = info.get('mode', 'off')
-            specifier = info.get('specifier') or ''
-            if mode == 'hostname' and specifier:
-                txt = 'Aktif Özel DNS: <b>{}</b> (aktif koruma)'.format(specifier)
-            elif mode == 'opportunistic':
-                txt = 'Aktif DNS: Otomatik (opportunistic)'
-            else:
-                txt = 'Aktif DNS: Kapalı (standart ağ DNS)'
-            self.lbl_dns_info.setText(txt)
-            idx = self.cmb_dns.findData(specifier if mode == 'hostname' else mode)
-            if idx >= 0:
-                self.cmb_dns.setCurrentIndex(idx)
-
-        worker.finished_ok.connect(done)
-        worker.failed.connect(lambda err: self.lbl_dns_info.setText('DNS okunamadı: ' + str(err)))
-        self.window._run(worker, desc='DNS Sorgulama')
-
-    def _apply_dns(self):
-        if not self._ready():
-            return
-        choice = self.cmb_dns.currentData()
-        target = self.core.target
-        engine = self.core.engine
-        mode = 'off' if choice == 'off' else 'hostname'
-        specifier = None if choice == 'off' else choice
-
-        def do():
-            engine.private_dns_set(target, mode, specifier)
-            return engine.private_dns_get(target)
-
-        worker = Worker(do)
-        worker.job_name = 'DNS Ayarlama'
-
-        def done(info):
-            self._check_dns()
-            dns_name = choice if choice != 'off' else 'Kapalı'
-            QMessageBox.information(
-                self, 'DNS Güncellendi',
-                'Özel DNS başarıyla ayarlandı: {}\n\n(Reklam ve telemetri engelleme etkindir.)'.format(dns_name))
-
-        worker.finished_ok.connect(done)
-        worker.failed.connect(lambda err: QMessageBox.critical(self, 'DNS Hatası', str(err)))
-        self.window._run(worker, desc='DNS Ayarlama')
 
     def _read_display_settings(self):
         if not self._ready():

@@ -48,7 +48,7 @@ EXCLUDE_QT_MODULES = [
 EXCLUDE_STDLIB = [
     'unittest', 'test', 'pydoc', 'doctest', 'pdb', 'difflib',
     'multiprocessing', 'concurrent.futures.process',
-    'xml', 'xmlrpc', 'http.server', 'html',
+    'xml', 'xmlrpc', 'http.server',
     'tkinter', 'ctypes.test',
 ]
 

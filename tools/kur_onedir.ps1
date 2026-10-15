@@ -119,12 +119,42 @@ while ($probe) {
 # Kullanici verisi: kurulum sirasinda DOKUNULMAZ
 $veriDosyalari = @('mibox-ayarlar.json', 'MiBox-ayarlar.json',
                    'mibox-islem-gecmisi.jsonl', 'debloat-kullanici.json',
-                   'mibox-bilinen-uygulamalar.json')
-$veriKlasorleri = @('logs', 'snapshots', 'ekran-goruntuleri', 'apk-yedekleri')
+                   'mibox-bilinen-uygulamalar.json', 'mibox-selftest-ok.txt',
+                   'mibox-logcat.txt', 'surum.txt', 'scrcpy.exe')
+$veriKlasorleri = @('logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
+                    'indirilen-apklar', 'apk-yedekleri', 'scrcpy')
 
-if (-not (Test-Path (Join-Path $Kaynak 'MiBoxKonsol.exe'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $Kaynak 'MiBoxKonsol.exe') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $Kaynak '_internal') -PathType Container)) {
     Yaz "[HATA] Paket bulunamadi: $Kaynak"
     Yaz "       Once derleyin: build_exe_onedir.bat"
+    exit 1
+}
+
+# Paket kaynagindan yalniz PyInstaller onedir ciktilarini al. Taninmayan bir
+# oge varsa kopyalamaya baslamadan dur; kaynaktaki kullanici dosyalari hedefe
+# tasinmasin. Bilinen calisma zamani verileri eski yerel derlemelerde gorunebilir
+# ve kurulum paketinin parcasi olmadiklari icin atlanir.
+$izinliPaketOgeleri = @('MiBoxKonsol.exe', '_internal', 'adb.exe')
+$bilinmeyenOgeler = @(
+    Get-ChildItem -LiteralPath $Kaynak -Force | Where-Object {
+        $ad = $_.Name
+        $kullaniciVerisi = ($veriDosyalari -contains $ad) -or
+            ($veriKlasorleri -contains $ad) -or
+            ($ad -like 'scrcpy-*') -or
+            ($_.Extension -in @('.apk', '.apks', '.xapk'))
+        if ($kullaniciVerisi) { return $false }
+
+        if ($izinliPaketOgeleri -notcontains $ad) { return $true }
+        if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+        if ($ad -eq '_internal') { return -not $_.PSIsContainer }
+        return $_.PSIsContainer
+    }
+)
+if ($bilinmeyenOgeler.Count -gt 0) {
+    $adlar = ($bilinmeyenOgeler | ForEach-Object { $_.Name }) -join ', '
+    Yaz "[HATA] Paket kaynaginda beklenmeyen oge(ler) var; kopyalama durduruldu: $adlar"
+    Yaz "       Yalniz MiBoxKonsol.exe, _internal ve istege bagli adb.exe beklenir."
     exit 1
 }
 
@@ -138,10 +168,12 @@ if (-not (Test-Path $Hedef)) {
 
 # 1) Dosyalari kopyala (kullanici verisi haric; mevcut veri korunur)
 $kopyalanan = 0
-Get-ChildItem -Path $Kaynak -Force | ForEach-Object {
+Get-ChildItem -LiteralPath $Kaynak -Force | ForEach-Object {
     $ad = $_.Name
     if ($veriDosyalari -contains $ad) { return }
     if ($veriKlasorleri -contains $ad) { return }
+    if ($ad -like 'scrcpy-*') { return }
+    if ($_.Extension -in @('.apk', '.apks', '.xapk')) { return }
     $hedefYol = Join-Path $Hedef $ad
     Copy-Item -Path $_.FullName -Destination $hedefYol -Recurse -Force
     $kopyalanan++

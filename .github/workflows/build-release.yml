@@ -13,10 +13,12 @@ jobs:
   build-windows:
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Set up Python 3.12 (64-bit)
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -37,38 +39,60 @@ jobs:
         $version = python -c "from mibox_app import __version__; print(__version__)"
         if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag v$version does not match $env:GITHUB_REF_NAME" }
 
-    - name: Build Standalone Executable (x64)
+    - name: Build Portable Folder Package (x64)
       run: |
-        python -m PyInstaller --noconfirm MiBoxKonsol.spec
+        python tools/build_onedir.py
 
-    - name: Test Built Executable
-      run: |
-        .\dist\MiBoxKonsol.exe --version
-        $env:QT_QPA_PLATFORM = 'offscreen'
-        $selftest = Start-Process -FilePath .\dist\MiBoxKonsol.exe -ArgumentList '--selftest' -PassThru -Wait -WindowStyle Hidden
-        if ($selftest.ExitCode -ne 0) { throw "Packaged application selftest failed with exit code $($selftest.ExitCode)" }
-        if (-not (Test-Path .\dist\mibox-selftest-ok.txt)) { throw "Packaged application selftest marker was not created" }
-        Remove-Item .\dist\mibox-selftest-ok.txt -Force
-
-    - name: Generate SHA-256 checksum
+    - name: Verify Packaged Application
       shell: pwsh
       run: |
-        $hash = (Get-FileHash .\dist\MiBoxKonsol.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-        [System.IO.File]::WriteAllText((Join-Path $PWD 'dist\MiBoxKonsol.exe.sha256'), "$hash  MiBoxKonsol.exe`n", [System.Text.Encoding]::ASCII)
+        $exe = '.\dist-onedir\MiBoxKonsol\MiBoxKonsol.exe'
+        if (-not (Test-Path $exe)) { throw 'Packaged executable was not created' }
+        & $exe --version
+        if ($LASTEXITCODE -ne 0) { throw "Version check failed with exit code $LASTEXITCODE" }
+        $env:QT_QPA_PLATFORM = 'offscreen'
+        $selftest = Start-Process -FilePath $exe -ArgumentList '--selftest' -PassThru -Wait -WindowStyle Hidden
+        if ($selftest.ExitCode -ne 0) { throw "Packaged application selftest failed with exit code $($selftest.ExitCode)" }
+        $marker = '.\dist-onedir\MiBoxKonsol\mibox-selftest-ok.txt'
+        if (-not (Test-Path $marker)) { throw 'Packaged application selftest marker was not created' }
+        python tools/build_onedir.py --clean-package
+        if ($LASTEXITCODE -ne 0) { throw 'Could not remove runtime data from the release package' }
+
+    - name: Create Portable ZIP and SHA-256 Checksum
+      shell: pwsh
+      run: |
+        $package = (Resolve-Path '.\dist-onedir\MiBoxKonsol').Path
+        $archive = Join-Path $PWD 'dist-onedir\MiBoxKonsol-Windows-x64.zip'
+        Compress-Archive -Path (Join-Path $package '*') -DestinationPath $archive -CompressionLevel Optimal
+        $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        [System.IO.File]::WriteAllText("$archive.sha256", "$hash  MiBoxKonsol-Windows-x64.zip`n", [System.Text.Encoding]::ASCII)
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: MiBoxKonsol-Windows-x64
         path: |
-          dist/MiBoxKonsol.exe
-          dist/MiBoxKonsol.exe.sha256
+          dist-onedir/MiBoxKonsol-Windows-x64.zip
+          dist-onedir/MiBoxKonsol-Windows-x64.zip.sha256
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download Verified Build Artifact
+      uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+      with:
+        name: MiBoxKonsol-Windows-x64
+        path: release-assets
 
     - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       with:
         files: |
-          dist/MiBoxKonsol.exe
-          dist/MiBoxKonsol.exe.sha256
+          release-assets/MiBoxKonsol-Windows-x64.zip
+          release-assets/MiBoxKonsol-Windows-x64.zip.sha256
         generate_release_notes: true

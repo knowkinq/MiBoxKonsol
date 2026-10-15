@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unicodedata
+from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -294,6 +295,10 @@ class AdbResult:
         self.error = error
 
     @property
+    def returncode(self):
+        return self.exit_code
+
+    @property
     def ok(self):
         return self.exit_code == 0
 
@@ -312,6 +317,7 @@ class AdbEngine:
 
     # logda gosterilmeyecek/gizlenecek komutlar
     _MASK_ARGS = {'pair'}
+    _URL_ARG = re.compile(r'(?i)(?:https?://|rtsp://|magnet:)')
 
     def __init__(self, adb_path=None, trace_cb=None):
         self.adb_path = adb_path or self.find_adb()
@@ -336,6 +342,10 @@ class AdbEngine:
             for i, a in enumerate(shown):
                 # 'adb pair HOST:PORT KOD' -> host ve kodun TAMAMI maskelenir
                 value = str(a).lower()
+                if self._URL_ARG.search(str(a)):
+                    private_values.append(str(a))
+                    shown[i] = '******'
+                    continue
                 is_private_text = (value == 'text' and i > 0
                                    and str(shown[i - 1]).lower() == 'input')
                 if value in self._MASK_ARGS or is_private_text:
@@ -344,6 +354,7 @@ class AdbEngine:
                             private_values.append(str(shown[j]))
                         shown[j] = '******'
             safe_err = str(err or '')
+            safe_err = self._URL_ARG.sub('******', safe_err)
             for value in private_values:
                 safe_err = safe_err.replace(value, '******')
             try:
@@ -435,6 +446,9 @@ class AdbEngine:
             shown = list(args)
             for i, arg in enumerate(shown):
                 value = str(arg).lower()
+                if self._URL_ARG.search(str(arg)):
+                    shown[i] = '******'
+                    continue
                 is_private_text = (value == 'text' and i > 0
                                    and str(shown[i - 1]).lower() == 'input')
                 if value in self._MASK_ARGS or is_private_text:
@@ -2596,16 +2610,13 @@ class AdbEngine:
 
         try:
             result = self.shell(target, 'wm', 'overscan', timeout=timeout)
-            if result.exit_code != 0:
-                raise AdbError(result.error or result.output or 'wm overscan okunamadı')
-            overscan_out = (result.output or '').strip()
-            m_ov = re.search(r'overscan:\s*(-?\d+),(-?\d+),(-?\d+),(-?\d+)', overscan_out, re.I)
-            if m_ov:
-                out['overscan'] = [int(m_ov.group(i)) for i in range(1, 5)]
-            else:
-                raise AdbError('wm overscan çıktısı çözümlenemedi')
-        except AdbError:
-            out['read_errors'].append('overscan')
+            if result.exit_code == 0:
+                overscan_out = (result.output or '').strip()
+                m_ov = re.search(r'overscan:\s*(-?\d+),(-?\d+),(-?\d+),(-?\d+)', overscan_out, re.I)
+                if m_ov:
+                    out['overscan'] = [int(m_ov.group(i)) for i in range(1, 5)]
+        except Exception:
+            pass
 
         try:
             disp_out = (self.shell(target, 'dumpsys', 'display', timeout=timeout).output or '')
@@ -2704,6 +2715,10 @@ class AdbEngine:
         try:
             route_out = (self.shell(target, 'ip', 'route', timeout=timeout).output or '')
             m_gw = re.search(r'default\s+via\s+([0-9\.]+)\s+dev\s+([a-zA-Z0-9_]+)', route_out)
+            if not m_gw:
+                # Modern Android (Android 11-14 policy routing tables)
+                route_all = (self.shell(target, 'ip', 'route', 'show', 'table', 'all', timeout=timeout).output or '')
+                m_gw = re.search(r'default\s+via\s+([0-9\.]+)\s+dev\s+([a-zA-Z0-9_]+)', route_all)
             if m_gw:
                 diag['gateway'] = m_gw.group(1)
                 diag['interface'] = m_gw.group(2)
@@ -2807,18 +2822,31 @@ class AdbEngine:
         except AdbError:
             pass
 
-        for zone in ('/sys/class/thermal/thermal_zone0/temp',
-                     '/sys/devices/virtual/thermal/thermal_zone0/temp'):
-            try:
-                r = self.shell(target, 'cat', zone, timeout=5)
-                val = (r.output or '').strip()
-                if val.isdigit():
-                    num = int(val)
-                    deg = round(num / 1000.0 if num > 200 else float(num), 1)
+        # 1. Modern Android HAL sıcaklık tespiti (dumpsys thermalservice)
+        try:
+            therm_out = self.shell(target, 'dumpsys', 'thermalservice', timeout=5).output or ''
+            m_t = re.search(r'mValue=([\d\.]+)', therm_out)
+            if m_t:
+                deg = round(float(m_t.group(1)), 1)
+                if 10 <= deg <= 120:
                     out['temp'] = '{}°C'.format(deg)
-                    break
-            except AdbError:
-                pass
+        except Exception:
+            pass
+
+        # 2. Sysfs fallback
+        if out['temp'] == '?':
+            for zone in ('/sys/class/thermal/thermal_zone0/temp',
+                         '/sys/devices/virtual/thermal/thermal_zone0/temp'):
+                try:
+                    r = self.shell(target, 'cat', zone, timeout=5)
+                    val = (r.output or '').strip()
+                    if val.isdigit():
+                        num = int(val)
+                        deg = round(num / 1000.0 if num > 200 else float(num), 1)
+                        out['temp'] = '{}°C'.format(deg)
+                        break
+                except AdbError:
+                    pass
         return out
 
     def usb_storages(self, target, timeout=15):
@@ -2872,13 +2900,21 @@ class AdbEngine:
         """
         if mode not in ('off', 'opportunistic', 'hostname'):
             raise AdbError('Gecersiz DNS modu: {!r}'.format(mode))
+        specifier = str(specifier or '').strip()
+        if mode == 'hostname':
+            label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+            hostname = specifier.rstrip('.')
+            if (len(hostname) > 253 or len(hostname.split('.')) < 2
+                    or not re.fullmatch(r'{}(?:\.{})+'.format(label, label), hostname)):
+                raise AdbError('Özel DNS için geçerli bir sunucu adı girin (örn. dns.adguard.com).')
+            specifier = hostname
         result = self.shell(
             target, 'settings', 'put', 'global', 'private_dns_mode', mode,
             timeout=timeout)
         if result.exit_code != 0:
             detail = (result.error or result.output or 'settings put başarısız').strip()
             raise AdbError('Özel DNS modu ayarlanamadı: {}'.format(detail[:300]))
-        if mode == 'hostname' and specifier:
+        if mode == 'hostname':
             result = self.shell(
                 target, 'settings', 'put', 'global', 'private_dns_specifier',
                 specifier.strip(), timeout=timeout)
@@ -2913,8 +2949,8 @@ class AdbEngine:
         expected_specifier = None
         if mode == 'off':
             expected_specifier = ''
-        elif mode == 'hostname' and specifier:
-            expected_specifier = specifier.strip()
+        elif mode == 'hostname':
+            expected_specifier = specifier
         if (applied_mode != mode
                 or (expected_specifier is not None
                     and applied_specifier != expected_specifier)):
@@ -3013,3 +3049,175 @@ class AdbEngine:
         except Exception:
             pass
         return info
+
+    def get_volume_info(self, target, timeout=6):
+        """Cihazın medya ses seviyesi ve aralığını (cur, min, max) olarak döner."""
+        # 1. En hızlı ve hafif yol: cmd media_session volume get (~15ms)
+        for cmd in (
+            ['cmd', 'media_session', 'volume', '--stream', '3', '--get'],
+            ['media', 'volume', '--stream', '3', '--get'],
+        ):
+            try:
+                res = self.shell(target, *cmd, timeout=timeout)
+                out = res.output or ''
+                m = re.search(r'volume is (\d+)', out)
+                m_range = re.search(r'range\s*\[(\d+)\.\.(\d+)\]', out)
+                if m:
+                    cur = int(m.group(1))
+                    mn = int(m_range.group(1)) if m_range else 0
+                    mx = int(m_range.group(2)) if m_range else 15
+                    return cur, mn, mx
+            except Exception:
+                continue
+
+        # 2. Alternatif yol: dumpsys audio STREAM_MUSIC bloğu
+        try:
+            res = self.shell(target, 'dumpsys', 'audio', timeout=timeout)
+            out = res.output or ''
+            if 'STREAM_MUSIC:' in out:
+                block = out.split('STREAM_MUSIC:')[1].split('- STREAM_')[0]
+                m_sv = re.search(r'streamVolume:\s*(\d+)', block)
+                m_min = re.search(r'Min:\s*(\d+)', block)
+                m_max = re.search(r'Max:\s*(\d+)', block)
+                mn = int(m_min.group(1)) if m_min else 0
+                mx = int(m_max.group(1)) if m_max else 15
+                if m_sv:
+                    cur = int(m_sv.group(1))
+                    return cur, mn, mx
+                m_cur = re.search(r'Current:\s*.*?(\d+)\s*$', block, re.MULTILINE)
+                if m_cur:
+                    return int(m_cur.group(1)), mn, mx
+        except Exception:
+            pass
+
+        raise AdbError('TV ses aralığı okunamadı; ses değişikliği uygulanmadı.')
+
+    def get_volume(self, target, timeout=6):
+        """Mevcut medya ses seviyesini yüzde (0-100) olarak döner."""
+        try:
+            cur, mn, mx = self.get_volume_info(target, timeout=timeout)
+            if mx > mn:
+                return int(round((cur - mn) / float(mx - mn) * 100))
+        except Exception:
+            pass
+        return 50
+
+    def set_volume(self, target, percent, timeout=10):
+        """Medya ses seviyesini 0-100 arası bir yüzde olarak ayarlar.
+
+        Android TV / Xiaomi / Google TV cihazlarında ses donanımına (HDMI CEC,
+        Soundbar, dahili hoparlör) tam uyumlu olarak Volume Up (24) / Down (25)
+        tuş adımlarıyla hassas ve kararlı şekilde uygular.
+        """
+        import time as _time
+        try:
+            pct = max(0, min(100, int(percent)))
+            cur_idx, mn, mx = self.get_volume_info(target, timeout=timeout)
+            if mx <= mn or not mn <= cur_idx <= mx:
+                raise AdbError('TV ses aralığı geçersiz; ses değiştirilmedi.')
+            target_idx = int(round(mn + (pct / 100.0) * (mx - mn)))
+            target_idx = max(mn, min(mx, target_idx))
+
+            diff = target_idx - cur_idx
+            if diff > 0:
+                steps = min(mx, diff)
+                for _ in range(steps):
+                    result = self.shell(target, 'input', 'keyevent', '24', timeout=timeout)
+                    if result.exit_code != 0:
+                        raise AdbError(result.error or result.output or 'Ses artırma tuşu başarısız oldu.')
+                    _time.sleep(0.05)
+            elif diff < 0:
+                steps = min(mx, abs(diff))
+                for _ in range(steps):
+                    result = self.shell(target, 'input', 'keyevent', '25', timeout=timeout)
+                    if result.exit_code != 0:
+                        raise AdbError(result.error or result.output or 'Ses azaltma tuşu başarısız oldu.')
+                    _time.sleep(0.05)
+            return True
+        except Exception as e:
+            raise AdbError('Ses seviyesi ayarlanamadı: {}'.format(e))
+
+    def set_volume_mute(self, target, timeout=10):
+        """Cihaz sesini acar veya sessize alir (Mute toggle)."""
+        result = self.shell(target, 'input', 'keyevent', '164', timeout=timeout)
+        if result.exit_code != 0:
+            raise AdbError('Sessize alma tuşu çalıştırılamadı: {}'.format(
+                (result.error or result.output or 'bilinmeyen hata').strip()))
+        return result
+
+    def soft_reboot(self, target, timeout=15):
+        """Zygote surecini yeniden baslatarak 3 saniyede hizli soft reboot yapar."""
+        result = self.shell(target, 'setprop', 'ctl.restart', 'zygote', timeout=timeout)
+        if result.exit_code != 0:
+            raise AdbError('Hızlı yeniden başlatma başarısız: {}'.format(
+                (result.error or result.output or 'izin reddedildi').strip()))
+        return result
+
+    def rename_file(self, target, old_path, new_path, timeout=15):
+        """Cihazdaki dosya veya klasorun adini degistirir / tasir."""
+        old_safe = safe_remote_path(old_path)
+        new_safe = safe_remote_path(new_path)
+        if old_safe == new_safe:
+            raise AdbError('Kaynak ve hedef aynı; yeniden adlandırma yapılmadı.')
+
+        def remote_exists(path):
+            quoted = _quoted_remote_path(path)
+            for flag in ('-e', '-L'):
+                check = self.shell(target, 'test', flag, quoted, timeout=timeout)
+                if check.exit_code == 0:
+                    return True
+                if check.exit_code != 1:
+                    raise AdbError('Uzak yol doğrulanamadı; işlem güvenlik için durduruldu.')
+            return False
+
+        # Reject both existing files and directories before moving. Toybox mv -n
+        # also protects against a destination file appearing between this check
+        # and the rename, without overwriting its contents.
+        if remote_exists(new_safe):
+            raise AdbError('Bu ad zaten var; mevcut dosya veya klasör korunuyor.')
+
+        res = self.shell(
+            target, 'mv', '-n', _quoted_remote_path(old_safe),
+            _quoted_remote_path(new_safe), timeout=timeout,
+        )
+        if res.exit_code != 0:
+            raise AdbError('Yeniden adlandırılamadı: {}'.format(res.error or res.output or 'Bilinmeyen hata'))
+        if remote_exists(old_safe):
+            raise AdbError('Yeniden adlandırma yapılmadı; kaynak ve mevcut hedef korundu.')
+        if not remote_exists(new_safe):
+            raise AdbError('Yeniden adlandırma hedefi doğrulanamadı; TV dosya listesini yenileyin.')
+        return True
+
+    def open_url(self, target, url, timeout=10):
+        """TV'de URL veya video bağlantısını varsayılan uygulamada (SmartTube, YouTube, Tarayıcı) açar."""
+        if not target or not url:
+            raise AdbError('Cihaz ve bağlantı adresi gereklidir.')
+        url = str(url).strip()
+        try:
+            parsed = urlsplit(url)
+        except ValueError as exc:
+            raise AdbError('Geçersiz bağlantı adresi: {}'.format(exc))
+        if (parsed.scheme.lower() not in {'http', 'https', 'rtsp', 'magnet'}
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in url)
+                or (parsed.scheme.lower() != 'magnet' and not parsed.hostname)):
+            raise AdbError('Desteklenmeyen veya geçersiz bağlantı adresi.')
+        res = self.shell(
+            target, 'am', 'start', '-a', 'android.intent.action.VIEW',
+            '-d', shlex.quote(url), timeout=timeout,
+        )
+        if res.exit_code != 0:
+            raise AdbError('Link TV\'de açılamadı. Bağlantı adresi günlük kaydına yazılmadı.')
+        return res
+
+    def start_screensaver(self, target, timeout=10):
+        """TV ekran koruyucusunu (Ambient / Backdrop) başlatır."""
+        res = self.shell(target, 'cmd', 'dreams', 'start-dreaming', timeout=timeout)
+        if res.exit_code != 0:
+            res = self.shell(
+                target, 'am', 'start', '-n',
+                'com.google.android.backdrop/.Backdrop', timeout=timeout,
+            )
+        if res.exit_code != 0:
+            raise AdbError('Ekran koruyucu başlatılamadı: {}'.format(
+                (res.error or res.output or 'cihaz bu özelliği desteklemiyor').strip()))
+        return res

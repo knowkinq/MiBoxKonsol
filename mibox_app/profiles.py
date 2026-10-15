@@ -189,6 +189,39 @@ PROFILES = {
             'com.google.android.backuptransport',
         ],
     },
+    'gaming_mode': {
+        'label': 'Oyun & Emülatör Modu (Ultra Düşük Gecikme)',
+        'desc': 'Tüm arka plan telemetrisi, reklam servisleri, yazdırma ve '
+                'gereksiz medya servislerini kapatarak CPU/RAM kaynaklarını '
+                'oyunlara (RetroArch, Moonlight vb.) tahsis eder.',
+        'method': 'smart',
+        'pkgs': [
+            'com.xm.webcontent',
+            'com.xiaomi.statistic',
+            'com.miui.tv.analytics',
+            'com.miui.analytics',
+            'com.android.adservices.api',
+            'com.google.android.tvrecommendations',
+            'com.google.android.apps.tv.launcherx.playnext',
+            'com.android.printspooler',
+            'com.android.bips',
+            'com.google.android.printservice.recommendation',
+            'com.google.android.feedback',
+            'com.google.android.feedbacktv',
+            'com.facebook.system',
+            'com.facebook.appmanager',
+            'com.facebook.services',
+            'com.google.android.backuptransport',
+            'com.android.dreams.basic',
+            'com.android.dreams.phototable',
+            'com.android.wallpaper.livepicker',
+            'com.android.wallpaperbackup',
+            'com.mitv.tvhome.mitvplus',
+            'com.mitv.tvhome.michannel',
+            'com.mitv.tvhome.oemtab',
+            'com.xiaomi.mimusic2',
+        ],
+    },
 }
 
 # Asla profile giremeyecek kategoriler

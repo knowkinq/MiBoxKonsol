@@ -984,6 +984,9 @@ class DebloatTab(QWidget):
             self._reload()
 
     def _scan_users(self):
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            QMessageBox.information(self, 'Kullanıcılar', "Bağlı cihaz yok. Kullanıcıları listelemek için önce TV'ye bağlanın.")
+            return
         engine, target = self.core.engine, self.core.target
         def do():
             engine.connect(target)
@@ -1216,7 +1219,8 @@ class DebloatTab(QWidget):
             self._disabled = set(pkgs.get('disabled', ()))
         else:
             self._present = set(pkgs or [])
-            self._disabled = set()
+            if not hasattr(self, '_disabled'):
+                self._disabled = set()
         self._presence_known = True
         self.btn_scan.setEnabled(True)
         self._reload()

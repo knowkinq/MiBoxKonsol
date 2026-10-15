@@ -9,7 +9,7 @@
 
 Xiaomi Mi Box, Mi TV Stick ve tüm Android TV cihazlarını yerel ağ üzerinden (ADB) yönetmek, optimize etmek ve gereksiz sistem uygulamalarından (bloatware) arındırmak için geliştirilmiş modern, açık kaynaklı Windows masaüstü yönetim merkezi.
 
-**Sürüm:** `v1.2.3`
+**Sürüm:** `v1.3.0`
 
 ---
 
@@ -54,52 +54,61 @@ Xiaomi Mi Box, Mi TV Stick ve tüm Android TV cihazlarını yerel ağ üzerinden
 
 ### 1. 🛍️ Popüler TV Uygulama Kataloğu & Sideload (App Store)
 - Android TV için optimize açık kaynaklı ve popüler uygulamaları tek tıkla resmi kaynaklarından indirip TV'ye yükleme:
-  - **Medya & Video:** SmartTube (Kararlı & Beta), Kodi, VLC for Android, Nova Video Player
+  - **Medya & Video:** SmartTube (Kararlı & Beta), Stremio Android TV, Jellyfin Android TV, Kodi Media Center, VLC for Android, Nova Video Player
   - **Arayüz (Launcher):** Projectivy Launcher, FLauncher
-  - **Araçlar & Transfer:** Send Files to TV, Button Mapper, Aptoide TV, Aurora Store
+  - **Dosya & Araçlar:** Send Files to TV, Button Mapper, AnExplorer TV File Manager
+  - **Oyun & Akış:** Moonlight Game Streaming (PC oyunlarını 4K 60/120 FPS TV'ye aktarma)
+  - **TV Mağazası:** Aptoide TV, Aurora Store (Google Play Store açık kaynak istemcisi)
 - TV'de anlık kurulu olma durumunu denetleme (`✓ TV'de Kurulu`), doğrudan başlatma (`▶ TV'de Aç`) ve yeniden kurma.
-- İndirme hızı (KB/s - MB/s) ve bayt ilerleme göstergeli arka plan iş parçacığı.
-- Katalog uygulamaları MiBox tarafından yayımlanmaz; kurulum öncesi kaynak ve paket adı gösterilir, otomatik izin verme varsayılan olarak kapalıdır.
+- İndirme hızı ve bayt ilerleme göstergeli arka plan iş parçacığı.
 
 ### 2. 🎛️ Ön Planda TV Uzaktan Kumandası & Canlı Ekran Etkileşimi
-- **Ferah ve Ön Planda Kumanda:** 400px genişliğinde, 170px dairesel D-Pad takımına ve 34px yükseklikte rahat butonlara sahip ergonomik fiziksel kumanda tasarımı.
-- **Canlı Önizleme:** TV ekranını PC üzerinden gerçek zamanlı izleme, fareyle dokunma (tap) ve sürükleme (swipe).
+- **Ferah ve Ergonomik Kumanda:** Dairesel D-Pad takımına ve rahat butonlara sahip modern fiziksel kumanda tasarımı.
+- **Canlı Ekran Önizleme (Screen Mirroring):** TV ekranını PC üzerinden gerçek zamanlı izleme, fareyle dokunma (tap) ve sürükleme (swipe).
+- **Ekran Görüntüsü Yakalama:** Tek tıkla TV ekran görüntüsünü PNG olarak PC'ye kaydetme.
+- **Scrcpy Entegrasyonu:** Cihaz ve ağ koşullarına bağlı olarak 60 FPS'e kadar düşük gecikmeli ekran yansıtma.
+- **Pano Senkronizasyonu (Clipboard):** Bilgisayarda kopyalanan metin veya linkleri tek tıkla TV'ye yapıştırma.
 - **Klavye Yönlendirmesi:** PC klavye yön tuşlarını, Enter (OK), Esc/Backspace ve sayıları TV'ye anında iletme.
-- **Hızlı Metin Gönderimi:** TV arama kutularına PC klavyesinden doğrudan Türkçe metin yapıştırma ve tek tıkla uygulama başlatma.
+- **Hızlı TV Uygulama Başlatıcı:** YouTube/SmartTube, Netflix, Kodi, VLC, Projectivy tek tıkla başlatma.
 
-### 3. 🖥️ Ekran Çözünürlüğü, DPI & Overscan Yöneticisi
+### 3. ⚡ Güvenlik Denetimli ADB Shell Terminali
+- TV üzerinde izin verilen teşhis komutlarını çalıştırın; ayar ve sistem değişiklikleri açık onay ister, tanınmayan ve tehlikeli komutlar engellenir.
+- Yukarı/Aşağı ok tuşlarıyla komut geçmişi (History) desteği.
+- Hazır tek tıkla sistem teşhis düğmeleri: CPU kullanımı, bellek, disk, pil, ekran boyutu, ağ rotası, cihaz modeli, kullanıcı paketleri, Logcat ve Wi-Fi.
+
+### 4. 🖥️ Ekran Çözünürlüğü, DPI & Overscan Yöneticisi
 - **Çözünürlük Değiştirme:** 1080p Full HD, 720p HD (menü ve donanım hızlandırma için ideal), 4K UHD arasında geçiş.
 - **Arayüz Ölçeği (DPI):** 240 DPI (Kompakt), 280 DPI, 320 DPI (Standart), 360 DPI (Büyük yazılar).
-- **Ekran Kenar Taşması (Overscan):** Kenarları kesilen TV'ler için 15px, 30px, 45px içeri çekme veya sıfırlama.
+- **Ekran Kenar Taşması (Overscan):** Kenarları kesilen TV'ler için içeri çekme veya sıfırlama.
 - **Güvenlik Sayacı:** Onaylanmayan değişiklikler 15 saniye içinde otomatik olarak fabrika değerlerine geri döner.
 
-### 4. 📶 Canlı TV Wi-Fi & Ağ Sağlığı Teşhisi
+### 5. 📶 Canlı TV Wi-Fi & Ağ Sağlığı Teşhisi
 - TV kutusunun anlık sinyal gücü (RSSI dBm & %), link bağlantı hızı (Mbps) ve frekans bandı (5 GHz / 2.4 GHz).
 - TV kutusundan modeme gerçek zamanlı ping gecikmesi ve paket kaybı testi.
 - 4K yayın uyumluluğu ve modem mesafesi analizi sunan akıllı Türkçe tavsiye motoru.
 
-### 5. 🧹 Gelişmiş Debloat & Sistem Temizliği
+### 6. 🧹 Gelişmiş Debloat & Hazır Profiller
 - Android 9-14, Google TV ve Xiaomi HyperOS için güvenli/opsiyonel/riskli paket sınıflandırması.
-- **Hazır Profiller:** `xiaomi_ultra`, `low_ram`, `google_clean` ile tek tıkla temizlik.
+- **Hazır Profiller:** `xiaomi_ultra`, `low_ram`, `google_clean`, `gaming_mode` (Oyun & Emülatör Modu) ile tek tıkla temizlik.
 - Yapılan işlemler öncesinde otomatik anlık yedek (`snapshot`) alarak istenildiği an tek tıkla geri yükleme (rollback).
 
-### 6. ⚡ 1-Tıkla Süper Hızlandırma & Donanım Telemetrisi
+### 7. ⚡ 1-Tıkla Süper Hızlandırma & Donanım Telemetrisi
 - Arka plan önbelleklerini temizler, gereksiz süreçleri sonlandırır, animasyonları 0.5× ölçeğine alarak cihazı ferahlatır.
 - CPU/SoC yonga seti, çekirdek sayısı, termal işlemci sıcaklığı, RAM ve depolama doluluk oranları.
 
-### 7. 📁 Dosya Yöneticisi & Özel Güvenli DNS
+### 8. 📁 Dosya Yöneticisi & Özel Güvenli DNS
 - TV dahili depolaması ve bağlı USB bellekler arasında dosya transferi, TV'den PC'ye çekme (pull) ve PC'den TV'ye yükleme (push).
 - Reklam ve izleyicileri engellemek için AdGuard DNS, Cloudflare DNS ve Google DNS arasında tek tıkla geçiş.
 
-### 8. 🛡️ Güvenlik Kapısı (Command Gate) & Kesintisiz Kapanış
+### 9. 🛡️ Güvenlik Kapısı (Command Gate) & Kesintisiz Kapanış
 - Cihazı kilitleyebilecek (`mkfs`, `rm -rf /`, `wipe`) tehlikeli komutları engelleyen yetkilendirme katmanı.
-- Kapanışta arka plandaki ADB soket süreçlerini bekletmeyen 600ms korumalı akıllı çıkış mekanizması.
+- Kapanışta arka plandaki ADB soket süreçlerini bekletmeyen korumalı akıllı çıkış mekanizması.
 
 ---
 
 ## 💻 Sistem Gereksinimleri
 
-- **İşletim Sistemi:** Windows 10, Windows 11 (veya Windows 7 / 8 / 8.1)
+- **İşletim Sistemi:** Windows 10 veya Windows 11.
 - **Mimari:** Hem **64-bit (x64)** hem de **32-bit (x86)** Windows sistemleri tam desteklenir.
 - **Python:** Python 3.10 veya üzeri (32-bit veya 64-bit)
 - **ADB:** Android platform araçlarından ADB (`adb.exe`). Uygulama `PATH` üzerinde veya kendi klasöründe ADB'yi otomatik tespit eder.
@@ -134,6 +143,10 @@ python mibox.py
 ## 📦 Çalıştırılabilir (.exe) Oluşturma
 
 PyInstaller ile tek dosya veya taşınabilir klasör paketi oluşturabilirsiniz:
+
+### GitHub'dan hazır Windows paketi
+
+[Son sürümün Releases sayfasından](https://github.com/maventra-dev/MiBoxKonsol/releases/latest) `MiBoxKonsol-Windows-x64.zip` dosyasını indirin ve tamamını bir klasöre çıkarın. Uygulamayı o klasördeki `MiBoxKonsol.exe` dosyasından başlatın; EXE'yi tek başına başka yere taşımayın. Paket, Windows geçici klasöründe açılma gereksinimini kaldıran taşınabilir klasör biçimindedir. İndirme doğrulaması için aynı sayfadaki `.sha256` dosyasını kullanabilirsiniz.
 
 - **Otomatik Mimarili Derleyici (x64 / x86):**
   ```bat

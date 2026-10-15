@@ -112,6 +112,9 @@ class LogcatTab(QWidget):
             self.btn_start.setText('Başlat')
             self.lbl_status.setText('Durduruldu.')
         else:
+            if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+                QMessageBox.information(self, 'Logcat', "Bağlı cihaz yok. Canlı izleme başlatmak için önce TV'ye bağlanın.")
+                return
             try:
                 self.core.engine.connect(self.core.target)
             except Exception as e:
@@ -171,6 +174,9 @@ class LogcatTab(QWidget):
         return (s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
 
     def _crash(self):
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            QMessageBox.information(self, 'Çökme Avcısı', "Bağlı cihaz yok. Çökme analizi için önce TV'ye bağlanın.")
+            return
         def do():
             return self.core.engine.logcat_crash(self.core.target)
         w = Worker(do)

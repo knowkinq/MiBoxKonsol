@@ -1,5 +1,89 @@
 # Değişiklik günlüğü
 
+## [1.3.0] - 2026-10-15
+
+Büyük Modernizasyon, Canlı TV Ekranı & Dokunmatik Kontrol, ADB Shell Terminali ve Yeni Özellikler Sürümü.
+
+- Güvenlik ve kararlılık düzeltmeleri: ADB terminali için komut onayı/engelleme, ağ taraması için IPv4 doğrulaması, DNS sunucu adı denetimi ve URL güvenli aktarımı eklendi.
+- Windows GitHub sürümü taşınabilir klasör ZIP'i olarak yayımlanır; tek dosyalı EXE'nin geçici klasör oluştururken açılmama sorunu giderildi.
+- Ekran kaydı, bağlantı hedefi değişse bile başladığı TV'den aktarılır; uygulama kapanırken kayıt dosyası korunur ve uzak geçici dosya temizlenir.
+- Scrcpy ZIP indirmesine sabit sürüm ve resmî SHA-256 doğrulaması, boyut/kaynak/dosya yolu kontrolleri ve geçici klasörde güvenli açma eklendi.
+- Stremio, Jellyfin ve AnExplorer katalog APK bağlantıları resmî güncel Android TV indirmelerine taşındı.
+
+- **Debloat Sekmesi Paket Durumu Senkronizasyon Düzeltmesi**:
+  - İlk bağlantı kurulduğunda önceden devre dışı bırakılmış sistem ve kullanıcı paketlerinin "Kurulu" olarak görünmesine yol açan durum aktarımı sorunu düzeltildi; `AppScanWorker` ve `DebloatTab` artık hem kurulu (`present`) hem de devre dışı (`disabled`) paket kümelerini ilk andan itibaren eksiksiz senkronize eder.
+- **Kumanda Sekmesi 2 Sütunlu Responsive Düzen**:
+  - Kumanda, Canlı TV Ekranı ve Hızlı Başlatıcı alanlarının dar pencerelerde veya DPI ölçekli ekranlarda yatayda taşmasını engelleyen 2 sütunlu, ferah ve modern yerleşim düzeni uygulandı.
+- **Canlı TV Ekranı & Dokunmatik Etkileşim (Live Mirroring & Touch)**:
+  - Kumanda sekmesine entegre edilen canlı 16:9 TV ekran önizleme alanı (`InteractiveScreenWidget`).
+  - **Fareyle Dokunma (Touch/Tap) & Sürükleme (Swipe)**: PC ekranındaki TV görüntüsüne tıklayarak TV'de o koordinata dokunma ve fareyle sürükleyerek kaydırma yapma desteği.
+  - **Tek Tıkla Ekran Görüntüsü Kaydetme**: TV ekranını yüksek kalitede anında `.png` olarak bilgisayara kaydetme.
+  - **Otomatik Scrcpy Kurulumu ve İndirme Onayı (`scrcpy_manager.py`)**:
+    - Bilgisayarda `scrcpy` bulunmadığında kullanıcıdan açık onay istenir; onay verilirse resmî GitHub sürümü arka planda indirilip sürüm numaralı uygulama klasörüne güvenli biçimde kurulur ve canlı ekran başlatılır.
+    - Gerçek zamanlı indirme ilerleme penceresi (`QProgressDialog`), iptal desteği ve indirme boyutu/yüzdesi göstergesi eklendi.
+    - Scrcpy butonuna sağ tık bağlam menüsü (`QMenu`) eklendi: Hızlı Wi-Fi Modu (4 Mbps), Sessiz Mod (--no-audio), Yeniden İndir/Güncelle ve Scrcpy Klasörünü Aç.
+    - ADB sunucu sürümü çakışmalarını önlemek için MiBoxKonsol'un kendi `adb.exe` yolu Scrcpy'ye `ADB` ortam değişkeniyle güvenli biçimde aktarılır.
+- **Canlı TV Ekranı Video Kaydedici (MP4 Screen Recording)**:
+  - Kumanda sekmesine entegre edilen `🎥 Video Kaydet` butonu ile TV ekranı anlık olarak MP4 formatında kaydedilir.
+  - Canlı süre sayacı (`⏹ Durdur (00:15)`) ve kayıt durdurulduğunda videoyu otomatik bilgisayara (`ekran-videolari/`) aktarıp klasörü açma desteği.
+- **Canlı TV Ses Seviyesi Kaydırıcısı (Volume Slider & Mute)**:
+  - TV sesini 0-100% aralığında fareyle kaydırarak doğrudan ayarlayan yatay ses çubuğu ve tek tıkla `🔇 Sessiz (Mute)` açma/kapama butonu.
+- **Tek Tıkla "⚡ Turbo Hızlandır"**:
+  - Arka plandaki atıl işlemleri sonlandırıp (`am kill-all`), tüm uygulama önbelleklerini temizleyen (`pm trim-caches`) ve kazanılan RAM miktarını anlık raporlayan hızlı hızlandırma butonu.
+- **Sistem Geneli TV Reklam Engelleyici & Özel DNS (Private DNS)**:
+  - Ağ sekmesine eklenen Özel DNS yöneticisi ile tek tıkla `AdGuard DNS` (tüm TV'de reklam engelleme), `Cloudflare DNS` (hızlı & güvenli), `Google DNS` veya özel sunucu adresi ayarlama desteği.
+  - Sağlık (Performans ve Bakım) sekmesindeki eski DNS ayar grubu kaldırılarak tüm DNS yönetimi Ağ sekmesinde tek ve gelişmiş bir merkezde toplandı.
+- **Gelişmiş Güç & Yeniden Başlatma Menüsü**:
+  - `⏻ Güç` butonuna sağ tık menüsü ve 3 saniyede TV arayüzünü yeniden başlatan `⚡ Hızlı Soft Reboot (Zygote)` seçeneği.
+- **TV Dosya Yöneticisi Sağ Tık Menüsü & Yeniden Adlandırma (Rename)**:
+  - Dosyalara ve klasörlere sağ tıklayarak: Bilgisayara İndir (Pull), TV'de Kur (APK), Tam Yolu Kopyala, Yeniden Adlandır (Rename) ve Sil desteği.
+- **Güvenlik Denetimli ADB Terminal Sekmesi (`terminal_tab.py`)**:
+  - İzin verilen ADB teşhis komutlarını ve konsol çıktısını görüntüler; ayar veya sistem değişiklikleri onay ister.
+  - Yukarı/Aşağı ok tuşlarıyla komut geçmişi (`history`) desteği.
+  - Hızlı tek tıkla sistem teşhis düğmeleri (CPU, Meminfo bellek, Disk kullanımı, Pil/Güç, ekran boyutu, ağ rotası, Android model, kullanıcı paketleri, Logcat, Wi-Fi).
+  - Terminal komut kapısı: yalnızca izin verilen teşhis komutları çalışır; ayar ve sistem değişiklikleri onay ister, tanınmayan ve tehlikeli komutlar engellenir.
+  - Tek tıkla terminal çıktısını panoya kopyalama ve temizleme.
+  - `AdbResult` nesnesine geriye dönük uyumlu `returncode` özelliği eklendi ve terminal komutlarının `AttributeError` vermeden sorunsuz çalışması sağlandı.
+- **Pano Senkronizasyonu (Clipboard Integration)**:
+  - Bilgisayar panosunda kopyalanan metin veya linkleri tek tıkla TV'deki giriş alanına yapıştırma (`PC Panosunu Yapıştır`).
+- **Modern Arayüz & Tasarım Sistemi (UI/UX 2.0)**:
+  - Windows 11 / Fluent esintili modern koyu ve açık renk paleti (modern indigo vurgusu, yumuşak kenarlıklar, `border-radius: 12px`).
+  - Bağlantı çubuğunda canlı **Cihaz Bilgi Rozeti** (`📺 Xiaomi Mi Box S (Android 12)`).
+  - Sol gezinme menüsünde (Sidebar) yeni logo banner'ı ve daha ferah sekme yerleşimi.
+  - Uygulamalar sekmesinde sık kullanılan eylem butonları (Aç, Durdur, APK Yedekle, Devre Dışı, Aktif, Temizle, Kaldır, Geri Yükle) doğrudan araç çubuğunda erişilebilir hale getirildi.
+- **Genişletilmiş TV Uygulama Marketi (`catalog.py`)**:
+  - **Stremio Android TV**: Torrent ve debrid destekli popüler film/dizi akış platformu.
+  - **Jellyfin Android TV**: Açık kaynaklı kişisel medya sunucu TV istemcisi.
+  - **AnExplorer TV File Manager**: TV için çift panelli gelişmiş dosya yöneticisi.
+  - **Moonlight Game Streaming**: Bilgisayardaki PC oyunlarını 4K 60/120 FPS TV'ye aktaran açık kaynak oyun istemcisi.
+- **Uygulamalar Sekmesi Toplu Seçim ve Bağlam Menüsü (`apps_tab.py`)**:
+  - Toplu işlemler için `Tümünü Seç` ve `Ters Çevir` butonları eklendi.
+  - Sağ tık menüsüne tek tıkla panoya aktarım için `📋 Paket Adını Kopyala` seçeneği eklendi.
+- **Terminal Çıktısını TXT Olarak Dışa Aktarma (`terminal_tab.py`)**:
+  - Terminal sekmesine `💾 Kaydet` butonu eklendi; tüm teşhis ve shell çıktıları tek tıkla zaman damgalı `.txt` dosyasına aktarılabilir.
+- **Windows Sistem Tepsisi Entegrasyonu (System Tray Icon) & Vektörel TV İkonu (`main_window.py`)**:
+  - Windows görev çubuğu ve pencere başlığı için modern vektörel TV simgesi (`line_icon('tv')`) eklendi.
+  - Windows bildirim alanına (System Tray) yerleşen TV ikonu ve sağ tık hızlı işlem menüsü: `⚡ Turbo Hızlandır (RAM Temizle)`, `🚀 Scrcpy Ekranını Başlat`, `🎥 Video Kaydını Başlat / Bitir`, `Pencereyi Göster / Gizle` ve `Çıkış`.
+  - Uygulama kapandığında sistem tepsisinde artık simge kalıntısı bırakmaz (`tray_icon.hide()`).
+- **Uygulama Klavye Kısayolları**:
+  - `Ctrl+Shift+B`: Anında Turbo Hızlandır (RAM & önbellek temizleme).
+  - `Ctrl+Shift+S`: Tek tuşla Scrcpy ekran yansıtmayı başlat.
+  - `Ctrl+Shift+R`: TV ekran video kaydını başlat / durdur.
+  - `Ctrl+Shift+T`: ADB Terminal sekmesine anında geçiş yap.
+  - `Ctrl+Shift+N`: Ağdaki TV'leri otomatik arama sekmesini aç ve tara.
+- **PC'den TV'ye Doğrudan Video ve Bağlantı Başlatma (`_open_url_on_tv`)**:
+  - Kumanda sekmesindeki metin veya panodaki YouTube/video/web bağlantılarını tek tıkla (`🌐 Link Aç`) TV'deki varsayılan uygulamada (SmartTube, YouTube, Tarayıcı) açma desteği.
+- **TV Akıllı Uyku Zamanlayıcısı (Sleep Timer)**:
+  - Kumanda sekmesi Sistem & Güç paneline entegre edilen canlı geri sayımlı uyku zamanlayıcısı (15, 30, 45, 60, 90, 120 dakika). Süre dolduğunda TV'yi otomatik uyku moduna alır.
+- **TV Ekranını Karartma & Ekran Koruyucu (Ambient Mode)**:
+  - Müzik veya podcast dinlerken TV ekranını kapatma (`🌙 Ekranı Kapat`) ve tek tıkla TV ekran koruyucusunu başlatma (`🖼️ Ekran Koruyucu (Ambient)`).
+- **APK Yedek Klasörü Entegrasyonu (`_open_apk_dir`)**:
+  - Uygulamalar sekmesine `📁 Yedekler` butonu eklendi; yedekleme tamamlandığında doğrudan klasörü açma seçeneği sunulur.
+- **Üst Çubuktan Tek Tıkla Ağda TV Arama (`_jump_to_network_scan`)**:
+  - Üst bağlantı çubuğuna eklenen `🔍 Ağda Ara` butonu ile yerel ağdaki (Wi-Fi) açık ADB portlu TV cihazları tek tıkla aranır.
+- **Yeni Debloat Profili: Oyun & Emülatör Modu (`gaming_mode`)**:
+  - Arka plandaki tüm telemetri, reklam, yazdırma ve medya artıklarını dondurarak işlemci ve RAM'i oyunlara ve emülatörlere tahsis eden özel profil.
+
 ## [1.2.3] - 2026-10-14
 
 - Windows EXE'nin açılışta `No module named 'email'` hatası vermesine neden olan PyInstaller dışlama ayarı düzeltildi.

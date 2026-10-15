@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QMessageBox,
-    QLineEdit, QFileDialog, QInputDialog,
+    QLineEdit, QFileDialog, QInputDialog, QMenu, QApplication
 )
 
 from . import kit
@@ -127,6 +127,8 @@ class FilesTab(QWidget):
         hdr.setSectionResizeMode(COL_MTIME, QHeaderView.ResizeToContents)
         self.grid.doubleClicked.connect(self._on_double)
         self.grid.itemSelectionChanged.connect(self._update_action_buttons)
+        self.grid.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._context_menu)
         self.setAcceptDrops(True)
         self.grid.setAcceptDrops(True)
         self.grid.viewport().installEventFilter(self)
@@ -156,11 +158,14 @@ class FilesTab(QWidget):
         management, mv = card('Klasör ve dosya işlemleri')
         self.btn_mkdir = QPushButton('Klasör Aç')
         self.btn_mkdir.clicked.connect(self._mkdir)
+        self.btn_rename = QPushButton('Yeniden Adlandır')
+        self.btn_rename.clicked.connect(self._rename)
         self.btn_del = QPushButton('Seçileni Kalıcı Olarak Sil')
         self.btn_del.setProperty('danger', True)
         self.btn_del.clicked.connect(self._delete)
         manage_row = kit.action_bar()
         manage_row.addWidget(self.btn_mkdir)
+        manage_row.addWidget(self.btn_rename)
         manage_row.addWidget(self.btn_del)
         mv.addLayout(manage_row)
 
@@ -226,7 +231,10 @@ class FilesTab(QWidget):
         can_mutate = connected and not self._operation_busy
         self.btn_push.setEnabled(can_mutate)
         self.btn_mkdir.setEnabled(can_mutate)
-        self.btn_del.setEnabled(can_mutate and self._selected() is not None)
+        has_sel = self._selected() is not None
+        self.btn_del.setEnabled(can_mutate and has_sel)
+        if hasattr(self, 'btn_rename'):
+            self.btn_rename.setEnabled(can_mutate and has_sel)
         entry = self._selected()
         is_file = bool(entry) and not entry.get('dir')
         self.btn_pull.setEnabled(can_mutate and is_file)
@@ -591,6 +599,97 @@ class FilesTab(QWidget):
         self._start_mutation(
             w, 'Dosyalar: siliniyor: ' + full,
             lambda _: (self.lbl_status.setText('Silindi: ' + full), self.refresh()))
+
+    def _rename(self):
+        if not self._can_mutate():
+            return
+        e = self._selected()
+        if not e:
+            QMessageBox.information(self, 'Seçim', 'Önce öğe seçin.')
+            return
+        old_name = e.get('name', '')
+        target, cwd = self.core.target, self._cwd
+        old_path = self._remote_child(cwd, old_name)
+
+        new_name, ok = QInputDialog.getText(
+            self, 'Yeniden Adlandır',
+            'Yeni ad girin:', QLineEdit.Normal, old_name
+        )
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        if not self._can_mutate(target):
+            return
+
+        new_name = new_name.strip()
+        new_path = self._remote_child(cwd, new_name)
+
+        def do():
+            self.core.engine.rename_file(target, old_path, new_path)
+            return new_name
+
+        w = Worker(do)
+        w.job_name = 'Yeniden adlandirma'
+        self._start_mutation(
+            w, 'Dosyalar: yeniden adlandırılıyor: {} → {}'.format(old_name, new_name),
+            lambda _: (self.lbl_status.setText('Adı değiştirildi: ' + new_name),
+                       self.refresh())
+        )
+
+    def _context_menu(self, pos):
+        if not getattr(self.core, 'connected', False):
+            return
+        clicked_item = self.grid.itemAt(pos)
+        if clicked_item is not None and clicked_item.row() != self.grid.currentRow():
+            self.grid.setCurrentCell(clicked_item.row(), clicked_item.column())
+        elif clicked_item is None:
+            self.grid.clearSelection()
+            self.grid.setCurrentCell(-1, -1)
+        menu = QMenu(self)
+        entry = self._selected()
+        can_mutate = not self._connection_problem() and not self._operation_busy
+
+        if entry:
+            name = entry.get('name', '')
+            is_dir = entry.get('dir', False)
+            is_apk = not is_dir and str(name).lower().endswith('.apk')
+
+            if is_dir:
+                a_open = menu.addAction('📂 {} Klasörünü Aç'.format(name))
+                a_open.triggered.connect(lambda: self._go(self._remote_child(self._cwd, name)))
+            else:
+                a_pull = menu.addAction('📥 Bilgisayara İndir (Pull)')
+                a_pull.setEnabled(can_mutate)
+                a_pull.triggered.connect(self._pull)
+                if is_apk:
+                    a_install = menu.addAction('🚀 TV\'de Kur (APK)')
+                    a_install.setEnabled(can_mutate)
+                    a_install.triggered.connect(self._install_remote_apk)
+
+            menu.addSeparator()
+            a_copy = menu.addAction('📋 Tam Yolu Kopyala')
+            a_copy.triggered.connect(lambda: QApplication.clipboard().setText(self._remote_child(self._cwd, name)))
+
+            a_rename = menu.addAction('✏️ Yeniden Adlandır')
+            a_rename.setEnabled(can_mutate)
+            a_rename.triggered.connect(self._rename)
+
+            a_del = menu.addAction('🗑 Kalıcı Olarak Sil')
+            a_del.setEnabled(can_mutate)
+            a_del.triggered.connect(self._delete)
+        else:
+            a_mkdir = menu.addAction('📁 Yeni Klasör Oluştur')
+            a_mkdir.setEnabled(can_mutate)
+            a_mkdir.triggered.connect(self._mkdir)
+
+            a_push = menu.addAction('📤 Bilgisayardan Dosya Yükle (Push)')
+            a_push.setEnabled(can_mutate)
+            a_push.triggered.connect(self._push)
+
+            menu.addSeparator()
+            a_refresh = menu.addAction('🔄 Yenile')
+            a_refresh.triggered.connect(self.refresh)
+
+        menu.exec(self.grid.viewport().mapToGlobal(pos))
 
     def _install_remote_apk(self):
         if not self._can_mutate():

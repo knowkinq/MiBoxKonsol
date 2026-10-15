@@ -90,8 +90,8 @@ def _temizle(paket_dir):
             except OSError as e:
                 print('uyari: {} silinemedi: {}'.format(ad, e))
 
-    for ad in ('logs', 'snapshots', 'ekran-goruntuleri', 'indirilen-apklar',
-               'apk-yedekleri', '_arsiv'):
+    for ad in ('logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
+               'indirilen-apklar', 'apk-yedekleri', '_arsiv'):
         yol = os.path.join(paket_dir, ad)
         if os.path.islink(yol) or os.path.isfile(yol):
             os.remove(yol)
@@ -112,6 +112,16 @@ def _temizle(paket_dir):
 
 
 def main():
+    if sys.argv[1:] == ['--clean-package']:
+        paket_dir = os.path.join(DIST, 'MiBoxKonsol')
+        if not os.path.isdir(paket_dir):
+            print('HATA: temizlenecek paket bulunamadi: {}'.format(paket_dir))
+            return 1
+        _temizle(paket_dir)
+        return 0
+    if len(sys.argv) > 1:
+        print('Kullanim: python tools/build_onedir.py [--clean-package]')
+        return 2
     if not os.path.exists(KAYNAK_SPEC):
         print('HATA: spec bulunamadi: {}'.format(KAYNAK_SPEC))
         return 1

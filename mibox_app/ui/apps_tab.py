@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidgetItem, QLineEdit, QComboBox, QPushButton,
     QLabel, QHeaderView, QMenu, QMessageBox, QToolButton,
-    QFileDialog, QDialog, QDialogButtonBox, QTextEdit,
+    QFileDialog, QDialog, QDialogButtonBox, QTextEdit, QApplication,
 )
 
 from ..config import APK_DIR
@@ -140,6 +140,8 @@ class AppsTab(QWidget):
 
         # Sık kullanılan işler görünür; daha seyrek paket işleri menüdedir.
         actions = FlowLayout(hspacing=4, vspacing=4)
+        self.btn_select_all = QPushButton('Tümünü Seç')
+        self.btn_select_all.clicked.connect(self._select_all)
         self.chk_inv = QPushButton('Ters Çevir')
         self.chk_inv.clicked.connect(self._invert_all)
         self.lbl_sel = QLabel('')
@@ -166,37 +168,22 @@ class AppsTab(QWidget):
         self.btn_restore.clicked.connect(lambda: self._pkg_action('restore'))
         self.btn_apk = QPushButton('APK Yedekle')
         self.btn_apk.clicked.connect(self._backup_apk)
+        self.btn_open_apk_dir = QPushButton('📁 Yedekler')
+        self.btn_open_apk_dir.setToolTip('Yedeklenen APK dosyalarının bulunduğu klasörü açar')
+        self.btn_open_apk_dir.clicked.connect(self._open_apk_dir)
 
-        self.btn_other = QToolButton()
-        self.btn_other.setText('Diğer işlemler')
-        self.btn_other.setPopupMode(QToolButton.InstantPopup)
-        menu = QMenu(self.btn_other)
-        menu.addSection('Paket işlemleri')
-        for button in (self.btn_stop, self.btn_disable, self.btn_enable,
-                       self.btn_restore, self.btn_apk):
-            action = menu.addAction(button.text())
-            action.setToolTip(button.toolTip())
-            action.triggered.connect(
-                lambda _checked=False, target=button: target.click())
-        menu.addSeparator()
-        for button in (self.btn_clear, self.btn_uninstall):
-            action = menu.addAction(button.text())
-            action.setToolTip(button.toolTip())
-            action.triggered.connect(
-                lambda _checked=False, target=button: target.click())
-        self.btn_other.setMenu(menu)
-        # Keep the existing QPushButton API and clicked signals available to
-        # callers while exposing their actions through the compact menu.
-        for button in (self.btn_stop, self.btn_clear, self.btn_disable,
-                       self.btn_enable, self.btn_uninstall, self.btn_restore,
-                       self.btn_apk):
-            button.setParent(self)
-            button.hide()
-
+        actions.addWidget(self.btn_select_all)
         actions.addWidget(self.chk_inv)
         actions.addWidget(self.lbl_sel)
         actions.addWidget(self.btn_launch)
-        actions.addWidget(self.btn_other)
+        actions.addWidget(self.btn_stop)
+        actions.addWidget(self.btn_apk)
+        actions.addWidget(self.btn_open_apk_dir)
+        actions.addWidget(self.btn_disable)
+        actions.addWidget(self.btn_enable)
+        actions.addWidget(self.btn_clear)
+        actions.addWidget(self.btn_uninstall)
+        actions.addWidget(self.btn_restore)
         root.addLayout(actions)
 
         # --- Özet ve başlangıç durumu ---
@@ -259,6 +246,11 @@ class AppsTab(QWidget):
         if getattr(self, '_busy', False):
             self.lbl_summary.setText('Tarama zaten suruyor; bitmesini bekleyin.')
             return False
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            self.lbl_summary.setText("Bağlı cihaz yok. Uygulamaları listelemek için önce TV'ye bağlanın.")
+            if on_fail:
+                on_fail('cihaz bağlı değil')
+            return False
         try:
             engine = self.core.engine
         except Exception as e:
@@ -303,7 +295,7 @@ class AppsTab(QWidget):
         self._busy = bool(busy)
         kit.set_busy((self.btn_refresh, self.btn_stop, self.btn_clear, self.btn_disable,
                       self.btn_enable, self.btn_uninstall, self.btn_restore,
-                      self.btn_launch, self.btn_apk, self.btn_other), busy)
+                      self.btn_launch, self.btn_apk), busy)
         kit.set_busy((self.chk_inv,), busy)
         if not busy:
             self.grid.setEnabled(True)
@@ -313,9 +305,16 @@ class AppsTab(QWidget):
         self.lbl_summary.setText('Tarama başarısız: ' + str(err))
 
     def _on_presence(self, pkgs):
-        self._presence = set(pkgs)
+        if isinstance(pkgs, dict):
+            self._presence = set(pkgs.get('present', ()))
+            self._disabled_presence = set(pkgs.get('disabled', ()))
+            self._presence_info = pkgs
+        else:
+            self._presence = set(pkgs)
+            self._disabled_presence = set()
+            self._presence_info = {'present': self._presence, 'disabled': set()}
         try:
-            self.window.tab_debloat.set_present(self._presence)
+            self.window.tab_debloat.set_present(self._presence_info)
         except Exception:
             pass
 
@@ -335,7 +334,14 @@ class AppsTab(QWidget):
         except Exception:
             pass
         try:
-            self.window.tab_debloat.set_present(self._presence)
+            info = getattr(self, '_presence_info', None)
+            if info is None:
+                installed = [a for a in apps if a.get('installed_user0', True)]
+                info = {
+                    'present': {a['package'] for a in installed},
+                    'disabled': {a['package'] for a in installed if not a.get('enabled', True)}
+                }
+            self.window.tab_debloat.set_present(info)
         except Exception:
             pass
         self._apply_filter_now()
@@ -663,6 +669,12 @@ class AppsTab(QWidget):
                         it.setCheckState(st)
         finally:
             self.grid.blockSignals(False)
+        try:
+            header_item = self.grid.horizontalHeaderItem(COL_CHECK)
+            if header_item is not None:
+                header_item.setText('☑ Seç')
+        except RuntimeError:
+            pass
         self._update_sel_count()
         # baslik gostergesi: tamami seciliyse ☑, kismi ☐
         try:
@@ -671,6 +683,17 @@ class AppsTab(QWidget):
                 hdr_item.setText('☑ Seç' if on else 'Seç')
         except RuntimeError:
             pass
+
+    def _select_all(self):
+        self.grid.blockSignals(True)
+        try:
+            for row in range(self.grid.rowCount()):
+                it = self.grid.item(row, COL_CHECK)
+                if it and (it.flags() & Qt.ItemIsUserCheckable):
+                    it.setCheckState(Qt.Checked)
+        finally:
+            self.grid.blockSignals(False)
+        self._update_sel_count()
 
     def _invert_all(self):
         self.grid.blockSignals(True)
@@ -748,11 +771,23 @@ class AppsTab(QWidget):
         w.finished_ok.connect(self._on_backup_done)
         self.window._run(w)
 
+    def _open_apk_dir(self):
+        import os, subprocess, sys
+        os.makedirs(APK_DIR, exist_ok=True)
+        try:
+            if sys.platform == 'win32':
+                os.startfile(APK_DIR)
+            else:
+                subprocess.Popen(['xdg-open', APK_DIR])
+        except Exception as e:
+            QMessageBox.warning(self, 'Hata', f'Klasör açılamadı: {e}')
+
     def _on_backup_done(self, res):
-        QMessageBox.information(
-            self, 'Tamam',
-            '{} APK yedeklendi, {} başarısız.\nKlasor: {}'.format(
-                res.get('ok', 0), res.get('fail', 0), APK_DIR))
+        ok = res.get('ok', 0)
+        fail = res.get('fail', 0)
+        msg = f'{ok} APK yedeklendi' + (f', {fail} başarısız.' if fail else '.') + f'\n\nKonum: {APK_DIR}\n\nYedekleme klasörü açılsın mı?'
+        if QMessageBox.question(self, 'Yedekleme Tamamlandı', msg, QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            self._open_apk_dir()
 
     def _export_csv(self):
         if not self._apps:
@@ -862,7 +897,8 @@ class AppsTab(QWidget):
             f.setBold(True)
             act.setFont(f)
             act.triggered.connect(lambda: self._pkg_action_single('restore', p))
-            menu.addSeparator()
+        menu.addAction('📋 Paket Adını Kopyala', lambda: QApplication.clipboard().setText(p))
+        menu.addSeparator()
         menu.addAction('Detay', lambda: self._show_detail(p))
         menu.addAction('Aç', lambda: self._pkg_action_single('launch', p))
         menu.addAction('Zorla durdur', lambda: self._pkg_action_single('stop', p))

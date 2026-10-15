@@ -7,6 +7,7 @@ save() tmp + os.replace ile atomiktir.
 """
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -23,6 +24,7 @@ BASE_DIR = _base_dir()
 CONFIG_PATH = os.path.join(BASE_DIR, 'mibox-ayarlar.json')
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 SHOT_DIR = os.path.join(BASE_DIR, 'ekran-goruntuleri')
+VIDEO_DIR = os.path.join(BASE_DIR, 'ekran-videolari')
 APK_DIR = os.path.join(BASE_DIR, 'apk-yedekleri')
 DOWNLOADS_DIR = os.path.join(BASE_DIR, 'indirilen-apklar')
 # Eski buyuk harfli dosya adiyla geriye uyumluluk (kullanicida varsa oku).
@@ -165,6 +167,28 @@ DEFAULT_FRIENDLY = {
 }
 
 DEFAULT_PROTECTED = []  # Kullanıcı kendi koruma listesini oluşturur.
+
+
+def prettify_package_name(pkg):
+    """Bilinmeyen paket adlarından temiz, okunabilir bir uygulama adı üretir."""
+    if not pkg or not isinstance(pkg, str):
+        return ''
+    parts = pkg.strip().split('.')
+    while parts and parts[0].lower() in ('com', 'org', 'net', 'io', 'tv', 'me', 'co', 'ar', 'de', 'fr'):
+        parts.pop(0)
+    if not parts:
+        parts = pkg.split('.')[-1:]
+    if len(parts) > 1 and parts[-1].lower() in ('tv', 'app', 'android', 'client', 'player', 'stable', 'beta', 'one', 'shot', 'menu'):
+        raw = f'{parts[-2]} {parts[-1]}'
+    else:
+        raw = parts[-1]
+    s1 = re.sub(r'([a-z])([A-Z])', r'\1 \2', raw)
+    s2 = re.sub(r'([A-Za-z])([0-9])', r'\1 \2', s1)
+    s3 = re.sub(r'([0-9])([A-Za-z])', r'\1 \2', s2)
+    s4 = s3.replace('_', ' ').replace('-', ' ')
+    words = [w.capitalize() for w in s4.split() if w]
+    res = ' '.join(['TV' if w.upper() == 'TV' else w for w in words])
+    return res or pkg
 
 
 class Config:
@@ -371,9 +395,34 @@ class Config:
             pass
 
     def friendly_name(self, pkg):
-        # Uyumluluk yedeği: onay pencerelerinde ad çözümü için kullanılır.
-        # Birincil kaynak cihaz etiketidir (AppScanWorker 'label').
-        return self.friendly.get(pkg, pkg)
+        """Uygulama paket adını insan tarafından okunabilir dost ada çevirir."""
+        if not pkg or not isinstance(pkg, str):
+            return str(pkg or '')
+        # 1. Kayıtlı / özelleştirilmiş friendly sözlüğü
+        if pkg in self.friendly:
+            return self.friendly[pkg]
+
+        # 2. TV Kataloğu (catalog.py)
+        try:
+            from .catalog import TV_CATALOG
+            for item in TV_CATALOG:
+                if item.get('package') == pkg or pkg in item.get('alt_packages', []):
+                    return item.get('name')
+        except Exception:
+            pass
+
+        # 3. Debloat Veritabanı (debloat_db.py)
+        try:
+            from .debloat_db import DEBLOAT_DB
+            for cat_list in DEBLOAT_DB.values():
+                for entry in cat_list:
+                    if entry and entry[0] == pkg:
+                        return entry[1]
+        except Exception:
+            pass
+
+        # 4. Akıllı paket adı biçimlendirme (fallback)
+        return prettify_package_name(pkg)
 
     def is_protected(self, pkg):
         return pkg in self.protected

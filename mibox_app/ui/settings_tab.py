@@ -83,6 +83,9 @@ class SettingsTab(QWidget):
         root.addWidget(info_card)
         self._refresh_info()
 
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(kit.SPACING)
+
         protected_card = QGroupBox()
         protected_card.setObjectName('settingsCard')
         protected_layout = QVBoxLayout(protected_card)
@@ -94,7 +97,7 @@ class SettingsTab(QWidget):
             'Listedeki paketlere uygulama işlemleri uygulanmaz.'))
         self.lst_protected = QListWidget()
         self.lst_protected.setMaximumHeight(110)
-        self.lst_protected.setMinimumHeight(50)
+        self.lst_protected.setMinimumHeight(60)
         self._refresh_protected_list()
         protected_layout.addWidget(self.lst_protected)
         protected_actions = QHBoxLayout()
@@ -111,30 +114,40 @@ class SettingsTab(QWidget):
         protected_actions.addWidget(btn_add)
         protected_actions.addWidget(btn_rm)
         protected_layout.addLayout(protected_actions)
-        root.addWidget(protected_card)
+        bottom_row.addWidget(protected_card, 1)
 
         backup_card = QGroupBox()
         backup_card.setObjectName('settingsCard')
-        backup_layout = QHBoxLayout(backup_card)
+        backup_layout = QVBoxLayout(backup_card)
         backup_layout.setSpacing(8)
-        backup_title = QLabel('Ayar yedeği')
+        backup_title = QLabel('Ayar yedeği · Kaydet')
         backup_title.setObjectName('cardTitle')
         backup_layout.addWidget(backup_title)
-        backup_layout.addStretch(1)
+        backup_layout.addWidget(kit.hint_label(
+            'Yapılandırmayı JSON olarak dışa aktarın, geri yükleyin veya kaydedin.'))
+
+        backup_actions = QHBoxLayout()
+        backup_actions.setSpacing(8)
         self.btn_export_cfg = QPushButton('Dışarı Aktar')
         self.btn_export_cfg.setProperty('role', 'secondary')
         self.btn_export_cfg.clicked.connect(self._export_cfg)
         self.btn_import_cfg = QPushButton('İçeri Aktar')
         self.btn_import_cfg.setProperty('role', 'secondary')
         self.btn_import_cfg.clicked.connect(self._import_cfg)
-        backup_layout.addWidget(self.btn_export_cfg)
-        backup_layout.addWidget(self.btn_import_cfg)
-        root.addWidget(backup_card)
+        backup_actions.addWidget(self.btn_export_cfg)
+        backup_actions.addWidget(self.btn_import_cfg)
+        backup_layout.addLayout(backup_actions)
+
+        backup_layout.addStretch(1)
 
         self.btn_save = QPushButton('Ayarları Kaydet')
         self.btn_save.setProperty('role', 'primary')
+        self.btn_save.setFixedHeight(34)
         self.btn_save.clicked.connect(self._save)
-        root.addWidget(self.btn_save)
+        backup_layout.addWidget(self.btn_save)
+
+        bottom_row.addWidget(backup_card, 1)
+        root.addLayout(bottom_row)
         root.addStretch(1)
 
     def apply_theme(self):

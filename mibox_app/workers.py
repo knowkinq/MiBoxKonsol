@@ -14,6 +14,7 @@ Faz 3 disiplini: uzun isler her fazda ve dongude check_cancel() cagirir.
   self.isInterruptionRequested verir).
 """
 import inspect
+import re
 
 from PySide6.QtCore import QThread, Signal
 
@@ -131,36 +132,42 @@ class BaseWorker(QThread):
         except Exception:
             pass
 
+    silent = False
+
     def run(self):
         import time as _time
         name = getattr(self, 'job_name', None) or type(self).__name__
         t0 = _time.time()
-        try:
-            self.log.emit(u'▶ {} başladı.'.format(name))
-        except Exception:
-            pass
+        if not getattr(self, 'silent', False):
+            try:
+                self.log.emit(u'▶ {} başladı.'.format(name))
+            except Exception:
+                pass
         try:
             self.check_cancel()
             self._work()
-            try:
-                self.log.emit(u'✔ {} bitti ({:.1f} sn).'.format(name, _time.time() - t0))
-            except Exception:
-                pass
+            if not getattr(self, 'silent', False):
+                try:
+                    self.log.emit(u'✔ {} bitti ({:.1f} sn).'.format(name, _time.time() - t0))
+                except Exception:
+                    pass
         except CancelledError:
-            try:
-                self.log.emit(u'⏹ {} durduruldu ({:.1f} sn).'.format(name, _time.time() - t0))
-            except Exception:
-                pass
+            if not getattr(self, 'silent', False):
+                try:
+                    self.log.emit(u'⏹ {} durduruldu ({:.1f} sn).'.format(name, _time.time() - t0))
+                except Exception:
+                    pass
             try:
                 self.failed.emit('kullanıcı durdurdu')
             except Exception:
                 pass
         except Exception as e:  # noqa: BLE001 - tek noktada yakala, standarda cevir
-            try:
-                self.log.emit(u'✘ {} başarısız ({:.1f} sn): {}'.format(
-                    name, _time.time() - t0, _fail_text(e)))
-            except Exception:
-                pass
+            if not getattr(self, 'silent', False):
+                try:
+                    self.log.emit(u'✘ {} başarısız ({:.1f} sn): {}'.format(
+                        name, _time.time() - t0, _fail_text(e)))
+                except Exception:
+                    pass
             self.failed.emit(_fail_text(e))
 
     def _work(self):
@@ -181,6 +188,7 @@ class Worker(BaseWorker):
     def __init__(self, func, *args, **kwargs):
         super().__init__()
         self.job_name = 'Arka plan isi'
+        self.silent = kwargs.pop('silent', False)
         self._func = func
         self._args = args
         self._kwargs = kwargs
@@ -194,7 +202,7 @@ class AppScanWorker(BaseWorker):
     """Tum uygulamalari tarama (bulk appops + ps ile hizli)."""
 
     finished_ok = Signal(list)
-    presence = Signal(set)  # cihazdaki tum paketler (sistem dahil) -> Debloat sekmesi
+    presence = Signal(object)  # {'present': set, 'disabled': set} -> Debloat sekmesi
 
     def __init__(self, engine, target, include_system=False):
         super().__init__()
@@ -217,8 +225,10 @@ class AppScanWorker(BaseWorker):
                 self._engine.list_packages_detailed(self._target, True, use_cache=False)
         except AdbError:
             all_detailed = detailed
-        self.presence.emit({e['package'] for e in all_detailed
-                            if e.get('installed_user0', True)})
+        installed = [e for e in all_detailed if e.get('installed_user0', True)]
+        present = {e['package'] for e in installed}
+        disabled = {e['package'] for e in installed if e.get('enabled') is False}
+        self.presence.emit({'present': present, 'disabled': disabled})
         # cihazdan GERCEK adlar (bilinen-uygulama listesi YOK):
         # tek dumpsys cagrisi, etiketsiz paketler paket adiyla gelir.
         try:
@@ -1118,3 +1128,73 @@ class ApkBackupWorker(BaseWorker):
         if cancelled:
             self.log.emit(u'⏹ {} paket yedeklenmedi (kullanıcı durdurdu).'.format(cancelled))
         self.finished_ok.emit({'ok': ok, 'fail': fail, 'cancelled': cancelled})
+
+
+class NetworkScanWorker(BaseWorker):
+    """LAN'da acik portlu ADB cihazlarini tarayan asenkron worker.
+
+    Bulunan her cihazi gecikmesiyle birlikte aninda UI'ya yayinlar (device_found).
+    """
+
+    device_found = Signal(str, str, str)  # (ip, durum, gecikme_ms)
+    finished_ok = Signal(list)
+
+    def __init__(self, prefix, start, end, port, max_workers=32):
+        super().__init__()
+        import ipaddress
+        if not re.fullmatch(r'\d{1,3}(\.\d{1,3}){2}\.', str(prefix)):
+            raise ValueError('Geçersiz IPv4 ağ öneki.')
+        ipaddress.IPv4Address('{}1'.format(prefix))
+        if not 1 <= int(start) <= int(end) <= 254:
+            raise ValueError('Geçersiz IP tarama aralığı.')
+        if not 1 <= int(port) <= 65535:
+            raise ValueError('Geçersiz ağ portu.')
+        self.job_name = 'LAN Cihaz Taraması'
+        self.prefix = prefix
+        self.start_ip = int(start)
+        self.end_ip = int(end)
+        self.port = int(port)
+        self.max_workers = max(1, min(128, int(max_workers)))
+        self.total = self.end_ip - self.start_ip + 1
+
+    def _work(self):
+        import concurrent.futures
+        import socket
+        import time
+
+        found = []
+        completed = 0
+
+        def probe(last):
+            if self.isInterruptionRequested():
+                return None
+            ip = self.prefix + str(last)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.7)
+                    t0 = time.perf_counter()
+                    r = s.connect_ex((ip, self.port))
+                    lat = int((time.perf_counter() - t0) * 1000)
+                if r == 0:
+                    return (ip, 'Açık', str(lat))
+            except OSError:
+                pass
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            futs = {ex.submit(probe, last): last for last in range(self.start_ip, self.end_ip + 1)}
+            for fut in concurrent.futures.as_completed(futs):
+                if self.isInterruptionRequested():
+                    for f in futs:
+                        f.cancel()
+                    break
+                res = fut.result()
+                if res:
+                    found.append(res)
+                    self.device_found.emit(res[0], res[1], res[2])
+                completed += 1
+                self.progress.emit(completed, self.total)
+
+        self.check_cancel()
+        found.sort(key=lambda x: int(x[-1]))
+        self.finished_ok.emit(found)

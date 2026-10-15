@@ -339,8 +339,13 @@ class HealthTab(QWidget):
             soc = cpu.get('soc') or 'Bilinmeyen SoC'
             cores = cpu.get('cores', 4)
             abi = cpu.get('abi', '')
-            temp = cpu.get('temperature_c')
-            temp_str = ' · {}°C'.format(int(temp)) if temp is not None else ''
+            temp = cpu.get('temp') or cpu.get('temperature_c')
+            if isinstance(temp, (int, float)):
+                temp_str = f' · {round(temp, 1)}°C'
+            elif isinstance(temp, str) and temp != '?':
+                temp_str = f' · {temp}' if not temp.startswith(' ·') else temp
+            else:
+                temp_str = ''
             self.lbl_cpu.setText('{} ({} Çekirdek)'.format(soc, cores))
             self.lbl_cpu_detail.setText('{}{}'.format(abi, temp_str))
         else:

@@ -438,6 +438,9 @@ class HistoryTab(QWidget):
             self.cmb_snap.addItem('(snapshot yok)', '')
 
     def _snap_take(self):
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            QMessageBox.information(self, 'Snapshot', "Bağlı cihaz yok. Snapshot almak için önce TV'ye bağlanın.")
+            return
         user_id = int(self.core.config.user_id or 0)
         w = SnapshotWorker(self.core.engine, self.core.target, 'take',
                            user_id=user_id)
@@ -453,6 +456,9 @@ class HistoryTab(QWidget):
         name = self.cmb_snap.currentData()
         if not name:
             QMessageBox.information(self, 'Snapshot', 'Önce snapshot seçin.')
+            return
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            QMessageBox.information(self, 'Snapshot', "Bağlı cihaz yok. Fark hesaplamak için önce TV'ye bağlanın.")
             return
 
         def do():
@@ -480,6 +486,9 @@ class HistoryTab(QWidget):
         name = self.cmb_snap.currentData()
         if not name:
             QMessageBox.information(self, 'Snapshot', 'Önce snapshot seçin.')
+            return
+        if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
+            QMessageBox.information(self, 'Snapshot', "Bağlı cihaz yok. Snapshot uygulamak için önce TV'ye bağlanın.")
             return
         # Onayda snapshot ICERIGI ozeti: kac paket, hangi islemler
         user_id = 0

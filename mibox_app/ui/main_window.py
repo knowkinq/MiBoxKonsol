@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox, QTabWidget,
     QPlainTextEdit, QMessageBox, QStatusBar,
     QSplitter, QScrollArea, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy,
+    QSystemTrayIcon, QMenu,
 )
 
 from .. import APP_NAME, __version__
@@ -33,6 +34,7 @@ from .logcat_tab import LogcatTab
 from .network_tab import NetworkTab
 from .remote_tab import RemoteTab
 from .settings_tab import SettingsTab
+from .terminal_tab import TerminalTab
 from .theme import qss_for, level_colors_for, colors_for, conn_style
 from .icons import line_icon
 from .actions_dialog import ActionsDialog
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.core = core
         self.setWindowTitle('{} v{}'.format(APP_NAME, __version__))
+        self.setWindowIcon(line_icon('tv', color='#6366f1', size=32))
         # Ekranin %94'u kadar acil, ortala; kucuk ekranda tasmaz.
         try:
             avail = QGuiApplication.primaryScreen().availableGeometry()
@@ -172,6 +175,8 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self.apply_theme()
         self.refresh_history_combo()
+        self._setup_tray_icon()
+        self._setup_window_shortcuts()
 
     def apply_theme(self):
         """Tema degisince: QSS + palet + baglanti gostergeleri + log yeniden cizim."""
@@ -213,10 +218,10 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(12, 20, 12, 14)
         side.setSpacing(8)
-        brand = QLabel('MiBox')
+        brand = QLabel('MiBox Konsol')
         brand.setObjectName('brandTitle')
         side.addWidget(brand)
-        tagline = QLabel('TV yönetim merkezi')
+        tagline = QLabel('Android TV Yönetim Merkezi')
         tagline.setObjectName('brandSubtitle')
         side.addWidget(tagline)
         side.addSpacing(14)
@@ -323,11 +328,20 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.btn_connect)
         conn_layout.addWidget(self.btn_disconnect)
         conn_layout.addWidget(self.lbl_status)
+        self.lbl_device_badge = QLabel('')
+        self.lbl_device_badge.setProperty('role', 'badge-accent')
+        self.lbl_device_badge.hide()
+        conn_layout.addWidget(self.lbl_device_badge)
         self.btn_device_options = QPushButton('Cihaz seç')
         self.btn_device_options.setProperty('role', 'quiet')
         self.btn_device_options.setCheckable(True)
         self.btn_device_options.setToolTip('Bağlı cihazlar ve önceki adresler')
         conn_layout.addWidget(self.btn_device_options)
+        self.btn_scan_network = QPushButton('🔍 Ağda Ara')
+        self.btn_scan_network.setProperty('role', 'quiet')
+        self.btn_scan_network.setToolTip('Yerel ağdaki (Wi-Fi) açık ADB portlu TV cihazlarını otomatik arar')
+        self.btn_scan_network.clicked.connect(self._jump_to_network_scan)
+        conn_layout.addWidget(self.btn_scan_network)
         self.device_options = QWidget()
         self.device_options.setMaximumWidth(470)
         options_layout = QHBoxLayout(self.device_options)
@@ -357,7 +371,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tab_apps = AppsTab(self.core, self)
         self.tab_remote = self._scroll_wrap(RemoteTab(self.core, self))
-        self.tab_remote.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tab_remote.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.tab_remote_inner = self.tab_remote.widget()
         self.tab_debloat = DebloatTab(self.core, self)
         self.tab_debloat_page = self._scroll_wrap(self.tab_debloat)
@@ -373,10 +387,12 @@ class MainWindow(QMainWindow):
         self.tab_files_inner = self.tab_files.widget()
         self.tab_install = self._scroll_wrap(InstallTab(self.core, self))
         self.tab_install_inner = self.tab_install.widget()
+        self.tab_terminal = TerminalTab(self.core, self)
         self.tabs.addTab(self.tab_apps, u'▦ Uygulamalar')
         self.tabs.addTab(self.tab_remote, u'▣ Kumanda')
         self.tabs.addTab(self.tab_debloat_page, 'Debloat')
         self.tabs.addTab(self.tab_health, u'♥ Sağlık')
+        self.tabs.addTab(self.tab_terminal, u'⚡ Terminal')
         self.tabs.addTab(self.tab_history, u'🕘 Geçmiş')
         self.tabs.addTab(self.tab_logcat, u'≡ Logcat')
         self.tabs.addTab(self.tab_files, u'🗀 Dosyalar')
@@ -386,14 +402,15 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().hide()
         self._page_details = [
             ('Uygulamalar', 'TV uygulamalarınızı tek yerden yönetin.', 'apps'),
-            ('Kumanda', 'Gezinme, ses ve oynatma kontrolleri.', 'remote'),
+            ('Kumanda', 'Gezinme, ses, oynatma ve canlı ekran.', 'remote'),
             ('Debloat', 'Gereksiz paketleri inceleyin, güvenlik düzeyine göre karar verin.', 'cleanup'),
             ('Sağlık', 'Cihaz durumu, performans ve arka plan yönetimi.', 'health'),
+            ('Terminal', 'Doğrudan ADB Shell komut satırı ve sistem teşhisleri.', 'terminal'),
             ('Geçmiş', 'İşlem kayıtları ve geri dönüş noktaları.', 'history'),
             ('Logcat', 'Canlı cihaz günlükleri ve filtreler.', 'logs'),
             ('Dosyalar', 'TV dosyalarına göz atın ve aktarın.', 'files'),
-            ('Kurulum', 'Tek APK veya çoklu paket yükleme ve ana ekran seçimi.', 'install'),
-            ('Ağ', 'Cihaz keşfi ve bağlantı araçları.', 'network'),
+            ('Kurulum', 'Tek APK veya çoklu paket yükleme ve TV mağazası.', 'install'),
+            ('Ağ', 'Cihaz keşfi, LAN taraması ve bağlantı araçları.', 'network'),
             ('Ayarlar', 'Görünüm, korumalar ve tercihler.', 'settings'),
         ]
         for index, (title, subtitle, icon) in enumerate(self._page_details):
@@ -678,6 +695,8 @@ class MainWindow(QMainWindow):
              self.refresh_current_page, lambda: self._refresh_action() is not None),
             ('Cihaz adresine git', 'Bağlanılacak adresi düzenle · Ctrl+L',
              self.focus_target, lambda: self.txt_target.isEnabled()),
+            ('Ağdaki TV\'leri ara', 'Açık portlu Android TV\'leri otomatik tara · Ctrl+Shift+N',
+             self._jump_to_network_scan, lambda: True),
             ('İşlem günlüğü', 'Son işlemleri ve hataları görüntüle',
              lambda: self._toggle_log_panel(True), lambda: True),
         ])
@@ -860,6 +879,91 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _setup_tray_icon(self):
+        try:
+            if not QSystemTrayIcon.isSystemTrayAvailable():
+                return
+            self.tray_icon = QSystemTrayIcon(line_icon('tv', color='#6366f1', size=32), self)
+            self.tray_icon.setToolTip('{} v{}'.format(APP_NAME, __version__))
+
+            tray_menu = QMenu(self)
+            title_action = tray_menu.addAction('📺 {} v{}'.format(APP_NAME, __version__))
+            title_action.setEnabled(False)
+            tray_menu.addSeparator()
+
+            act_boost = tray_menu.addAction('⚡ Turbo Hızlandır (RAM Temizle)')
+            act_boost.triggered.connect(self._quick_turbo_boost)
+
+            act_scrcpy = tray_menu.addAction('🚀 Scrcpy Ekranını Başlat')
+            act_scrcpy.triggered.connect(self._quick_scrcpy)
+
+            act_record = tray_menu.addAction('🎥 Video Kaydını Başlat / Bitir')
+            act_record.triggered.connect(self._quick_record_toggle)
+
+            tray_menu.addSeparator()
+
+            act_toggle = tray_menu.addAction('Pencereyi Göster / Gizle')
+            act_toggle.triggered.connect(self._toggle_window_visibility)
+
+            act_quit = tray_menu.addAction('Çıkış')
+            act_quit.triggered.connect(self._tray_quit)
+
+            self.tray_icon.setContextMenu(tray_menu)
+            self.tray_icon.activated.connect(self._on_tray_activated)
+            self.tray_icon.show()
+        except Exception:
+            pass
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._toggle_window_visibility()
+
+    def _toggle_window_visibility(self):
+        if self.isVisible():
+            if self.isMinimized():
+                self.showNormal()
+                self.activateWindow()
+            else:
+                self.hide()
+        else:
+            self.showNormal()
+            self.activateWindow()
+
+    def _tray_quit(self):
+        self.showNormal()
+        self.close()
+
+    def _setup_window_shortcuts(self):
+        try:
+            QShortcut(QKeySequence('Ctrl+Shift+B'), self, self._quick_turbo_boost)
+            QShortcut(QKeySequence('Ctrl+Shift+S'), self, self._quick_scrcpy)
+            QShortcut(QKeySequence('Ctrl+Shift+R'), self, self._quick_record_toggle)
+            QShortcut(QKeySequence('Ctrl+Shift+T'), self, lambda: self.tabs.setCurrentWidget(self.tab_terminal))
+            QShortcut(QKeySequence('Ctrl+Shift+N'), self, self._jump_to_network_scan)
+        except Exception:
+            pass
+
+    def _jump_to_network_scan(self):
+        self.tabs.setCurrentWidget(self.tab_network)
+        net_tab = getattr(self, 'tab_network_inner', None)
+        if net_tab and hasattr(net_tab, 'scan'):
+            QTimer.singleShot(250, net_tab.scan)
+
+    def _quick_turbo_boost(self):
+        remote = getattr(self, 'tab_remote_inner', None)
+        if remote and hasattr(remote, '_turbo_boost'):
+            remote._turbo_boost()
+
+    def _quick_scrcpy(self):
+        remote = getattr(self, 'tab_remote_inner', None)
+        if remote and hasattr(remote, '_launch_scrcpy'):
+            remote._launch_scrcpy()
+
+    def _quick_record_toggle(self):
+        remote = getattr(self, 'tab_remote_inner', None)
+        if remote and hasattr(remote, '_toggle_screen_recording'):
+            remote._toggle_screen_recording()
+
     # ------------------------------------------------------------------
     def _sync_target(self):
         t = self._target_from_fields()
@@ -1024,9 +1128,12 @@ class MainWindow(QMainWindow):
                 self.append_log('Otomatik yenileme atlandı ({}, tarama suruyor).'.format(why), 'WARN')
                 return
             self.tab_apps.refresh()
-            # Debloat da yalnizca-cihaz varligini tazelesin
+            # Debloat sekmesi için: seçili kullanıcı 0'dan farklıysa özel tarama yapsın,
+            # aksi halde AppScanWorker zaten tüm sistem/kullanıcı paketlerini (present + disabled)
+            # tek seferde tarayıp debloat sekmesine eksiksiz aktarır.
             try:
-                self.tab_debloat.scan_if_needed()
+                if int(self.core.config.user_id or 0) != 0:
+                    self.tab_debloat.scan_if_needed()
             except Exception:
                 pass
         except Exception as e:
@@ -1142,6 +1249,32 @@ class MainWindow(QMainWindow):
         self.lbl_status.setStyleSheet(conn_style(dark, bool(connected)))
         self.lbl_target.setText('Hedef: ' + target)
         self._set_link(connected)
+        if connected and target:
+            def _fetch_badge():
+                try:
+                    model = self.core.engine.getprop(target, 'ro.product.model') or target
+                    rel = self.core.engine.getprop(target, 'ro.build.version.release') or ''
+                    return model, rel
+                except Exception:
+                    return target, ''
+
+            def _show_badge(res):
+                if not self.core.connected or self.core.target != target:
+                    return
+                model, rel = res
+                disp = model
+                if rel:
+                    disp += ' (Android {})'.format(rel)
+                if hasattr(self, 'lbl_device_badge'):
+                    self.lbl_device_badge.setText('📺 ' + disp)
+                    self.lbl_device_badge.show()
+
+            bw = Worker(_fetch_badge)
+            bw.finished_ok.connect(_show_badge)
+            self._run(bw)
+        else:
+            if hasattr(self, 'lbl_device_badge'):
+                self.lbl_device_badge.hide()
 
     def _set_link(self, online):
         # baglanti noktasi + durum etiketi birlikte guncellenir
@@ -1439,12 +1572,16 @@ class MainWindow(QMainWindow):
                 pass
         self.lbl_activity.setText('İşlemler durduruluyor…')
 
-    def _run(self, worker, on_ok=None, on_fail=None, desc=None):
+    def _run(self, worker, on_ok=None, on_fail=None, desc=None, silent=False):
         """Worker'i baslatir ve sonuclerini baglar. Worker'i bellekte tutar.
 
         desc: Canli Log'a yazilacak insan-dili aciklama
               (örn: 'Uygulamalar taraniyor'). Verilmezse job_name kullanilir.
         """
+        if isinstance(on_ok, str) and desc is None:
+            desc = on_ok
+            on_ok = None
+
         if self._closing or self._close_pending:
             # thread baslamadi; deleteLater yeterli (QThread-destroyed yok)
             try:
@@ -1463,28 +1600,38 @@ class MainWindow(QMainWindow):
             except (AttributeError, RuntimeError):
                 pass
         label = desc or getattr(worker, 'job_name', None) or type(worker).__name__
-        track = not str(label).startswith('Tus: ')
+        label_str = str(label)
+        is_silent = (silent or getattr(worker, 'silent', False)
+                     or label_str.startswith(('Tuş:', 'Tus:', 'Tuş: ', 'Tus: ', 'Ses Seviyesi', 'Ses:', 'Ses Oku', 'Ses Ayarla')))
+        if is_silent:
+            try:
+                worker.silent = True
+            except Exception:
+                pass
+        track = not is_silent
         token = id(worker)
         if track:
-            self._activity[token] = (str(label), 0, 0)
+            self._activity[token] = (label_str, 0, 0)
             QTimer.singleShot(250, lambda: self._update_activity() if token in self._activity else None)
-        try:
-            self.append_log(u'▶ İstek: {}'.format(label), 'INFO')
-        except Exception:
-            pass
+            try:
+                self.append_log(u'▶ İstek: {}'.format(label_str), 'INFO')
+            except Exception:
+                pass
         if on_ok:
             worker.finished_ok.connect(on_ok)
-        worker.finished_ok.connect(lambda _result: self.status.showMessage('{} tamamlandı.'.format(label), 4000)
-                                   if not self._closing and track else None)
+        if track:
+            worker.finished_ok.connect(lambda _result: self.status.showMessage('{} tamamlandı.'.format(label_str), 4000)
+                                       if not self._closing and track else None)
 
         def _handle_fail(err):
-            self.append_log('✘ {} başarısız: {}'.format(label, str(err)), 'ERROR')
-            if 'kullanıcı durdurdu' not in str(err).lower():
-                self._show_error(label, str(err))
+            if not is_silent:
+                self.append_log('✘ {} başarısız: {}'.format(label_str, str(err)), 'ERROR')
+                if 'kullanıcı durdurdu' not in str(err).lower():
+                    self._show_error(label_str, str(err))
             if on_fail:
                 on_fail(str(err))
         worker.failed.connect(_handle_fail)
-        if hasattr(worker, 'log'):
+        if hasattr(worker, 'log') and not is_silent:
             try:
                 def _worker_log(message):
                     # BaseWorker emits the failure summary immediately before
@@ -1496,11 +1643,11 @@ class MainWindow(QMainWindow):
                 worker.log.connect(_worker_log)
             except Exception:
                 pass
-        if hasattr(worker, 'progress'):
+        if hasattr(worker, 'progress') and track:
             try:
                 def _progress(cur, total):
                     if token in self._activity and not self._closing:
-                        self._activity[token] = (str(label), max(0, int(cur)), max(0, int(total)))
+                        self._activity[token] = (label_str, max(0, int(cur)), max(0, int(total)))
                         self._update_activity()
                 worker.progress.connect(_progress)
             except Exception:
@@ -1516,7 +1663,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             try:
-                alive = any(w.isRunning() for w in self._workers)
+                alive = any(w.isRunning() for w in self._workers if not getattr(w, 'silent', False))
                 if not alive and hasattr(self, 'btn_stop'):
                     self.btn_stop.setEnabled(False)
                     self.btn_stop.hide()
@@ -1527,12 +1674,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._workers.append(worker)
-        try:
-            if hasattr(self, 'btn_stop'):
-                self.btn_stop.setEnabled(True)
-                self.btn_stop.show()
-        except Exception:
-            pass
+        if not is_silent:
+            try:
+                if hasattr(self, 'btn_stop'):
+                    self.btn_stop.setEnabled(True)
+                    self.btn_stop.show()
+            except Exception:
+                pass
         worker.start()
 
     def _finalize_close(self):
@@ -1574,6 +1722,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # 5. Sistem tepsisi simgesini gizle
+        try:
+            if hasattr(self, 'tray_icon') and self.tray_icon:
+                self.tray_icon.hide()
+        except Exception:
+            pass
+
     def _finish_close_when_workers_stop(self):
         if not self._close_pending or self._close_scheduled:
             return
@@ -1600,6 +1755,14 @@ class MainWindow(QMainWindow):
         if self._close_pending:
             e.ignore()
             return
+
+        # Finish an active device recording before the window and its worker
+        # registry are torn down.
+        try:
+            if getattr(self.tab_remote_inner, '_recording_remote_path', None):
+                self.tab_remote_inner._stop_screen_recording(show_saved_dialog=False)
+        except Exception:
+            pass
 
         running = []
         for worker in list(self._workers):
@@ -1631,6 +1794,12 @@ class MainWindow(QMainWindow):
                     worker.failed.disconnect()
                 except (AttributeError, RuntimeError, TypeError):
                     pass
+                if getattr(worker, 'preserve_on_close', False):
+                    try:
+                        worker.finished.connect(self._finish_close_when_workers_stop)
+                    except (AttributeError, RuntimeError):
+                        pass
+                    continue
                 try:
                     if hasattr(worker, 'cancel'):
                         worker.cancel()

@@ -2,13 +2,13 @@
 """Popüler ve açık kaynak Android TV uygulamaları kataloğu.
 
 Kullanıcıların harici sitelerden zararlı veya uyumsuz mobil APK aramak
-zorunda kalmadan; SmartTube, Projectivy, Kodi, VLC gibi TV için optimize
+zorunda kalmadan; SmartTube, Stremio, Projectivy, Kodi, VLC gibi TV için optimize
 edilmiş en iyi uygulamaları tek tıkla indirip TV'ye kurmasını sağlar.
 """
 import os
 import tempfile
 import urllib.request
-import urllib.error
+from urllib.parse import urlsplit
 
 from .config import DOWNLOADS_DIR
 
@@ -17,6 +17,7 @@ TV_CATEGORIES = [
     'Medya & Video',
     'TV Başlatıcı',
     'Dosya & Araçlar',
+    'Oyun & Akış',
     'TV Mağazası',
 ]
 
@@ -46,6 +47,30 @@ TV_CATALOG = [
         'description': 'En yeni SmartTube özellikleri ve erken hata düzeltmelerini içeren test sürümü.',
         'url': 'https://github.com/yuliskov/SmartTube/releases/download/latest/smarttube_beta.apk',
         'website': 'https://github.com/yuliskov/SmartTube',
+    },
+    {
+        'id': 'stremio_tv',
+        'name': 'Stremio Android TV',
+        'category': 'Medya & Video',
+        'badge': '★ Çok Popüler',
+        'icon': '📺',
+        'package': 'com.stremio.one',
+        'author': 'Stremio (Açık Kaynak)',
+        'description': 'Film, dizi ve canlı yayınları tek merkezde toplayan popüler akış platformu. Torrent ve debrid eklentileriyle tam uyumlu TV arayüzü.',
+        'url': 'https://dl.strem.io/android/v1.10.4-androidTV/com.stremio.one-1.10.4-31048580-armeabi-v7a.apk',
+        'website': 'https://stremio.com',
+    },
+    {
+        'id': 'jellyfin_tv',
+        'name': 'Jellyfin Android TV',
+        'category': 'Medya & Video',
+        'badge': 'Açık Kaynak',
+        'icon': '🍇',
+        'package': 'org.jellyfin.androidtv',
+        'author': 'Jellyfin Team (Açık Kaynak)',
+        'description': 'Tamamen ücretsiz ve gizlilik odaklı kişisel medya sunucusu istemcisi. Kendi film ve dizi arşivinizi TV’den reklamsız izleyin.',
+        'url': 'https://github.com/jellyfin/jellyfin-androidtv/releases/download/v0.19.10/jellyfin-androidtv-v0.19.10-release.apk',
+        'website': 'https://jellyfin.org',
     },
     {
         'id': 'projectivy_launcher',
@@ -120,6 +145,42 @@ TV_CATALOG = [
         'website': 'https://sendfilestotv.app',
     },
     {
+        'id': 'button_mapper',
+        'name': 'Button Mapper',
+        'category': 'Dosya & Araçlar',
+        'badge': 'Kumanda',
+        'icon': '🎮',
+        'package': 'flar2.homebutton',
+        'author': 'flar2',
+        'description': 'Mi Box kumandasındaki tuşları (Netflix, Prime vb.) istediğiniz uygulamaya (örn: SmartTube veya Kodi) yeniden atayın.',
+        'url': 'https://buttonmapper.app/download/ButtonMapper.apk',
+        'website': 'https://buttonmapper.app',
+    },
+    {
+        'id': 'anexplorer_tv',
+        'name': 'AnExplorer TV File Manager',
+        'category': 'Dosya & Araçlar',
+        'badge': 'Çok Amaçlı',
+        'icon': '📁',
+        'package': 'dev.dworks.apps.anexplorer',
+        'author': 'DWorks (Açık Kaynak)',
+        'description': 'Android TV için özel tasarlanmış hafif, çift panelli dosya yöneticisi. USB bellek, ağ paylaşımı (SMB/FTP) ve depolama yönetimi desteği.',
+        'url': 'https://raw.githubusercontent.com/1hakr/data/master/apps/files/otherTelevisionFree-release.apk',
+        'website': 'https://anexplorer.io/download/tv',
+    },
+    {
+        'id': 'moonlight_tv',
+        'name': 'Moonlight Game Streaming',
+        'category': 'Oyun & Akış',
+        'badge': 'Oyun',
+        'icon': '🕹',
+        'package': 'com.limelight',
+        'author': 'Moonlight Stream (Açık Kaynak)',
+        'description': 'Bilgisayarınızdaki PC oyunlarını (Sunshine / NVIDIA Gamestream) TV’nize 4K HDR 60/120 FPS ultra düşük gecikmeyle aktarın.',
+        'url': 'https://github.com/moonlight-stream/moonlight-android/releases/download/v12.2/Moonlight-12.2.apk',
+        'website': 'https://moonlight-stream.org',
+    },
+    {
         'id': 'aptoide_tv',
         'name': 'Aptoide TV',
         'category': 'TV Mağazası',
@@ -143,18 +204,6 @@ TV_CATALOG = [
         'url': 'https://gitlab.com/AuroraOSS/AuroraStore/-/releases/permalink/latest/downloads/AuroraStore.apk',
         'website': 'https://aurorastore.com',
     },
-    {
-        'id': 'button_mapper',
-        'name': 'Button Mapper',
-        'category': 'Dosya & Araçlar',
-        'badge': 'Kumanda',
-        'icon': '🎮',
-        'package': 'flar2.homebutton',
-        'author': 'flar2',
-        'description': 'Mi Box kumandasındaki tuşları (Netflix, Prime vb.) istediğiniz uygulamaya (örn: SmartTube veya Kodi) yeniden atayın.',
-        'url': 'https://buttonmapper.app/download/ButtonMapper.apk',
-        'website': 'https://buttonmapper.app',
-    },
 ]
 
 
@@ -175,12 +224,21 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
     os.makedirs(dest_dir, exist_ok=True)
 
     url = app_item['url']
+    parsed_url = urlsplit(url)
+    if parsed_url.scheme != 'https' or not parsed_url.hostname:
+        raise ValueError('APK indirme adresi güvenli bir HTTPS bağlantısı olmalıdır.')
     req = urllib.request.Request(url, headers={
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=35) as resp:
         total_len = int(resp.headers.get('content-length', 0))
+        final_url = urlsplit(resp.geturl())
+        if final_url.scheme != 'https' or not final_url.hostname:
+            raise ValueError('APK indirmesi güvenli bağlantıda kalmadı.')
+        max_size = 512 * 1024 * 1024
+        if total_len < 0 or total_len > max_size:
+            raise ValueError('APK dosyası izin verilen boyut sınırını aşıyor.')
         downloaded = 0
         chunk_size = 64 * 1024
 
@@ -196,10 +254,15 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
                     chunk = resp.read(chunk_size)
                     if not chunk:
                         break
+                    if downloaded + len(chunk) > max_size:
+                        raise ValueError('APK dosyası izin verilen boyut sınırını aşıyor.')
                     f.write(chunk)
                     downloaded += len(chunk)
                     if progress_cb and total_len > 0:
                         progress_cb(downloaded, total_len)
+
+            if total_len and downloaded != total_len:
+                raise ValueError('APK indirmesi eksik kaldı; dosya kuruluma açılmadı.')
 
             if check_cancel:
                 check_cancel()
@@ -216,4 +279,7 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
             return target_path
         finally:
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass

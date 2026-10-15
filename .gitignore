@@ -33,7 +33,9 @@ dist-onedir-*/
 # --- Runtime & User Data ---
 logs/
 snapshots/
+apk-yedekleri/
 ekran-goruntuleri/
+ekran-videolari/
 indirilen-apklar/
 *.log
 *.csv
@@ -63,10 +65,16 @@ uad_exported_selection.txt
 *.xapk
 *.zip
 *.tar.gz
+scrcpy/
+scrcpy.exe
+.scrcpy_download.tmp.zip
 
 # --- IDE & OS Cache ---
 .vscode/
 .idea/
+scratch/
+.env
+.env.*
 *.swp
 *.swo
 *~

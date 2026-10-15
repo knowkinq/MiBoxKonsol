@@ -78,6 +78,28 @@ def line_icon(name, color='#9aa4b5', size=20):
             line(3, y, x - 2, y)
             line(x + 2, y, 21, y)
             painter.drawEllipse(QRectF(x - 2, y - 2, 4, 4))
+    elif name == 'terminal':
+        rect(3, 4, 18, 16, 2)
+        line(6, 9, 10, 12)
+        line(10, 12, 6, 15)
+        line(12, 15, 17, 15)
+    elif name in ('mute', 'volume-mute'):
+        rect(3, 8, 4, 8, 1)
+        line(7, 8, 12, 4)
+        line(12, 4, 12, 20)
+        line(12, 20, 7, 16)
+        line(15, 9, 21, 15)
+        line(21, 9, 15, 15)
+    elif name in ('volume', 'speaker'):
+        rect(3, 8, 4, 8, 1)
+        line(7, 8, 12, 4)
+        line(12, 4, 12, 20)
+        line(12, 20, 7, 16)
+        painter.drawArc(QRectF(13, 7, 6, 10), -50 * 16, 100 * 16)
+    elif name in ('tv', 'display'):
+        rect(3, 4, 18, 14)
+        line(8, 21, 16, 21)
+        line(12, 18, 12, 21)
     else:
         rect(3, 4, 18, 14)
         line(8, 21, 16, 21)

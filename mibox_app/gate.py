@@ -21,21 +21,43 @@ REFUSED_PATTERNS = [
     r'rm\s+(-[a-z]*r[a-z]*\s+)+/(system|vendor|data|sdcard)?/',
 ]
 
-READ_PREFIX = (
-    'getprop', 'dumpsys', 'pm list', 'pm path', 'pm dump', 'cmd package query',
-    'cmd package resolve', 'cmd appops get', 'cmd appops query', 'settings get',
-    'df', 'du ', 'du\t', 'ls', 'cat /proc', 'cat /sys', 'uptime', 'wm size', 'wm density',
-    'wm overscan', 'ip route', 'logcat -d', 'ps',
-)
+READ_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r'getprop(?: [A-Za-z0-9._-]+)?',
+    r'dumpsys(?: (?:cpuinfo|battery|wifi|display|power))?',
+    r'dumpsys meminfo(?: -s)?',
+    r'pm list(?: [A-Za-z0-9._=-]+)*',
+    r'pm path(?: --user [0-9]+)? [A-Za-z0-9._]+',
+    r'pm dump [A-Za-z0-9._]+',
+    r'cmd package (?:query|resolve)(?: [A-Za-z0-9._=/:-]+)*',
+    r'cmd appops (?:get|query)(?: [A-Za-z0-9._=/:-]+)*',
+    r'settings get [A-Za-z0-9._-]+ [A-Za-z0-9._-]+',
+    r'df(?: [A-Za-z0-9._=/-]+)*',
+    r'du(?: [A-Za-z0-9._=/-]+)*',
+    r'ls(?: [A-Za-z0-9._=/-]+)*',
+    r'cat (?:/proc|/sys)(?:/[A-Za-z0-9._-]+)+',
+    r'uptime',
+    r'wm (?:size|density|overscan)',
+    r'ip route(?: (?:show|list)(?: table all)?)?',
+    r'logcat -d(?: -t [0-9]+)?',
+    r'ps(?: [A-Za-z0-9._=-]+)*',
+))
 
 SETTING_PREFIX = (
-    'settings put', 'wm size ', 'wm density ', 'wm overscan ', 'cmd package set-home-activity',
+    'settings put', 'cmd package set-home-activity',
     'cmd appops set', 'am set-standby-bucket',
 )
+
+SETTING_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r'wm size [0-9]+x[0-9]+',
+    r'wm density [0-9]+',
+    r'wm overscan reset',
+    r'wm overscan -?[0-9]+,-?[0-9]+,-?[0-9]+,-?[0-9]+',
+))
 
 CHANGE_PREFIX = (
     'pm disable-user', 'pm enable', 'pm uninstall', 'pm install',
     'pm clear', 'pm trim', 'am force-stop', 'am kill-all', 'am start', 'appops set', 'dpm ',
+    'dumpsys battery set',
     'cmd package install', 'cmd clipboard', 'input ', 'keyevent ', 'screencap',
     'monkey ', 'reboot', 'svc ',
 )
@@ -53,15 +75,21 @@ def classify(cmdline):
     for pat in REFUSED_PATTERNS:
         if re.search(pat, low):
             return 'REFUSED'
-    for pre in READ_PREFIX:
-        if low.startswith(pre):
-            return 'READ'
+
+    def matches_prefix(prefix):
+        prefix = prefix.rstrip()
+        return low == prefix or low.startswith(prefix + ' ')
+
+    if any(pattern.fullmatch(low) for pattern in SETTING_PATTERNS):
+        return 'SETTING'
     for pre in SETTING_PREFIX:
-        if low.startswith(pre):
+        if matches_prefix(pre):
             return 'SETTING'
     for pre in CHANGE_PREFIX:
-        if low.startswith(pre):
+        if matches_prefix(pre):
             return 'CHANGE'
+    if any(pattern.fullmatch(low) for pattern in READ_PATTERNS):
+        return 'READ'
     # Bilinmeyen komutun etkisi öngörülemez; onay kutusu bunu güvenli yapmaz.
     return 'REFUSED'
 
