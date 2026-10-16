@@ -470,9 +470,9 @@ class AdbEngine:
     def find_adb():
         base = _base_dir()
         candidates = [
-            os.path.join(base, 'adb.exe'),
             os.path.join(base, 'platform-tools', 'adb.exe'),
             os.path.join(base, 'platform-tools', 'adb'),
+            os.path.join(base, 'adb.exe'),
         ]
         for c in candidates:
             if os.path.exists(c):

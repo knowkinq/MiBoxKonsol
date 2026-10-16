@@ -39,15 +39,45 @@ jobs:
         $version = python -c "from mibox_app import __version__; print(__version__)"
         if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag v$version does not match $env:GITHUB_REF_NAME" }
 
-    - name: Build Portable Folder Package (x64)
+    - name: Download verified Android ADB
+      shell: pwsh
       run: |
-        python tools/build_onedir.py
+        $archive = Join-Path $env:RUNNER_TEMP 'platform-tools_r37.0.1-win.zip'
+        $extract = Join-Path $env:RUNNER_TEMP 'mibox-platform-tools'
+        $url = 'https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip'
+        $expectedSha256 = '45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99'
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $expectedSha256) { throw 'Android Platform-Tools SHA-256 verification failed' }
+        Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+        $adbSource = Join-Path $extract 'platform-tools'
+        if (-not (Test-Path (Join-Path $adbSource 'adb.exe'))) { throw 'adb.exe was not found in the verified archive' }
+        if (-not (Select-String -Path (Join-Path $adbSource 'source.properties') -Pattern '^Pkg.Revision=37\.0\.1$' -Quiet)) {
+          throw 'Unexpected Android Platform-Tools version'
+        }
+
+    - name: Build Portable Folder Package (x64)
+      shell: pwsh
+      run: |
+        $adbSource = Join-Path $env:RUNNER_TEMP 'mibox-platform-tools\platform-tools'
+        python tools/build_onedir.py --adb-source $adbSource
+        if ($LASTEXITCODE -ne 0) { throw 'Portable package build failed' }
 
     - name: Verify Packaged Application
       shell: pwsh
       run: |
         $exe = '.\dist-onedir\MiBoxKonsol\MiBoxKonsol.exe'
         if (-not (Test-Path $exe)) { throw 'Packaged executable was not created' }
+        $adb = '.\dist-onedir\MiBoxKonsol\platform-tools\adb.exe'
+        $adbFiles = @(
+          $adb,
+          '.\dist-onedir\MiBoxKonsol\platform-tools\AdbWinApi.dll',
+          '.\dist-onedir\MiBoxKonsol\platform-tools\AdbWinUsbApi.dll',
+          '.\dist-onedir\MiBoxKonsol\platform-tools\NOTICE.txt'
+        )
+        foreach ($file in $adbFiles) { if (-not (Test-Path $file)) { throw "Bundled ADB file missing: $file" } }
+        $adbVersion = (& $adb --version 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $adbVersion -notmatch 'Version 37\.0\.1') { throw 'Bundled ADB version check failed' }
         $report = Join-Path $env:RUNNER_TEMP 'mibox-version.txt'
         $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version', '--report-file', "`"$report`"" -PassThru -Wait -WindowStyle Hidden
         if ($versionCheck.ExitCode -ne 0) { throw "Version check failed with exit code $($versionCheck.ExitCode)" }

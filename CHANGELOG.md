@@ -1,5 +1,10 @@
 # Değişiklik günlüğü
 
+## [1.5.0] - 2026-10-16
+
+- Taşınabilir Windows paketi, Android Platform-Tools 37.0.1 ADB bileşenlerini ve lisans bildirimini içerir; ayrıca ADB kurmak gerekmez.
+- Klasörlü kurulum ve kaldırma, uygulamayla birlikte gelen `platform-tools` dosyalarını kullanıcı dosyalarını koruyarak yönetir.
+
 ## [1.4.1] - 2026-10-16
 
 - Bağlantı kurulurken ekran bilgisi sorgusu erken uyarı göstermeden bekler; bağlantı tamamlanınca sorgu otomatik başlar.

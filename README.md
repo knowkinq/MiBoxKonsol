@@ -45,6 +45,8 @@ Arayüz görselleri örnek içerik kullanır; gerçek cihaz adresi veya kişisel
 3. Klasördeki `MiBoxKonsol.exe` dosyasını çalıştırın. EXE'yi ZIP içinden açmayın veya tek başına başka klasöre taşımayın.
 4. TV'de **Geliştirici seçenekleri** ve **USB hata ayıklama** özelliğini açın. Bilgisayar ile TV aynı yerel ağdaysa uygulamadaki cihaz bulma veya kablosuz eşleştirme araçlarını kullanın.
 
+Taşınabilir Windows paketi ADB 37.0.1'i ve gerekli Windows dosyalarını içerir; ayrıca ADB kurmanız gerekmez. ADB'nin lisans ve atıf bildirimi `platform-tools/NOTICE.txt` içindedir.
+
 İndirmenin bütünlüğünü kontrol etmek için aynı release sayfasındaki `.sha256` dosyasını kullanabilirsiniz. USB ile bağlanacaksanız TV'yi USB hata ayıklama açıkken bilgisayara bağlayıp TV ekranındaki izin isteğini onaylayın.
 
 ## Gereksinimler
@@ -83,6 +85,6 @@ MiBox Konsol, [MIT Lisansı](LICENSE) ile yayımlanır.
 
 MiBox Konsol is an open-source Windows desktop manager for Xiaomi Mi Box, Mi TV Stick, and Android TV devices. It provides an ADB remote, app and APK management, device health and display tools, network diagnostics, file transfer, and maintenance features.
 
-Download the latest portable Windows x64 ZIP from [GitHub Releases](https://github.com/maventra-dev/MiBoxKonsol/releases/latest), extract the complete archive, and run `MiBoxKonsol.exe`. Enable ADB debugging on your TV and approve the computer connection. The project is licensed under MIT.
+Download the latest portable Windows x64 ZIP from [GitHub Releases](https://github.com/maventra-dev/MiBoxKonsol/releases/latest), extract the complete archive, and run `MiBoxKonsol.exe`. The ZIP includes ADB 37.0.1 and its license notices. Enable ADB debugging on your TV and approve the computer connection. The project is licensed under MIT.
 
 </details>

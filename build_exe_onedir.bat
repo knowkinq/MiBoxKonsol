@@ -65,7 +65,8 @@ if errorlevel 1 (
 
 echo.
 echo TAMAM: dist-onedir\MiBoxKonsol\MiBoxKonsol.exe
-echo Not: adb.exe dosyasini bu klasore de kopyalayin.
+echo Not: Yerel derleme ADB'yi PATH'ten arar. Yayin paketi ADB'yi otomatik ekler.
+echo ADB'yi yerel pakete eklemek icin tools\build_onedir.py --adb-source ^<platform-tools klasoru^> kullanin.
 pause
 exit /b 0
 

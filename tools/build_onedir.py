@@ -11,14 +11,17 @@ yalnizca EXE(...) blogunu EXE+COLLECT (onedir) bloguna cevirir. Boylece
 iki spec'in zamanla ayrismasi (drift) olmaz.
 
 Kullanim:
-    python tools/build_onedir.py
+    python tools/build_onedir.py [--adb-source PLATFORM_TOOLS_DIR]
 Cikti:
     dist-onedir/MiBoxKonsol/MiBoxKonsol.exe
+Temizlik:
+    python tools/build_onedir.py --clean-package
 """
 import os
 import re
 import glob
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -27,6 +30,12 @@ KAYNAK_SPEC = os.path.join(ROOT, 'MiBoxKonsol.spec')
 URETILEN_SPEC = os.path.join(ROOT, 'build', 'MiBoxKonsol-onedir.spec')
 DIST = os.path.join(ROOT, 'dist-onedir')
 WORK = os.path.join(ROOT, 'build', 'onedir-work')
+
+ADB_REQUIRED_FILES = (
+    'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll', 'NOTICE.txt',
+)
+ADB_OPTIONAL_FILES = ('source.properties',)
+ADB_ALLOWED_FILES = frozenset(ADB_REQUIRED_FILES + ADB_OPTIONAL_FILES)
 
 EXE_BLOGU = re.compile(r'\nexe = EXE\(.*?\n\)\n', re.S)
 
@@ -73,6 +82,23 @@ def _temizle(paket_dir):
     paket_dir = os.path.realpath(paket_dir)
     if os.path.dirname(paket_dir) != dist_root or os.path.basename(paket_dir) != 'MiBoxKonsol':
         raise ValueError('Paket temizleme yolu dist-onedir/MiBoxKonsol dışında olamaz.')
+
+    adb_dir = os.path.join(paket_dir, 'platform-tools')
+    if os.path.lexists(adb_dir):
+        if not os.path.isdir(adb_dir) or _baglanti_mi(adb_dir):
+            raise OSError('Paket içindeki platform-tools güvenli bir klasör değil.')
+        ogeler = os.listdir(adb_dir)
+        bilinmeyen = sorted(set(ogeler) - ADB_ALLOWED_FILES)
+        if bilinmeyen:
+            raise OSError('platform-tools içinde izin verilmeyen dosyalar var: ' +
+                           ', '.join(bilinmeyen))
+        for ad in ogeler:
+            yol = os.path.join(adb_dir, ad)
+            if not os.path.isfile(yol) or _baglanti_mi(yol):
+                raise OSError('platform-tools içinde dosya olmayan veya bağlantı içeren öğe var: ' + ad)
+        eksikler = sorted(set(ADB_REQUIRED_FILES) - set(ogeler))
+        if eksikler:
+            raise OSError('platform-tools eksik dosyalar içeriyor: ' + ', '.join(eksikler))
 
     gereksiz = ('mibox-ayarlar.json', 'MiBox-ayarlar.json',
                 'mibox-bilinen-uygulamalar.json', 'MiBox-bilinen-uygulamalar.json',
@@ -130,6 +156,63 @@ def _temizle(paket_dir):
         print('temizlenen dosyalar:', ', '.join(silinen))
 
 
+def _baglanti_mi(path):
+    """Symlink/junction/reparse point dosyalarını paket girdisi olarak reddet."""
+    if os.path.islink(path):
+        return True
+    try:
+        attrs = getattr(os.stat(path, follow_symlinks=False), 'st_file_attributes', 0)
+    except OSError:
+        return True
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+    return bool(attrs & reparse)
+
+
+def _adb_kopyala(kaynak_dir, paket_dir):
+    """Yalnız ADB çalışma dosyalarını doğrulanmış taşınabilir pakete ekle."""
+    kaynak_dir = os.path.abspath(os.fspath(kaynak_dir))
+    if not os.path.isdir(kaynak_dir) or _baglanti_mi(kaynak_dir):
+        raise OSError('ADB kaynak klasörü bulunamadı veya güvenli değil.')
+
+    for ad in ADB_REQUIRED_FILES:
+        yol = os.path.join(kaynak_dir, ad)
+        if not os.path.isfile(yol) or _baglanti_mi(yol):
+            raise OSError('ADB kaynak klasöründe gerekli dosya yok veya güvenli değil: ' + ad)
+
+    hedef_dir = os.path.join(paket_dir, 'platform-tools')
+    if os.path.lexists(hedef_dir):
+        if not os.path.isdir(hedef_dir) or _baglanti_mi(hedef_dir):
+            raise OSError('Paket hedefindeki platform-tools güvenli bir klasör değil.')
+        bilinmeyen = sorted(set(os.listdir(hedef_dir)) - ADB_ALLOWED_FILES)
+        if bilinmeyen:
+            raise OSError('Paket hedefindeki platform-tools beklenmeyen dosyalar içeriyor: ' +
+                           ', '.join(bilinmeyen))
+        for ad in os.listdir(hedef_dir):
+            yol = os.path.join(hedef_dir, ad)
+            if not os.path.isfile(yol) or _baglanti_mi(yol):
+                raise OSError('Paket hedefindeki platform-tools güvenli değil: ' + ad)
+    else:
+        os.makedirs(hedef_dir)
+
+    for ad in ADB_REQUIRED_FILES + ADB_OPTIONAL_FILES:
+        kaynak = os.path.join(kaynak_dir, ad)
+        if os.path.isfile(kaynak) and not _baglanti_mi(kaynak):
+            shutil.copy2(kaynak, os.path.join(hedef_dir, ad))
+
+    adb_exe = os.path.join(hedef_dir, 'adb.exe')
+    try:
+        result = subprocess.run(
+            [adb_exe, '--version'], cwd=hedef_dir, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError('Paketlenen ADB başlatılamadı: ' + str(exc)) from exc
+    if result.returncode != 0 or 'Android Debug Bridge version' not in result.stdout:
+        raise OSError('Paketlenen ADB sürüm kontrolünden geçemedi.')
+    print('ADB eklendi:', result.stdout.splitlines()[0])
+
+
 def main():
     if sys.argv[1:] == ['--clean-package']:
         paket_dir = os.path.join(DIST, 'MiBoxKonsol')
@@ -138,9 +221,14 @@ def main():
             return 1
         _temizle(paket_dir)
         return 0
-    if len(sys.argv) > 1:
-        print('Kullanim: python tools/build_onedir.py [--clean-package]')
-        return 2
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='MiBox Konsol klasörlü Windows paketini oluştur.')
+    parser.add_argument(
+        '--adb-source', metavar='DIR',
+        help='Resmî Windows ADB dosyalarının bulunduğu platform-tools klasörü',
+    )
+    args = parser.parse_args()
     if not os.path.exists(KAYNAK_SPEC):
         print('HATA: spec bulunamadi: {}'.format(KAYNAK_SPEC))
         return 1
@@ -166,7 +254,15 @@ def main():
     print('derleniyor    :', ' '.join(cmd))
     kod = subprocess.call(cmd, cwd=ROOT)
     if kod == 0:
-        _temizle(os.path.join(DIST, 'MiBoxKonsol'))
+        paket_dir = os.path.join(DIST, 'MiBoxKonsol')
+        try:
+            _temizle(paket_dir)
+            if args.adb_source:
+                _adb_kopyala(args.adb_source, paket_dir)
+                _temizle(paket_dir)
+        except (OSError, ValueError) as exc:
+            print('HATA:', exc)
+            return 1
     return kod
 
 

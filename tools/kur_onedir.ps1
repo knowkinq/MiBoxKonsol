@@ -40,6 +40,41 @@ function Test-PathWithin([string]$path, [string]$base) {
     return $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+$assertAdbFunction = @'
+function Assert-MiBoxBundledAdbStopped([string]$AppRoot) {
+    $adbPaths = @(
+        (Join-Path $AppRoot 'platform-tools\adb.exe'),
+        (Join-Path $AppRoot 'adb.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd([char]'\', [char]'/') }
+    if ($adbPaths.Count -eq 0) { return }
+
+    try {
+        $processes = @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "Name = 'adb.exe'" -ErrorAction Stop)
+    } catch {
+        throw "ADB surecleri denetlenemedi; dosyalara dokunulmadi: $($_.Exception.Message)"
+    }
+    if (@($processes | Where-Object {
+        [string]::IsNullOrWhiteSpace($_.ExecutablePath)
+    }).Count -gt 0) {
+        throw 'Bir ADB surecinin yolu okunamadi. ADB kullanan uygulamalari kapatip yeniden deneyin; hicbir dosya degistirilmedi.'
+    }
+
+    foreach ($adbPath in $adbPaths) {
+        $active = @($processes | Where-Object {
+            try {
+                $processPath = [IO.Path]::GetFullPath($_.ExecutablePath).TrimEnd([char]'\', [char]'/')
+                [string]::Equals($processPath, $adbPath, [StringComparison]::OrdinalIgnoreCase)
+            } catch { $false }
+        })
+        if ($active.Count -eq 0) { continue }
+        throw 'MiBox kurulumundaki ADB.exe hala calisiyor. MiBox ve bu ADB dosyasini kullanan araclari kapatin; gerekirse ayni klasordeki adb.exe kill-server komutunu calistirip yeniden deneyin. Hicbir dosya degistirilmedi.'
+    }
+}
+'@
+. ([scriptblock]::Create($assertAdbFunction))
+
 try {
     $Kaynak = Normalize-Path $Kaynak
     $Hedef = Normalize-Path $Hedef
@@ -171,7 +206,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $Kaynak 'MiBoxKonsol.exe') -PathType
 # oge varsa kopyalamaya baslamadan dur; kaynaktaki kullanici dosyalari hedefe
 # tasinmasin. Bilinen calisma zamani verileri eski yerel derlemelerde gorunebilir
 # ve kurulum paketinin parcasi olmadiklari icin atlanir.
-$izinliPaketOgeleri = @('MiBoxKonsol.exe', '_internal', 'adb.exe')
+$izinliPaketOgeleri = @('MiBoxKonsol.exe', '_internal', 'adb.exe', 'platform-tools')
 $bilinmeyenOgeler = @(
     Get-ChildItem -LiteralPath $Kaynak -Force | Where-Object {
         $ad = $_.Name
@@ -180,24 +215,53 @@ $bilinmeyenOgeler = @(
 
         if ($izinliPaketOgeleri -notcontains $ad) { return $true }
         if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
-        if ($ad -eq '_internal') { return -not $_.PSIsContainer }
+        if ($ad -in @('_internal', 'platform-tools')) { return -not $_.PSIsContainer }
         return $_.PSIsContainer
     }
 )
 if ($bilinmeyenOgeler.Count -gt 0) {
     $adlar = ($bilinmeyenOgeler | ForEach-Object { $_.Name }) -join ', '
     Yaz "[HATA] Paket kaynaginda beklenmeyen oge(ler) var; kopyalama durduruldu: $adlar"
-    Yaz "       Yalniz MiBoxKonsol.exe, _internal ve istege bagli adb.exe beklenir."
+    Yaz "       Yalniz MiBoxKonsol.exe, _internal, istege bagli adb.exe ve platform-tools beklenir."
     exit 1
+}
+
+# Istege bagli platform-tools klasorunde yalniz ADB calisma zamani dosyalari
+# bulunabilir. source.properties Android paketlerinde opsiyoneldir.
+$platformToolsKaynak = Join-Path $Kaynak 'platform-tools'
+$platformToolsDosyalari = @(
+    'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll',
+    'NOTICE.txt', 'source.properties')
+$platformToolsZorunluDosyalar = @(
+    'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll',
+    'NOTICE.txt')
+if (Test-Path -LiteralPath $platformToolsKaynak) {
+    $platformToolsOgeleri = @(Get-ChildItem -LiteralPath $platformToolsKaynak -Force)
+    $platformToolsBilinmeyen = @($platformToolsOgeleri | Where-Object {
+        $_.PSIsContainer -or ($platformToolsDosyalari -notcontains $_.Name) -or
+        (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    })
+    $platformToolsAdlari = @($platformToolsOgeleri | ForEach-Object { $_.Name })
+    $platformToolsEksik = @($platformToolsZorunluDosyalar | Where-Object {
+        $platformToolsAdlari -notcontains $_
+    })
+    if ($platformToolsBilinmeyen.Count -gt 0 -or $platformToolsEksik.Count -gt 0) {
+        $adlar = @($platformToolsBilinmeyen | ForEach-Object { $_.Name })
+        if ($platformToolsEksik.Count -gt 0) { $adlar += $platformToolsEksik }
+        Yaz "[HATA] platform-tools beklenmeyen/eksik oge(ler) iceriyor: $($adlar -join ', ')"
+        exit 1
+    }
 }
 
 foreach ($kopyaYolu in @(
     (Join-Path $Kaynak 'MiBoxKonsol.exe'),
     (Join-Path $Kaynak '_internal'),
     (Join-Path $Kaynak 'adb.exe'),
+    (Join-Path $Kaynak 'platform-tools'),
     (Join-Path $Hedef 'MiBoxKonsol.exe'),
     (Join-Path $Hedef '_internal'),
-    (Join-Path $Hedef 'adb.exe')
+    (Join-Path $Hedef 'adb.exe'),
+    (Join-Path $Hedef 'platform-tools')
 )) {
     if (Test-Path -LiteralPath $kopyaYolu) {
         $entry = Get-Item -LiteralPath $kopyaYolu -Force
@@ -207,15 +271,22 @@ foreach ($kopyaYolu in @(
         }
     }
 }
+if ((Test-Path -LiteralPath $platformToolsKaynak -PathType Container) -and
+    (Test-Path -LiteralPath (Join-Path $Hedef 'platform-tools') -PathType Leaf)) {
+    Yaz '[HATA] Kurulum hedefinde platform-tools dosya olarak bulunuyor.'
+    exit 1
+}
 foreach ($kokYolu in @($Kaynak, $Hedef)) {
-    $dahili = Join-Path $kokYolu '_internal'
-    if (-not (Test-Path -LiteralPath $dahili -PathType Container)) { continue }
-    $bagliOge = Get-ChildItem -LiteralPath $dahili -Force -Recurse |
-        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
-        Select-Object -First 1
-    if ($bagliOge) {
-        Yaz "[HATA] _internal icinde junction/symlink bulundu: $($bagliOge.Name)"
-        exit 1
+    foreach ($klasorAdi in @('_internal', 'platform-tools')) {
+        $paketKlasoru = Join-Path $kokYolu $klasorAdi
+        if (-not (Test-Path -LiteralPath $paketKlasoru -PathType Container)) { continue }
+        $bagliOge = Get-ChildItem -LiteralPath $paketKlasoru -Force -Recurse |
+            Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+            Select-Object -First 1
+        if ($bagliOge) {
+            Yaz "[HATA] $klasorAdi icinde junction/symlink bulundu: $($bagliOge.Name)"
+            exit 1
+        }
     }
 }
 
@@ -271,6 +342,14 @@ if ($uygulamaCalisiyor) {
     exit 1
 }
 
+# ADB sureci kilitli dosyalara neden olabilir; hicbir dosyaya dokunmadan once denetle.
+try {
+    Assert-MiBoxBundledAdbStopped -AppRoot $Hedef
+} catch {
+    Yaz "[HATA] $($_.Exception.Message)"
+    exit 1
+}
+
 if (-not (Test-Path -LiteralPath $Hedef)) {
     [IO.Directory]::CreateDirectory($Hedef) | Out-Null
     Yaz "Hedef klasor olusturuldu."
@@ -294,6 +373,12 @@ Get-ChildItem -LiteralPath $Kaynak -Force | ForEach-Object {
         }
         [IO.Directory]::CreateDirectory($hedefYol) | Out-Null
         Copy-DirectoryContents $_.FullName $hedefYol
+    } elseif ($ad -eq 'platform-tools') {
+        if (Test-Path -LiteralPath $hedefYol -PathType Leaf) {
+            throw 'Paket hedefinde platform-tools dosya olarak bulunuyor.'
+        }
+        [IO.Directory]::CreateDirectory($hedefYol) | Out-Null
+        Copy-DirectoryContents $_.FullName $hedefYol
     } else {
         if (Test-Path -LiteralPath $hedefYol -PathType Container) {
             throw "Dosya/klasor turu cakismasi: $ad"
@@ -306,9 +391,12 @@ Yaz "Kopyalanan oge sayisi: $kopyalanan (kullanici verisi korundu)"
 
 # 2) adb.exe bulunursa paket yanina kopyala (motor PATH'ten de bulabilir)
 $adb = $null
+$paketPlatformAdb = Join-Path $Kaynak 'platform-tools\adb.exe'
 $paketAdb = Join-Path $Kaynak 'adb.exe'
 $yerelAdb = Join-Path $kok 'adb.exe'
-if (Test-Path -LiteralPath $paketAdb -PathType Leaf) {
+if (Test-Path -LiteralPath $paketPlatformAdb -PathType Leaf) {
+    Yaz 'Paket ADB iceriyor; PATH uzerindeki adb.exe kopyalanmadi.'
+} elseif (Test-Path -LiteralPath $paketAdb -PathType Leaf) {
     $adb = $paketAdb
 } elseif (Test-Path -LiteralPath $yerelAdb -PathType Leaf) {
     $adb = $yerelAdb
@@ -433,6 +521,7 @@ param([switch]$RemoveData)
 $ErrorActionPreference = 'Stop'
 if (-not $RemoveData) { exit 2 }
 try {
+__ASSERT_ADB_FUNCTION__
 $target = [IO.Path]::GetFullPath([Text.Encoding]::Unicode.GetString(
     [Convert]::FromBase64String('__TARGET__')))
 $root = [IO.Path]::GetPathRoot($target)
@@ -515,6 +604,9 @@ if ($running) {
     throw 'MiBox Konsol acik. Uygulamayi kapatip kaldirma betigini yeniden calistirin.'
 }
 
+# ADB sureci dosyalari kilitleyebilir; kullanici verilerini silmeden once denetle.
+Assert-MiBoxBundledAdbStopped -AppRoot $target
+
 # Yalniz uygulama dosyalarini ve bilinen MiBox verilerini kaldir; hedefteki
 # diger kullanici dosyalari korunur.
 if (Test-Path -LiteralPath $internalPath -PathType Container) {
@@ -527,6 +619,30 @@ if (Test-Path -LiteralPath $internalPath -PathType Container) {
         Select-Object -First 1
     if ($reparse) {
         throw 'Uygulama klasorunde junction/symlink var; silme iptal edildi.'
+    }
+}
+$platformToolsPath = Join-Path $target 'platform-tools'
+$platformToolsFiles = @(
+    'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll',
+    'NOTICE.txt', 'source.properties')
+$platformToolsOwnedPaths = @()
+$platformToolsIsDirectory = $false
+if (Test-Path -LiteralPath $platformToolsPath) {
+    $platformToolsEntry = Get-Item -LiteralPath $platformToolsPath -Force
+    if (($platformToolsEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'platform-tools klasoru bir junction/symlink; silme iptal edildi.'
+    }
+    if ($platformToolsEntry.PSIsContainer) {
+        $platformToolsIsDirectory = $true
+        foreach ($name in $platformToolsFiles) {
+            $path = Join-Path $platformToolsPath $name
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $entry = Get-Item -LiteralPath $path -Force
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "platform-tools dosyasi bir junction/symlink: $name"
+            }
+            if (-not $entry.PSIsContainer) { $platformToolsOwnedPaths += $path }
+        }
     }
 }
 $files = @(
@@ -543,6 +659,13 @@ foreach ($name in $files) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Force -ErrorAction Stop
     }
+}
+foreach ($path in $platformToolsOwnedPaths) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+}
+if ($platformToolsIsDirectory -and
+    @(Get-ChildItem -LiteralPath $platformToolsPath -Force).Count -eq 0) {
+    Remove-Item -LiteralPath $platformToolsPath -Force -ErrorAction Stop
 }
 $directories = @(
     'logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
@@ -597,7 +720,7 @@ Write-Host 'MiBox uygulama dosyalari ve bilinen verileri kaldirildi.'
     Read-Host 'Bu pencereyi kapatmak icin Enter tusuna basin'
     exit 1
 }
-'@.Replace('__TARGET__', $hedefBase64)
+'@.Replace('__TARGET__', $hedefBase64).Replace('__ASSERT_ADB_FUNCTION__', $assertAdbFunction)
 $kaldirPs1 = Join-Path $Hedef 'MiBoxKonsol-Kaldir.ps1'
 $silmeScript | Set-Content -LiteralPath $kaldirPs1 -Encoding UTF8
 $kaldirIcerik = @"
