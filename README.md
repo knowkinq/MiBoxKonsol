@@ -21,28 +21,11 @@ Mi Box, Mi TV Stick ve Android TV için ADB tabanlı masaüstü yönetim merkezi
 
 Arayüz görselleri örnek içerik kullanır; gerçek cihaz adresi veya kişisel dosya yolu içermez.
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/screenshots/remote.jpg"><img src="docs/screenshots/remote.jpg" alt="MiBox Konsol uzaktan kumanda ve ekran kontrolü" width="100%"></a><br>
-      <strong>Kumanda ve canlı ekran kontrolü</strong>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/screenshots/health.jpg"><img src="docs/screenshots/health.jpg" alt="Android TV sağlık ve cihaz bilgileri" width="100%"></a><br>
-      <strong>Cihaz sağlığı ve bakım</strong>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <a href="docs/screenshots/apps.jpg"><img src="docs/screenshots/apps.jpg" alt="Android TV uygulama ve paket yöneticisi" width="100%"></a><br>
-      <strong>Uygulama ve paket yönetimi</strong>
-    </td>
-    <td width="50%" align="center">
-      <a href="docs/screenshots/install.jpg"><img src="docs/screenshots/install.jpg" alt="Android TV uygulama kataloğu ve APK kurulumu" width="100%"></a><br>
-      <strong>TV uygulama kataloğu ve APK kurulumu</strong>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/screenshots/showcase.gif" alt="MiBox Konsol ekranları: kumanda, sağlık, uygulamalar ve kurulum" width="100%">
+</p>
+
+<p align="center"><sub>Ekranlar sırayla gösterilir.</sub></p>
 
 ## Neler yapabilirsiniz?
 
