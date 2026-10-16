@@ -4,7 +4,7 @@ import datetime
 import html
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -37,8 +37,24 @@ class TerminalTab(QWidget):
         self.window = window
         self._history = []
         self._history_idx = -1
+        self._history_draft = ''
         self._busy = False
+        self._connection_generation = 0
+        connection_changed = getattr(self.core, 'connection_changed', None)
+        if connection_changed is not None:
+            connection_changed.connect(self._on_connection_changed)
         self._build()
+
+    def _on_connection_changed(self, *_):
+        self._connection_generation += 1
+        if self._busy:
+            self.lbl_status.setText('Cihaz bağlantısı değişti; eski komut sonucu atlanacak.')
+
+    def _target_is_current(self, target, generation):
+        return (generation == self._connection_generation
+                and getattr(self.core, 'connected', False)
+                and getattr(self.core, 'target', None) == target
+                and not getattr(self.window, '_connection_busy', False))
 
     def _build(self):
         root = kit.page(self)
@@ -51,7 +67,7 @@ class TerminalTab(QWidget):
         presets_layout.setContentsMargins(10, 8, 10, 8)
         presets_layout.setSpacing(6)
 
-        row1 = QHBoxLayout()
+        row1 = kit.action_bar()
         row1.setSpacing(6)
         presets = [
             ('📊 CPU / Süreçler', 'dumpsys cpuinfo'),
@@ -62,13 +78,14 @@ class TerminalTab(QWidget):
         ]
         for title, cmd in presets:
             btn = QPushButton(title)
-            btn.setFixedHeight(28)
+            btn.setMinimumHeight(32)
+            btn.setToolTip(cmd)
             btn.setProperty('role', 'secondary')
             btn.clicked.connect(lambda _=False, c=cmd: self._execute_preset(c))
             row1.addWidget(btn)
         presets_layout.addLayout(row1)
 
-        row2 = QHBoxLayout()
+        row2 = kit.action_bar()
         row2.setSpacing(6)
         presets2 = [
             ('🌐 Ağ Bağlantıları', 'ip route'),
@@ -79,7 +96,8 @@ class TerminalTab(QWidget):
         ]
         for title, cmd in presets2:
             btn = QPushButton(title)
-            btn.setFixedHeight(28)
+            btn.setMinimumHeight(32)
+            btn.setToolTip(cmd)
             btn.setProperty('role', 'secondary')
             btn.clicked.connect(lambda _=False, c=cmd: self._execute_preset(c))
             row2.addWidget(btn)
@@ -102,6 +120,9 @@ class TerminalTab(QWidget):
         self.lbl_prompt.setStyleSheet('font-weight: bold; color: #6366f1;')
 
         self.txt_cmd = QLineEdit()
+        self.txt_cmd.setAccessibleName('TV shell komutu')
+        self.txt_cmd.setToolTip('Enter: çalıştır · Yukarı/Aşağı: bu oturumun komut geçmişi')
+        self.txt_cmd.installEventFilter(self)
         self.txt_cmd.setPlaceholderText('Bir ADB shell komutu yazın (örn: ls /sdcard, getprop, pm list packages)...')
         self.txt_cmd.returnPressed.connect(self._run_cmd)
 
@@ -126,10 +147,13 @@ class TerminalTab(QWidget):
         cmd_row.addWidget(self.lbl_prompt)
         cmd_row.addWidget(self.txt_cmd, 1)
         cmd_row.addWidget(self.btn_run)
-        cmd_row.addWidget(self.btn_clear)
-        cmd_row.addWidget(self.btn_copy)
-        cmd_row.addWidget(self.btn_save)
         root.addLayout(cmd_row)
+
+        output_actions = kit.action_bar()
+        output_actions.addWidget(self.btn_clear)
+        output_actions.addWidget(self.btn_copy)
+        output_actions.addWidget(self.btn_save)
+        root.addLayout(output_actions)
 
         self.lbl_status = kit.status_label('Hazır · Okuma komutları doğrudan, değişiklik komutları onayla çalışır.')
         root.addWidget(self.lbl_status)
@@ -174,11 +198,14 @@ class TerminalTab(QWidget):
                 QMessageBox.critical(self, 'Hata', f'Dosya kaydedilirken hata oluştu:\n{e}')
 
     def _execute_preset(self, cmd):
+        if self._busy:
+            self.lbl_status.setText('Önce çalışan komutun tamamlanmasını bekleyin.')
+            return
         self.txt_cmd.setText(cmd)
         self._run_cmd()
 
     @staticmethod
-    def _format_terminal_output(raw_text):
+    def _format_terminal_output(raw_text, dark=True):
         """ANSI escape kodlarını temizler ve okunabilir renkli HTML formatına dönüştürür."""
         if not raw_text:
             return ''
@@ -192,6 +219,7 @@ class TerminalTab(QWidget):
         parts = re.split(r'(\x1b\[[0-9;]*m)', text)
         out = ['<pre style="font-family: inherit; margin: 0; white-space: pre; line-height: 1.45;">']
         open_spans = 0
+        text_color = '#f1f5f9' if dark else '#1e293b'
 
         for part in parts:
             if not part:
@@ -204,13 +232,14 @@ class TerminalTab(QWidget):
                         open_spans -= 1
                 for code in codes:
                     if code in _ANSI_COLORS:
-                        out.append(f'<span style="color: {_ANSI_COLORS[code]};">')
+                        color = _ANSI_COLORS[code] if dark else text_color
+                        out.append(f'<span style="color: {color};">')
                         open_spans += 1
                     elif code == '1':
-                        out.append('<span style="font-weight: bold; color: #ffffff;">')
+                        out.append(f'<span style="font-weight: bold; color: {text_color};">')
                         open_spans += 1
                     elif code == '7':
-                        out.append('<span style="background-color: rgba(99, 102, 241, 0.25); color: #c7d2fe; font-weight: bold; border-radius: 3px; padding: 1px 3px;">')
+                        out.append(f'<span style="font-weight: bold; color: {text_color};">')
                         open_spans += 1
             else:
                 clean_part = part.replace('\x1b', '')
@@ -226,12 +255,17 @@ class TerminalTab(QWidget):
     def _run_cmd(self):
         if self._busy:
             return
+        if getattr(self.window, '_connection_busy', False):
+            self.lbl_status.setText('Bağlantı işlemi sürüyor; tamamlanınca yeniden deneyin.')
+            return
         cmd = self.txt_cmd.text().strip()
         if not cmd:
             return
         if not self.core.connected or not self.core.target:
             self.lbl_status.setText('Önce bir TV cihazına bağlanın.')
             return
+        target = self.core.target
+        generation = self._connection_generation
 
         command_class = gate.classify(cmd)
         if command_class == 'REFUSED':
@@ -253,28 +287,45 @@ class TerminalTab(QWidget):
                 self.lbl_status.setText('Komut iptal edildi.')
                 return
 
-        self._history.append(cmd)
+        if not self._target_is_current(target, generation):
+            self.lbl_status.setText('Hedef veya bağlantı değişti; komut çalıştırılmadı.')
+            return
+
+        if not self._history or self._history[-1] != cmd:
+            self._history.append(cmd)
+        del self._history[:-100]
         self._history_idx = len(self._history)
+        self._history_draft = ''
         self.txt_cmd.clear()
 
         ts = datetime.datetime.now().strftime('%H:%M:%S')
+        text_color = kit.colors(self)['text']
         cmd_html = (
             f'<div style="margin-top: 8px; margin-bottom: 2px;">'
             f'<span style="color: #818cf8; font-weight: bold;">[{ts}] $</span> '
-            f'<span style="color: #f1f5f9; font-weight: 600;">{html.escape(cmd)}</span>'
+            f'<span style="color: {text_color}; font-weight: 600;">{html.escape(cmd)}</span>'
             f'</div>'
         )
         self.txt_output.appendHtml(cmd_html)
 
-        target = self.core.target
         engine = self.core.engine
         self._busy = True
         self.btn_run.setEnabled(False)
         self.lbl_status.setText('Komut çalıştırılıyor...')
+        worker_ref = {}
 
         def do():
+            worker = worker_ref['worker']
+            worker.check_cancel()
             # ADB shell komutunu çalıştır
-            res = engine.shell(target, cmd, timeout=30, preserve_output_whitespace=True)
+            try:
+                res = engine.shell(
+                    target, cmd, timeout=30, preserve_output_whitespace=True,
+                    hide_from_trace=True,
+                    cancel_check=worker.isInterruptionRequested)
+            except Exception:
+                worker.check_cancel()
+                raise
             out = res.output or ''
             err = res.error or ''
             code = getattr(res, 'exit_code', getattr(res, 'returncode', 0))
@@ -283,9 +334,12 @@ class TerminalTab(QWidget):
         def done(result):
             self._busy = False
             self.btn_run.setEnabled(True)
+            if not self._target_is_current(target, generation):
+                self.lbl_status.setText('Hedef değişti; eski cihazın komut çıktısı gösterilmedi.')
+                return
             out, err, code = result
             if out:
-                formatted = self._format_terminal_output(out)
+                formatted = self._format_terminal_output(out, dark=kit.dark_from(self))
                 self.txt_output.appendHtml(formatted)
             if err:
                 err_html = f'<div style="color: #ef4444; margin-top: 4px;">[HATA] {html.escape(err.strip())}</div>'
@@ -301,30 +355,38 @@ class TerminalTab(QWidget):
         def failed(err):
             self._busy = False
             self.btn_run.setEnabled(True)
+            if not self._target_is_current(target, generation):
+                self.lbl_status.setText('Hedef değişti; eski cihazın komut hatası gösterilmedi.')
+                return
+            if str(err).strip().casefold() in (
+                    'kullanıcı durdurdu', 'kullanici durdurdu'):
+                self.lbl_status.setText('Komut durduruldu.')
+                return
             fail_html = f'<div style="color: #ef4444; font-weight: bold; margin-top: 4px;">[BAŞARISIZ] {html.escape(str(err))}</div>'
             self.txt_output.appendHtml(fail_html)
             self.lbl_status.setText('Hata: ' + str(err))
 
         w = Worker(do)
+        worker_ref['worker'] = w
         w.finished_ok.connect(done)
         w.failed.connect(failed)
         self.window._run(w)
 
-    def keyPressEvent(self, event):
-        # Yukarı / Aşağı ok ile komut geçmişinde gezinme
-        if event.key() == Qt.Key_Up:
-            if self._history and self._history_idx > 0:
-                self._history_idx -= 1
-                self.txt_cmd.setText(self._history[self._history_idx])
-            event.accept()
-            return
-        elif event.key() == Qt.Key_Down:
-            if self._history and self._history_idx < len(self._history) - 1:
-                self._history_idx += 1
-                self.txt_cmd.setText(self._history[self._history_idx])
-            elif self._history_idx >= len(self._history) - 1:
-                self._history_idx = len(self._history)
-                self.txt_cmd.clear()
-            event.accept()
-            return
-        super().keyPressEvent(event)
+    def eventFilter(self, watched, event):
+        if (watched is self.txt_cmd and event.type() == QEvent.KeyPress
+                and event.modifiers() == Qt.NoModifier
+                and event.key() in (Qt.Key_Up, Qt.Key_Down)):
+            if not self._history:
+                return False
+            if event.key() == Qt.Key_Up:
+                if self._history_idx == len(self._history):
+                    self._history_draft = self.txt_cmd.text()
+                self._history_idx = max(0, self._history_idx - 1)
+            else:
+                self._history_idx = min(len(self._history), self._history_idx + 1)
+            self.txt_cmd.setText(
+                self._history[self._history_idx] if self._history_idx < len(self._history)
+                else self._history_draft)
+            self.txt_cmd.setCursorPosition(len(self.txt_cmd.text()))
+            return True
+        return super().eventFilter(watched, event)

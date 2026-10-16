@@ -17,7 +17,14 @@ def line_icon(name, color='#9aa4b5', size=20):
     def rect(x, y, w, h, radius=2):
         painter.drawRoundedRect(QRectF(x, y, w, h), radius, radius)
 
-    if name == 'apps':
+    if name == 'home':
+        line(3, 11, 12, 3)
+        line(12, 3, 21, 11)
+        line(5, 10, 5, 21)
+        line(5, 21, 19, 21)
+        line(19, 21, 19, 10)
+        rect(9, 14, 6, 7, 1)
+    elif name == 'apps':
         for x in (4, 14):
             for y in (4, 14):
                 rect(x, y, 6, 6, 1.5)

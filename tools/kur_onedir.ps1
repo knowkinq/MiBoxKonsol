@@ -120,9 +120,45 @@ while ($probe) {
 $veriDosyalari = @('mibox-ayarlar.json', 'MiBox-ayarlar.json',
                    'mibox-islem-gecmisi.jsonl', 'debloat-kullanici.json',
                    'mibox-bilinen-uygulamalar.json', 'mibox-selftest-ok.txt',
-                   'mibox-logcat.txt', 'surum.txt', 'scrcpy.exe')
+                   'mibox-logcat.txt', 'surum.txt', 'ortam-bilgisi.txt',
+                   'mibox-version.txt', 'scrcpy.exe', '.mibox-kurulum-devam')
 $veriKlasorleri = @('logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
-                    'indirilen-apklar', 'apk-yedekleri', 'scrcpy')
+                    'indirilen-apklar', 'apk-yedekleri', 'scrcpy', '_arsiv')
+$veriDesenleri = @(
+    'mibox-ayarlar.json.*', 'MiBox-ayarlar.json.*',
+    'mibox-ayar-yedek*.json*', '.mibox-ayar-yedek*.tmp',
+    '.mibox-debloat-favorites-*.tmp',
+    'mibox-snapshot-*.json', '.mibox-snapshot-*.tmp',
+    '.mibox-download-*.part', 'mibox-*.csv', '*.apk', '*.apks', '*.xapk',
+    'scrcpy-*', '.mibox-scrcpy-*', '.scrcpy-preferred*',
+    '.scrcpy_download.tmp.zip')
+
+function Test-MiBoxRuntimeItem($item) {
+    if (($veriDosyalari -contains $item.Name) -or
+        ($veriKlasorleri -contains $item.Name)) { return $true }
+    foreach ($pattern in $veriDesenleri) {
+        if ($item.Name -like $pattern) { return $true }
+    }
+    return $false
+}
+
+function Copy-DirectoryContents([string]$source, [string]$destination) {
+    foreach ($entry in Get-ChildItem -LiteralPath $source -Force) {
+        $targetPath = Join-Path $destination $entry.Name
+        if ($entry.PSIsContainer) {
+            if (Test-Path -LiteralPath $targetPath -PathType Leaf) {
+                throw "Dosya/klasor turu cakismasi: $($entry.Name)"
+            }
+            [IO.Directory]::CreateDirectory($targetPath) | Out-Null
+            Copy-DirectoryContents $entry.FullName $targetPath
+        } else {
+            if (Test-Path -LiteralPath $targetPath -PathType Container) {
+                throw "Dosya/klasor turu cakismasi: $($entry.Name)"
+            }
+            [IO.File]::Copy($entry.FullName, $targetPath, $true)
+        }
+    }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $Kaynak 'MiBoxKonsol.exe') -PathType Leaf) -or
     -not (Test-Path -LiteralPath (Join-Path $Kaynak '_internal') -PathType Container)) {
@@ -139,10 +175,7 @@ $izinliPaketOgeleri = @('MiBoxKonsol.exe', '_internal', 'adb.exe')
 $bilinmeyenOgeler = @(
     Get-ChildItem -LiteralPath $Kaynak -Force | Where-Object {
         $ad = $_.Name
-        $kullaniciVerisi = ($veriDosyalari -contains $ad) -or
-            ($veriKlasorleri -contains $ad) -or
-            ($ad -like 'scrcpy-*') -or
-            ($_.Extension -in @('.apk', '.apks', '.xapk'))
+        $kullaniciVerisi = Test-MiBoxRuntimeItem $_
         if ($kullaniciVerisi) { return $false }
 
         if ($izinliPaketOgeleri -notcontains $ad) { return $true }
@@ -158,45 +191,143 @@ if ($bilinmeyenOgeler.Count -gt 0) {
     exit 1
 }
 
+foreach ($kopyaYolu in @(
+    (Join-Path $Kaynak 'MiBoxKonsol.exe'),
+    (Join-Path $Kaynak '_internal'),
+    (Join-Path $Kaynak 'adb.exe'),
+    (Join-Path $Hedef 'MiBoxKonsol.exe'),
+    (Join-Path $Hedef '_internal'),
+    (Join-Path $Hedef 'adb.exe')
+)) {
+    if (Test-Path -LiteralPath $kopyaYolu) {
+        $entry = Get-Item -LiteralPath $kopyaYolu -Force
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Yaz "[HATA] Kopyalama hedefi/kaynagi baglanti iceriyor: $($entry.Name)"
+            exit 1
+        }
+    }
+}
+foreach ($kokYolu in @($Kaynak, $Hedef)) {
+    $dahili = Join-Path $kokYolu '_internal'
+    if (-not (Test-Path -LiteralPath $dahili -PathType Container)) { continue }
+    $bagliOge = Get-ChildItem -LiteralPath $dahili -Force -Recurse |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+        Select-Object -First 1
+    if ($bagliOge) {
+        Yaz "[HATA] _internal icinde junction/symlink bulundu: $($bagliOge.Name)"
+        exit 1
+    }
+}
+
+if (Test-Path -LiteralPath $Hedef -PathType Container) {
+    $hedefExeVar = Test-Path -LiteralPath (Join-Path $Hedef 'MiBoxKonsol.exe') -PathType Leaf
+    $hedefDahiliVar = Test-Path -LiteralPath (Join-Path $Hedef '_internal') -PathType Container
+    $marker = Join-Path $Hedef '.mibox-kurulum-devam'
+    $isPartialInstall = (Test-Path -LiteralPath $marker -PathType Leaf) -and
+        ((Get-Content -LiteralPath $marker -Raw -ErrorAction SilentlyContinue).Trim() -eq
+            'MiBoxKonsol ONEDIR install in progress')
+    if (($hedefExeVar -ne $hedefDahiliVar) -and -not $isPartialInstall) {
+        Yaz '[HATA] Hedefte yarim kalmis veya taninmayan bir kurulum var; veriyi korumak icin kopyalama durduruldu.'
+        exit 1
+    }
+    if (-not $hedefExeVar -and -not $isPartialInstall) {
+        $hedefOgeleri = @(Get-ChildItem -LiteralPath $Hedef -Force)
+        if ($hedefOgeleri.Count -gt 0) {
+            $adlar = ($hedefOgeleri | ForEach-Object { $_.Name }) -join ', '
+            Yaz "[HATA] Kurulum hedefi baska dosyalar iceriyor: $adlar"
+            Yaz '       Mevcut dosyalari korumak icin bos bir hedef klasor secin.'
+            exit 1
+        }
+    }
+}
+
 Yaz "Kaynak : $Kaynak"
 Yaz "Hedef  : $Hedef"
 
-if (-not (Test-Path $Hedef)) {
-    New-Item -ItemType Directory -Path $Hedef -Force | Out-Null
+$exeYolu = Join-Path $Hedef 'MiBoxKonsol.exe'
+$uygulamaCalisiyor = $false
+foreach ($ad in @('MiBoxKonsol', 'MiBoxKonsol_x86')) {
+    foreach ($process in @(Get-Process -Name $ad -ErrorAction SilentlyContinue)) {
+        try {
+            $processPath = $process.Path
+            if ([string]::IsNullOrWhiteSpace($processPath)) {
+                $uygulamaCalisiyor = $true
+                break
+            }
+            if (Test-PathWithin (Normalize-Path $processPath) $Hedef) {
+                $uygulamaCalisiyor = $true
+                break
+            }
+        } catch {
+            # Yolu okunamayan MiBox surecinde karisik surum kopyalama riski alma.
+            $uygulamaCalisiyor = $true
+            break
+        }
+    }
+    if ($uygulamaCalisiyor) { break }
+}
+if ($uygulamaCalisiyor) {
+    Yaz "[HATA] MiBox Konsol kurulum klasorunden calisiyor. Uygulamayi kapatip yeniden deneyin."
+    exit 1
+}
+
+if (-not (Test-Path -LiteralPath $Hedef)) {
+    [IO.Directory]::CreateDirectory($Hedef) | Out-Null
     Yaz "Hedef klasor olusturuldu."
+}
+
+$installMarker = Join-Path $Hedef '.mibox-kurulum-devam'
+if (-not (Test-Path -LiteralPath $installMarker)) {
+    $markerContent = 'MiBoxKonsol ONEDIR install in progress'
+    Set-Content -LiteralPath $installMarker -Value $markerContent -Encoding ASCII
 }
 
 # 1) Dosyalari kopyala (kullanici verisi haric; mevcut veri korunur)
 $kopyalanan = 0
 Get-ChildItem -LiteralPath $Kaynak -Force | ForEach-Object {
     $ad = $_.Name
-    if ($veriDosyalari -contains $ad) { return }
-    if ($veriKlasorleri -contains $ad) { return }
-    if ($ad -like 'scrcpy-*') { return }
-    if ($_.Extension -in @('.apk', '.apks', '.xapk')) { return }
+    if (Test-MiBoxRuntimeItem $_) { return }
     $hedefYol = Join-Path $Hedef $ad
-    Copy-Item -Path $_.FullName -Destination $hedefYol -Recurse -Force
+    if ($ad -eq '_internal') {
+        if (Test-Path -LiteralPath $hedefYol -PathType Leaf) {
+            throw 'Paket hedefinde _internal dosya olarak bulunuyor.'
+        }
+        [IO.Directory]::CreateDirectory($hedefYol) | Out-Null
+        Copy-DirectoryContents $_.FullName $hedefYol
+    } else {
+        if (Test-Path -LiteralPath $hedefYol -PathType Container) {
+            throw "Dosya/klasor turu cakismasi: $ad"
+        }
+        [IO.File]::Copy($_.FullName, $hedefYol, $true)
+    }
     $kopyalanan++
 }
 Yaz "Kopyalanan oge sayisi: $kopyalanan (kullanici verisi korundu)"
 
 # 2) adb.exe bulunursa paket yanina kopyala (motor PATH'ten de bulabilir)
 $adb = $null
+$paketAdb = Join-Path $Kaynak 'adb.exe'
 $yerelAdb = Join-Path $kok 'adb.exe'
-if (Test-Path $yerelAdb) {
+if (Test-Path -LiteralPath $paketAdb -PathType Leaf) {
+    $adb = $paketAdb
+} elseif (Test-Path -LiteralPath $yerelAdb -PathType Leaf) {
     $adb = $yerelAdb
 } else {
     $cmd = Get-Command adb.exe -ErrorAction SilentlyContinue
     if ($cmd) { $adb = $cmd.Source }
 }
 if ($adb) {
-    Copy-Item -Path $adb -Destination (Join-Path $Hedef 'adb.exe') -Force
-    Yaz "adb.exe kopyalandi: $adb"
+    $hedefAdb = Join-Path $Hedef 'adb.exe'
+    if ([string]::Equals((Normalize-Path $adb), (Normalize-Path $hedefAdb),
+            [StringComparison]::OrdinalIgnoreCase)) {
+        Yaz 'adb.exe zaten kurulum hedefinde.'
+    } else {
+        [IO.File]::Copy($adb, $hedefAdb, $true)
+        Yaz "adb.exe kopyalandi: $adb"
+    }
 } else {
     Yaz "uyari: adb.exe bulunamadi (motor PATH'ten arayacak)"
 }
-
-$exeYolu = Join-Path $Hedef 'MiBoxKonsol.exe'
 
 # 3) Kisayollar (masaustu + baslat menusu)
 $kisayollar = @()
@@ -207,7 +338,29 @@ if (-not $KisayolYok) {
     )
     try {
         $ws = New-Object -ComObject WScript.Shell
-        foreach ($lnk in $hedefler) {
+        foreach ($temelLnk in $hedefler) {
+            $lnk = $temelLnk
+            $sira = 1
+            while (Test-Path -LiteralPath $lnk) {
+                $mevcutHedef = ''
+                try {
+                    $mevcut = $ws.CreateShortcut($lnk)
+                    if ($mevcut.TargetPath) {
+                        $mevcutHedef = Normalize-Path $mevcut.TargetPath
+                    }
+                } catch { }
+                if ([string]::Equals($mevcutHedef, $exeYolu,
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    $kisayollar += $lnk
+                    $lnk = $null
+                    break
+                }
+                $sira++
+                if ($sira -gt 1000) { throw 'Kisayol icin bos ad bulunamadi.' }
+                $klasor = Split-Path -Parent $temelLnk
+                $lnk = Join-Path $klasor ("MiBox Konsol ({0}).lnk" -f $sira)
+            }
+            if (-not $lnk) { continue }
             $k = $ws.CreateShortcut($lnk)
             $k.TargetPath = $exeYolu
             $k.WorkingDirectory = $Hedef
@@ -220,10 +373,7 @@ if (-not $KisayolYok) {
         $kisayollar | ForEach-Object { Yaz "  $_" }
     } catch {
         Yaz "uyari: kisayol olusturulamadi ($($_.Exception.Message))"
-        Yaz "       Masaustune 'MiBox Konsol.bat' birakiliyor."
-        $bat = Join-Path ([Environment]::GetFolderPath('Desktop')) 'MiBox Konsol.bat'
-        "start `"`" `"$exeYolu`"" | Set-Content -Path $bat -Encoding ASCII
-        $kisayollar += $bat
+        Yaz "       Uygulamayi kurulum klasorundeki MiBoxKonsol.exe dosyasindan acin."
     }
 }
 
@@ -231,8 +381,58 @@ if (-not $KisayolYok) {
 $kaldir = Join-Path $Hedef 'kaldir.bat'
 $hedefBase64 = [Convert]::ToBase64String(
     [Text.Encoding]::Unicode.GetBytes($Hedef))
+$kisayolJson = '[]'
+if ($kisayollar.Count -gt 0) {
+    $kisayolJson = ConvertTo-Json -InputObject $kisayollar -Compress
+}
+$kisayolBase64 = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($kisayolJson))
+$kisayolScript = @'
+$target = [IO.Path]::GetFullPath([Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String('__TARGET__')))
+$targetExe = Join-Path $target 'MiBoxKonsol.exe'
+$linksJson = [Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String('__LINKS__'))
+$parsedLinks = ConvertFrom-Json -InputObject $linksJson
+$links = if ($null -eq $parsedLinks) { @() } else { @($parsedLinks) }
+foreach ($linkPath in $links) {
+    if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) { continue }
+    try {
+        $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($linkPath)
+        if ($shortcut.TargetPath -and
+            [string]::Equals([IO.Path]::GetFullPath($shortcut.TargetPath),
+                $targetExe, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-Item -LiteralPath $linkPath -Force -ErrorAction Stop
+        }
+    } catch {
+        Write-Warning ("Kisayol kaldirilamadi: {0}" -f (Split-Path -Leaf $linkPath))
+    }
+}
+
+# Eski surumun ASCII .bat kisayolunu yalniz icerigi MiBox baslatma satiriyla
+# eslesiyorsa kaldir; ayni adli kullanici betigine dokunma.
+$desktop = [Environment]::GetFolderPath('Desktop')
+if ($desktop) {
+    $legacyBat = Join-Path $desktop 'MiBox Konsol.bat'
+    if (Test-Path -LiteralPath $legacyBat -PathType Leaf) {
+        $expected = 'start "" "' + $targetExe + '"'
+        $expectedAscii = [Text.Encoding]::ASCII.GetString(
+            [Text.Encoding]::ASCII.GetBytes($expected))
+        $content = (Get-Content -LiteralPath $legacyBat -Raw).Trim()
+        if ($content -eq $expected -or $content -eq $expectedAscii) {
+            Remove-Item -LiteralPath $legacyBat -Force
+        }
+    }
+}
+'@.Replace('__TARGET__', $hedefBase64).Replace('__LINKS__', $kisayolBase64)
+$kisayolKomutu = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($kisayolScript))
+
 $silmeScript = @'
+param([switch]$RemoveData)
 $ErrorActionPreference = 'Stop'
+if (-not $RemoveData) { exit 2 }
+try {
 $target = [IO.Path]::GetFullPath([Text.Encoding]::Unicode.GetString(
     [Convert]::FromBase64String('__TARGET__')))
 $root = [IO.Path]::GetPathRoot($target)
@@ -272,32 +472,159 @@ while ($probe) {
             [StringComparison]::OrdinalIgnoreCase)) { break }
     $probe = $parent
 }
-Start-Sleep -Seconds 2
-if (Test-Path -LiteralPath $target) {
-    Remove-Item -LiteralPath $target -Recurse -Force
+
+$exePath = Join-Path $target 'MiBoxKonsol.exe'
+$internalPath = Join-Path $target '_internal'
+if ((-not (Test-Path -LiteralPath $exePath -PathType Leaf) -and
+     -not (Test-Path -LiteralPath $internalPath -PathType Container)) -or
+    -not (Test-Path -LiteralPath (Join-Path $target 'kaldir.bat') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $target 'MiBoxKonsol-Kaldir.ps1') -PathType Leaf)) {
+    throw 'MiBox kurulum dosyalari dogrulanamadi; silme iptal edildi.'
+}
+
+# Uygulama kapanana kadar bekle; zaman asiminda hicbir dosyayi silme.
+$deadline = (Get-Date).AddMinutes(2)
+$running = $false
+do {
+    $running = $false
+    foreach ($name in @('MiBoxKonsol', 'MiBoxKonsol_x86')) {
+        foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+            try {
+                $processPath = $process.Path
+                if ([string]::IsNullOrWhiteSpace($processPath)) {
+                    $running = $true
+                    break
+                }
+                $processPath = [IO.Path]::GetFullPath($processPath)
+                $prefix = $target.TrimEnd([char]'\', [char]'/') + '\'
+                if ($processPath.StartsWith($prefix,
+                        [StringComparison]::OrdinalIgnoreCase)) {
+                    $running = $true
+                    break
+                }
+            } catch {
+                $running = $true
+                break
+            }
+        }
+        if ($running) { break }
+    }
+    if ($running) { Start-Sleep -Milliseconds 500 }
+} while ($running -and (Get-Date) -lt $deadline)
+if ($running) {
+    throw 'MiBox Konsol acik. Uygulamayi kapatip kaldirma betigini yeniden calistirin.'
+}
+
+# Yalniz uygulama dosyalarini ve bilinen MiBox verilerini kaldir; hedefteki
+# diger kullanici dosyalari korunur.
+if (Test-Path -LiteralPath $internalPath -PathType Container) {
+    $internalEntry = Get-Item -LiteralPath $internalPath -Force
+    if (($internalEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Uygulama klasoru bir junction/symlink; silme iptal edildi.'
+    }
+    $reparse = Get-ChildItem -LiteralPath $internalPath -Force -Recurse |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+        Select-Object -First 1
+    if ($reparse) {
+        throw 'Uygulama klasorunde junction/symlink var; silme iptal edildi.'
+    }
+}
+$files = @(
+    'mibox-ayarlar.json', 'MiBox-ayarlar.json',
+    'mibox-bilinen-uygulamalar.json', 'MiBox-bilinen-uygulamalar.json',
+    'mibox-islem-gecmisi.jsonl', 'mibox-işlem-geçmişi.jsonl',
+    'mibox-gecmis.csv', 'mibox-geçmiş.csv',
+    'debloat-kullanici.json', 'debloat-kullanıcı.json',
+    'mibox-selftest-ok.txt', 'mibox-logcat.txt', 'surum.txt',
+    'ortam-bilgisi.txt', 'mibox-version.txt', 'scrcpy.exe',
+    '.mibox-kurulum-devam')
+foreach ($name in $files) {
+    $path = Join-Path $target $name
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    }
+}
+$directories = @(
+    'logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
+    'indirilen-apklar', 'apk-yedekleri', '_arsiv', 'scrcpy')
+foreach ($name in $directories) {
+    $path = Join-Path $target $name
+    if (Test-Path -LiteralPath $path) {
+        $entry = Get-Item -LiteralPath $path -Force
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        } else {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+        }
+    }
+}
+$patterns = @(
+    'mibox-ayarlar.json.*', 'MiBox-ayarlar.json.*',
+    'mibox-ayar-yedek*.json*', '.mibox-ayar-yedek*.tmp',
+    '.mibox-debloat-favorites-*.tmp',
+    'mibox-snapshot-*.json', '.mibox-snapshot-*.tmp',
+    '.mibox-download-*.part',
+    '.scrcpy-preferred*', '.scrcpy_download.tmp.zip')
+foreach ($pattern in $patterns) {
+    Get-ChildItem -LiteralPath $target -Filter $pattern -File -Force -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+            } else {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+            }
+        }
+}
+$internalPath = Join-Path $target '_internal'
+if (Test-Path -LiteralPath $internalPath) {
+    Remove-Item -LiteralPath $internalPath -Recurse -Force -ErrorAction Stop
+}
+foreach ($name in @('adb.exe', 'MiBoxKonsol_x86.exe', 'MiBoxKonsol.exe')) {
+    $path = Join-Path $target $name
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    }
+}
+$remaining = @(Get-ChildItem -LiteralPath $target -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notin @('kaldir.bat', 'MiBoxKonsol-Kaldir.ps1') })
+if ($remaining.Count -gt 0) {
+    $names = ($remaining | ForEach-Object { $_.Name }) -join ', '
+    Write-Host ("Diger dosyalar korundu: {0}" -f $names)
+}
+Write-Host 'MiBox uygulama dosyalari ve bilinen verileri kaldirildi.'
+} catch {
+    Write-Host ("[HATA] {0}" -f $_.Exception.Message)
+    Read-Host 'Bu pencereyi kapatmak icin Enter tusuna basin'
+    exit 1
 }
 '@.Replace('__TARGET__', $hedefBase64)
-$silmeKomutu = [Convert]::ToBase64String(
-    [Text.Encoding]::Unicode.GetBytes($silmeScript))
-@"
+$kaldirPs1 = Join-Path $Hedef 'MiBoxKonsol-Kaldir.ps1'
+$silmeScript | Set-Content -LiteralPath $kaldirPs1 -Encoding UTF8
+$kaldirIcerik = @"
 @echo off
 REM MiBox Konsol kaldirma: kisayollari siler. Veriyi silmek icin /veri ekleyin.
 setlocal
-del "%USERPROFILE%\Desktop\MiBox Konsol.lnk" 2>nul
-del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\MiBox Konsol.lnk" 2>nul
-del "%USERPROFILE%\Desktop\MiBox Konsol.bat" 2>nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $kisayolKomutu
 if /I "%~1"=="/veri" (
-  echo Kullanici verisi de siliniyor...
+  echo Bilinen MiBox verileri siliniyor; diger dosyalar korunacak...
   cd /d "%TEMP%"
-  start "" powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $silmeKomutu
-  echo Program klasoru ve veriler kapandiktan sonra silinecek.
+  start "" /wait powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0MiBoxKonsol-Kaldir.ps1" -RemoveData
+  if errorlevel 1 (
+    echo [HATA] Uygulama veya dosyalar kaldirilamadi. Veriler korunmus olabilir.
+    pause
+    exit /b 1
+  )
+  del /f /q "%~dp0MiBoxKonsol-Kaldir.ps1" 2>nul
+  del /f /q "%~f0" 2>nul
+  rmdir "%~dp0" 2>nul
   exit /b 0
 ) else (
-  echo Kisayollar silindi. Program klasoru ve veriler korundu:
+  echo Kisayollar kaldirildi. Program klasoru ve veriler korundu:
   echo Veriyi de silmek icin: kaldir.bat /veri
 )
 pause
-"@ | Set-Content -Path $kaldir -Encoding ASCII
+"@
+[IO.File]::WriteAllText($kaldir, $kaldirIcerik, [Text.Encoding]::ASCII)
 Yaz "Kaldirma betigi: $kaldir"
 
 # 5) Dogrulama: kurulan kopya surum + selftest
@@ -307,7 +634,7 @@ Yaz "--- dogrulama ---"
 # alinir, mevcut kullanimda DOKUNULMAZ.
 $onceVardi = @{}
 foreach ($ad in @('mibox-ayarlar.json', 'logs', 'snapshots', 'mibox-selftest-ok.txt')) {
-    $onceVardi[$ad] = Test-Path (Join-Path $Hedef $ad)
+    $onceVardi[$ad] = Test-Path -LiteralPath (Join-Path $Hedef $ad)
 }
 $env:QT_QPA_PLATFORM = 'offscreen'
 $surumDosya = Join-Path $env:TEMP ('mibox-kurulum-' + [guid]::NewGuid().ToString('N') + '.txt')
@@ -328,17 +655,17 @@ try {
 } catch {
     Yaz ("--version hata: {0}" -f $_.Exception.Message)
 }
-$satirlar = Get-Content $surumDosya -ErrorAction SilentlyContinue
+$satirlar = Get-Content -LiteralPath $surumDosya -ErrorAction SilentlyContinue
 $surum = $satirlar | Select-Object -First 1
 $mod = $satirlar | Where-Object { $_ -match '^Paket modu' } | Select-Object -First 1
-Remove-Item $surumDosya -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $surumDosya -ErrorAction SilentlyContinue
 Yaz ("--version : {0} (exit {1})" -f $surum, $surumKod)
 if ($mod) { Yaz ("            {0}" -f $mod.Trim()) }
 if (-not $versionOk) { Yaz "[HATA] --version dogrulamasi basarisiz." }
 
 $isaret = Join-Path $Hedef 'mibox-selftest-ok.txt'
-Remove-Item $isaret -ErrorAction SilentlyContinue
-$markerReady = -not (Test-Path $isaret)
+Remove-Item -LiteralPath $isaret -ErrorAction SilentlyContinue
+$markerReady = -not (Test-Path -LiteralPath $isaret)
 $selftestCompleted = $false
 $selftestTimeout = $false
 $p2 = $null
@@ -355,8 +682,8 @@ try {
     Yaz ("--selftest hata: {0}" -f $_.Exception.Message)
 }
 $markerContent = ''
-if ($markerReady -and (Test-Path $isaret)) {
-    $markerContent = Get-Content $isaret -Raw -ErrorAction SilentlyContinue
+if ($markerReady -and (Test-Path -LiteralPath $isaret)) {
+    $markerContent = Get-Content -LiteralPath $isaret -Raw -ErrorAction SilentlyContinue
     if ($null -ne $markerContent) { $markerContent = $markerContent.Trim() }
 }
 $selftestKod = if ($selftestCompleted -and $p2) {
@@ -372,7 +699,7 @@ if ($selftestOk) {
     Yaz ("--selftest: {0} (exit {1})" -f $markerContent, $selftestKod)
 } else {
     Yaz ("[HATA] --selftest basarisiz (exit {0}, isaretci: {1})." -f `
-        $selftestKod, $(if (Test-Path $isaret) { $markerContent } else { 'yok' }))
+        $selftestKod, $(if (Test-Path -LiteralPath $isaret) { $markerContent } else { 'yok' }))
     Yaz "        exe'yi elle deneyin:"
     Yaz "        $exeYolu"
 }
@@ -381,16 +708,16 @@ if ($selftestOk) {
 # mibox-selftest-ok.txt HER ZAMAN test artefaktidir -> kosulsuz silinir.
 $silinen = @()
 $marker = Join-Path $Hedef 'mibox-selftest-ok.txt'
-if (Test-Path $marker) {
-    Remove-Item $marker -Force -ErrorAction SilentlyContinue
-    if (-not (Test-Path $marker)) { $silinen += 'mibox-selftest-ok.txt' }
+if (Test-Path -LiteralPath $marker) {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $marker)) { $silinen += 'mibox-selftest-ok.txt' }
 }
 foreach ($ad in @('mibox-ayarlar.json', 'logs', 'snapshots')) {
     if (-not $onceVardi[$ad]) {
         $yol = Join-Path $Hedef $ad
-        if (Test-Path $yol) {
-            Remove-Item $yol -Recurse -Force -ErrorAction SilentlyContinue
-            if (-not (Test-Path $yol)) { $silinen += $ad }
+        if (Test-Path -LiteralPath $yol) {
+            Remove-Item -LiteralPath $yol -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $yol)) { $silinen += $ad }
         }
     }
 }
@@ -399,6 +726,7 @@ if ($silinen.Count -gt 0) {
 }
 Yaz ""
 if ($versionOk -and $selftestOk) {
+    Remove-Item -LiteralPath $installMarker -Force -ErrorAction SilentlyContinue
     Yaz "TAMAM: MiBox Konsol kuruldu."
 } else {
     Yaz "KURULUM BASARISIZ: dogrulama tamamlanmadi."

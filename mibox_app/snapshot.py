@@ -24,6 +24,8 @@ from .adb_engine import AdbError, is_valid_package
 _SNAP_LOCK = threading.Lock()
 _SNAPSHOT_PREFIX = 'mibox-snapshot-'
 _SNAPSHOT_SUFFIX = '.json'
+_MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+_MAX_SNAPSHOT_PACKAGES = 100_000
 _SNAPSHOT_KEYS = frozenset(('created', 'target', 'packages'))
 _SNAPSHOT_USER_KEYS = _SNAPSHOT_KEYS | frozenset(('user_id',))
 _PACKAGE_STATE_KEYS = frozenset(('enabled', 'installed_user0', 'restricted'))
@@ -67,16 +69,27 @@ def _validate_user_id(user_id):
     return user_id
 
 
+def _check_cancelled(is_cancelled):
+    if is_cancelled is not None and is_cancelled():
+        # Imported lazily to keep workers -> snapshot imports acyclic.
+        from .workers import CancelledError
+        raise CancelledError('kullanıcı durdurdu')
+
+
 def validate(data):
     """Validate a snapshot's complete serialized schema before it is used."""
     if type(data) is not dict or set(data) not in (_SNAPSHOT_KEYS, _SNAPSHOT_USER_KEYS):
         raise ValueError('Geçersiz snapshot dosyası (şema hatalı).')
     if type(data.get('created')) is not str or type(data.get('target')) is not str:
         raise ValueError('Geçersiz snapshot dosyası (metadata türü hatalı).')
+    if len(data['created']) > 128 or len(data['target']) > 512:
+        raise ValueError('Geçersiz snapshot dosyası (metadata çok uzun).')
     _validate_user_id(data.get('user_id', 0))
     pkgs = data.get('packages')
     if type(pkgs) is not dict or not pkgs:
         raise ValueError('Geçersiz snapshot dosyası (packages boş/bozuk).')
+    if len(pkgs) > _MAX_SNAPSHOT_PACKAGES:
+        raise ValueError('Geçersiz snapshot dosyası (paket sayısı sınırı aşıldı).')
     for pkg, state in pkgs.items():
         if (type(pkg) is not str or pkg != pkg.strip() or ':' in pkg
                 or not is_valid_package(pkg)):
@@ -95,6 +108,16 @@ def _unique_json_object(pairs):
             raise ValueError('Geçersiz snapshot dosyası (yinelenen alan: {}).'.format(key))
         result[key] = value
     return result
+
+
+def _read_validated(path):
+    """Read a snapshot with a hard file-size cap before JSON decoding."""
+    with open(path, 'rb') as f:
+        raw = f.read(_MAX_SNAPSHOT_BYTES + 1)
+    if len(raw) > _MAX_SNAPSHOT_BYTES:
+        raise ValueError('Snapshot dosyası izin verilen boyutu aşıyor.')
+    return validate(json.loads(raw.decode('utf-8'),
+                               object_pairs_hook=_unique_json_object))
 
 
 def _accepts_user_id(method):
@@ -136,6 +159,7 @@ def _call_user_api(engine, names, kwargs, user_id, description):
 
 def _save_unique(name, data):
     """Atomically add a complete snapshot under an unused name across processes."""
+    validate(data)
     directory = _dir()
     stem = name[:-len(_SNAPSHOT_SUFFIX)]
     fd, tmp = tempfile.mkstemp(prefix='.mibox-snapshot-', suffix='.tmp', dir=directory)
@@ -147,6 +171,8 @@ def _save_unique(name, data):
                 os.fsync(f.fileno())
             except OSError:
                 pass
+        if os.path.getsize(tmp) > _MAX_SNAPSHOT_BYTES:
+            raise ValueError('Snapshot dosyası izin verilen boyutu aşıyor; kayıt yayımlanmadı.')
         suffix = 1
         while True:
             candidate = name if suffix == 1 else '{}-{}.json'.format(stem, suffix)
@@ -169,6 +195,8 @@ def _validated_entries(detailed):
     """Reject incomplete package scans before they can drive snapshot actions."""
     if not isinstance(detailed, (list, tuple)) or not detailed:
         raise AdbError('Paket listesi boş veya bozuk; snapshot kaydedilmedi.')
+    if len(detailed) > _MAX_SNAPSHOT_PACKAGES:
+        raise AdbError('Paket listesi snapshot sınırını aşıyor; kayıt yapılmadı.')
     entries = {}
     for entry in detailed:
         if not isinstance(entry, dict):
@@ -185,15 +213,46 @@ def _validated_entries(detailed):
 
 def load(name):
     with _SNAP_LOCK:
-        with open(snapshot_path(name), 'r', encoding='utf-8') as f:
-            raw = f.read()
-    return validate(json.loads(raw, object_pairs_hook=_unique_json_object))
+        return _read_validated(snapshot_path(name))
+
+
+def export_snapshot(name, path):
+    """Validate and atomically export a saved snapshot to an external path."""
+    data = load(name)
+    destination = os.path.abspath(os.fsdecode(path))
+    directory = os.path.dirname(destination)
+    fd = None
+    temporary_path = None
+    try:
+        fd, temporary_path = tempfile.mkstemp(
+            prefix='.mibox-snapshot-export-', suffix='.tmp', dir=directory)
+        output = os.fdopen(fd, 'w', encoding='utf-8')
+        fd = None
+        with output as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.getsize(temporary_path) > _MAX_SNAPSHOT_BYTES:
+            raise ValueError('Dışa aktarılan snapshot izin verilen boyutu aşıyor.')
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+    return len(data['packages'])
 
 
 def import_snapshot(path):
     """Validate and import an external snapshot without replacing existing files."""
-    with open(path, 'r', encoding='utf-8') as f:
-        data = validate(json.load(f, object_pairs_hook=_unique_json_object))
+    data = _read_validated(path)
     preferred_name = 'mibox-snapshot-klon-{}.json'.format(
         datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
     return _save_unique(preferred_name, data), len(data['packages'])
@@ -211,11 +270,9 @@ def delete(name):
 def take(engine, target, include_system=True, user_id=0, is_cancelled=None):
     """Mevcut durumu yakala. Dönüş: (dosya_adı, paket_sayısı)."""
     user_id = _validate_user_id(user_id)
-    if is_cancelled is not None:
-        is_cancelled()
-    engine.connect(target)
-    if is_cancelled is not None:
-        is_cancelled()
+    _check_cancelled(is_cancelled)
+    engine.connect(target, cancel_check=is_cancelled)
+    _check_cancelled(is_cancelled)
     # snapshot her zaman GERCEGI gormeli: onbellek atlanir.
     detailed = _call_user_api(
         engine,
@@ -223,15 +280,13 @@ def take(engine, target, include_system=True, user_id=0, is_cancelled=None):
          'list_packages_detailed'),
         {'target': target, 'include_system': include_system, 'use_cache': False},
         user_id, 'Paket durumunu kullanıcıya göre okuma')
-    if is_cancelled is not None:
-        is_cancelled()
+    _check_cancelled(is_cancelled)
     entries = _validated_entries(detailed)
     restricted = _call_user_api(
         engine,
         ('bulk_restricted_for_user_id', 'bulk_restricted_for_user', 'bulk_restricted'),
         {'target': target}, user_id, 'Arka plan kısıtlamalarını kullanıcıya göre okuma')
-    if is_cancelled is not None:
-        is_cancelled()
+    _check_cancelled(is_cancelled)
     if restricted is None:
         raise AdbError('Arka plan kisitlama durumu okunamadi; snapshot kaydedilmedi.')
     if (not isinstance(restricted, (set, frozenset))
@@ -254,8 +309,7 @@ def take(engine, target, include_system=True, user_id=0, is_cancelled=None):
         'user_id': user_id,
         'packages': pkgs,
     }
-    if is_cancelled is not None:
-        is_cancelled()
+    _check_cancelled(is_cancelled)
     name = _save_unique(name, data)
     return name, len(pkgs)
 
@@ -315,17 +369,32 @@ def diff_current(engine, target, snap):
 
 def apply(engine, target, snap, protected=(), log=None, progress=None,
           is_cancelled=None):
-    """Farkları cihaza uygula. Dönüş: {'ok', 'fail', 'details'}.
+    """Farkları uygula ve {'ok', 'fail', 'details', 'cancelled'} döndür.
 
-    is_cancelled: opsiyonel callable -> True ise kalan farklar 'kullanici
-    durdurdu' sayilir (Faz 3 iptal disiplini).
+    İptalde, tamamlanan ve kalan işler için ayrıntılarla kısmi sonuç döner;
+    worker bu ayrıntıları işlem geçmişine kaydedebilir.
     """
+    from .workers import CancelledError
+    try:
+        _check_cancelled(is_cancelled)
+    except CancelledError:
+        return {'ok': 0, 'fail': 0, 'details': [], 'action': 'snapshot',
+                'cancelled': True}
     diffs = diff_current(engine, target, snap)
+    try:
+        _check_cancelled(is_cancelled)
+    except CancelledError:
+        cancelled_details = [(pkg, False, 'kullanıcı durdurdu')
+                             for pkg, _want, _have, _action in diffs]
+        return {'ok': 0, 'fail': len(cancelled_details),
+                'details': cancelled_details, 'action': 'snapshot',
+                'cancelled': True}
     ok = 0
     fail = 0
     details = []
     total = len(diffs)
     successful = set()
+    cancelled = False
     for i, (pkg, _want, _have, action) in enumerate(diffs, 1):
         if progress:
             try:
@@ -333,12 +402,13 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
             except Exception:
                 pass
         try:
-            if is_cancelled is not None and is_cancelled():
-                details.append((pkg, False, 'kullanıcı durdurdu'))
-                fail += 1
-                continue
-        except Exception:
-            pass
+            _check_cancelled(is_cancelled)
+        except CancelledError:
+            details.extend((pending_pkg, False, 'kullanıcı durdurdu')
+                           for pending_pkg, *_rest in diffs[i - 1:])
+            fail += total - i + 1
+            cancelled = True
+            break
         if isinstance(action, str) and action.startswith('bilinmiyor'):
             details.append((pkg, False, action))
             fail += 1
@@ -366,14 +436,17 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
             if not actions or any(step not in methods for step in actions):
                 raise AdbError('Bilinmeyen snapshot işlemi: {}'.format(action))
             for step in actions:
-                if is_cancelled is not None and is_cancelled():
-                    raise AdbError('kullanıcı durdurdu')
+                _check_cancelled(is_cancelled)
                 _call_user_api(engine, methods[step],
                                {'target': target, 'pkg': pkg}, user_id,
                                'Snapshot işlemi {}'.format(step))
             ok += 1
             successful.add(pkg)
             details.append((pkg, True, '{} uygulandı'.format(' → '.join(actions))))
+        except CancelledError:
+            details.append((pkg, False, 'kullanıcı durdurdu'))
+            fail += 1
+            cancelled = True
         except AdbError as e:
             if log:
                 try:
@@ -382,14 +455,24 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
                     pass
             fail += 1
             details.append((pkg, False, str(e)))
+        if cancelled:
+            details.extend((pending_pkg, False, 'kullanıcı durdurdu')
+                           for pending_pkg, *_rest in diffs[i:])
+            fail += total - i
+            break
 
     # Operations can each succeed while a later operation changes an earlier
     # state (for example install_existing may re-enable a package). Re-read the
     # complete snapshot once and only report success for final matching states.
-    if successful:
+    if successful and not cancelled:
         try:
+            _check_cancelled(is_cancelled)
             remaining = diff_current(engine, target, snap)
             remaining_by_pkg = {pkg: action for pkg, _want, _have, action in remaining}
+        except CancelledError:
+            cancelled = True
+            remaining_by_pkg = {pkg: 'son durum doğrulanamadı; kullanıcı durdurdu'
+                                for pkg in successful}
         except Exception as exc:  # noqa: BLE001
             remaining_by_pkg = {pkg: 'son durum doğrulanamadı: {}'.format(exc)
                                 for pkg in successful}
@@ -403,4 +486,5 @@ def apply(engine, target, snap, protected=(), log=None, progress=None,
             details = [(p, False if p == pkg and passed else passed,
                         message if p == pkg and passed else msg)
                        for p, passed, msg in details]
-    return {'ok': ok, 'fail': fail, 'details': details, 'action': 'snapshot'}
+    return {'ok': ok, 'fail': fail, 'details': details, 'action': 'snapshot',
+            'cancelled': cancelled}

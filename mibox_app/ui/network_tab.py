@@ -4,20 +4,26 @@ import ipaddress
 import re
 import socket
 
-from PySide6.QtCore import Slot, Qt
+from PySide6.QtCore import Slot, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QLineEdit,
-    QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy, QFrame,
+    QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy, QFrame, QApplication,
 )
 
-from ..workers import Worker, NetworkScanWorker
+from ..workers import Worker, NetworkScanWorker, CancelledError
 from . import kit
+from .flowlayout import FlowLayout
 
 COL_IP = 0
 COL_STATE = 1
 COL_LATENCY = 2
+
+
+class _NetworkSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 def local_subnet_guess():
@@ -43,11 +49,20 @@ class NetworkTab(QWidget):
         self._found = []
         self._current_worker = None
         self._stop_flag = False
+        self._generation = 0
+        self._dns_revision = 0
+        self._dns_busy = False
+        self._diag_worker = None
+        self._pending_scan_target = None
+        self._scan_workers = set()
+        self._pair_worker = None
+        self._pair_prompt = False
         self._build()
         for button in self.findChildren(QPushButton):
             if button.maximumHeight() <= 34:
                 button.setProperty('compact', True)
         self.core.connection_changed.connect(self._on_connection_changed)
+        self._sync_device_controls()
 
     def _build(self):
         root = kit.page(self)
@@ -80,7 +95,7 @@ class NetworkTab(QWidget):
         card_layout.addWidget(hint_label)
 
         # Keep labels and controls together on one row.
-        ctrl_row = QHBoxLayout()
+        ctrl_row = FlowLayout(hspacing=10, vspacing=8)
         ctrl_row.setContentsMargins(0, 4, 0, 4)
         ctrl_row.setSpacing(10)
 
@@ -96,7 +111,7 @@ class NetworkTab(QWidget):
         lbl_range = QLabel('IP Aralığı:')
         lbl_range.setStyleSheet('font-weight: 600; font-size: 11.5px;')
 
-        self.spn_from = QSpinBox()
+        self.spn_from = _NetworkSpinBox()
         self.spn_from.setRange(1, 254)
         self.spn_from.setValue(1)
         self.spn_from.setPrefix('')
@@ -107,7 +122,7 @@ class NetworkTab(QWidget):
         lbl_dash = QLabel('—')
         lbl_dash.setStyleSheet('color: #64748b; font-weight: bold;')
 
-        self.spn_to = QSpinBox()
+        self.spn_to = _NetworkSpinBox()
         self.spn_to.setRange(1, 254)
         self.spn_to.setValue(254)
         self.spn_to.setPrefix('')
@@ -118,7 +133,7 @@ class NetworkTab(QWidget):
         lbl_port = QLabel('Port:')
         lbl_port.setStyleSheet('font-weight: 600; font-size: 11.5px;')
 
-        self.spn_port = QSpinBox()
+        self.spn_port = _NetworkSpinBox()
         self.spn_port.setRange(1, 65535)
         self.spn_port.setValue(5555)
         self.spn_port.setFixedWidth(94)
@@ -150,17 +165,22 @@ class NetworkTab(QWidget):
         scan_actions.setSpacing(10)
         scan_actions.addWidget(self.btn_scan)
         scan_actions.addWidget(self.btn_stop)
-        ctrl_row.addWidget(lbl_prefix)
-        ctrl_row.addWidget(self.txt_subnet)
-        ctrl_row.addSpacing(6)
-        ctrl_row.addWidget(lbl_range)
-        ctrl_row.addLayout(range_row)
-        ctrl_row.addSpacing(6)
-        ctrl_row.addWidget(lbl_port)
-        ctrl_row.addWidget(self.spn_port)
-        ctrl_row.addSpacing(6)
-        ctrl_row.addLayout(scan_actions)
-        ctrl_row.addStretch(1)
+        for label, control in ((lbl_prefix, self.txt_subnet),
+                               (lbl_range, range_row), (lbl_port, self.spn_port),
+                               (None, scan_actions)):
+            group = QWidget()
+            group.setObjectName('networkControlGroup')
+            group.setStyleSheet('QWidget#networkControlGroup, QWidget#networkControlGroup QLabel { background: transparent; }')
+            group_layout = QHBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(8)
+            if label is not None:
+                group_layout.addWidget(label)
+            if isinstance(control, QWidget):
+                group_layout.addWidget(control)
+            else:
+                group_layout.addLayout(control)
+            ctrl_row.addWidget(group)
 
         card_layout.addLayout(ctrl_row)
 
@@ -192,6 +212,7 @@ class NetworkTab(QWidget):
         self.grid.horizontalHeader().setSectionResizeMode(COL_STATE, QHeaderView.ResizeToContents)
         self.grid.horizontalHeader().setSectionResizeMode(COL_LATENCY, QHeaderView.ResizeToContents)
         self.grid.doubleClicked.connect(self._on_double_click)
+        self.grid.itemSelectionChanged.connect(self._sync_device_controls)
         card_layout.addWidget(self.grid, 1)
 
         # Alt Aksiyon ve Durum Çubuğu
@@ -220,6 +241,9 @@ class NetworkTab(QWidget):
         self.btn_use = self.btn_connect  # Geriye dönük uyumluluk referansı
 
         actions.addWidget(self.lbl_summary, 1)
+        self.btn_copy_address = QPushButton('Adresi kopyala')
+        self.btn_copy_address.clicked.connect(self._copy_selected_address)
+        actions.addWidget(self.btn_copy_address)
         actions.addWidget(self.btn_pair)
         actions.addWidget(self.btn_connect)
         card_layout.addLayout(actions)
@@ -263,11 +287,14 @@ class NetworkTab(QWidget):
             m_title.setProperty('role', 'quiet')
 
             m_val = QLabel('—')
+            m_val.setTextFormat(Qt.PlainText)
+            m_val.setWordWrap(True)
             m_val.setStyleSheet('font-size: 20px; font-weight: 600;')
             m_val.setProperty('role', 'primary')
             setattr(self, val_attr, m_val)
 
             m_detail = QLabel('Ölçüm bekleniyor')
+            m_detail.setTextFormat(Qt.PlainText)
             m_detail.setProperty('role', 'quiet')
             m_detail.setStyleSheet('font-size: 12px;')
             m_detail.setWordWrap(True)
@@ -291,6 +318,7 @@ class NetworkTab(QWidget):
 
         self.lbl_diag_advice = QLabel('TV Wi-Fi sinyal kalitesini, modem pingini ve paket kaybını test edin.')
         self.lbl_diag_advice.setWordWrap(True)
+        self.lbl_diag_advice.setTextFormat(Qt.PlainText)
         self.lbl_diag_advice.setProperty('role', 'quiet')
         diag_layout.addWidget(self.lbl_diag_advice)
         diag_layout.addStretch(1)
@@ -365,6 +393,7 @@ class NetworkTab(QWidget):
 
         self.lbl_dns_current = QLabel('Mevcut DNS: Ölçüm bekleniyor (Cihaza bağlanın)')
         self.lbl_dns_current.setWordWrap(True)
+        self.lbl_dns_current.setTextFormat(Qt.PlainText)
         self.lbl_dns_current.setMinimumWidth(0)
         self.lbl_dns_current.setStyleSheet('font-size: 11px; font-weight: bold; color: #94a3b8;')
         dns_layout.addWidget(self.lbl_dns_current)
@@ -396,61 +425,130 @@ class NetworkTab(QWidget):
         self.lbl_dns_current.setStyleSheet(
             'font-size: 11px; font-weight: 600; color: {};'.format(palette['muted']))
 
+    def _device_ready(self):
+        return (bool(getattr(self.core, 'connected', False))
+                and bool(getattr(self.core, 'target', None))
+                and not getattr(self.window, '_connection_busy', False))
+
+    def _sync_device_controls(self):
+        if not hasattr(self, 'btn_apply_custom_dns'):
+            return
+        ready = self._device_ready()
+        for button in (self.btn_refresh_dns, self.btn_dns_adguard,
+                       self.btn_dns_cloudflare, self.btn_dns_google,
+                       self.btn_dns_off, self.btn_apply_custom_dns):
+            button.setEnabled(ready and not self._dns_busy)
+        self.txt_custom_dns.setEnabled(ready and not self._dns_busy)
+        self.btn_run_diag.setEnabled(ready and self._diag_worker is None)
+        selected = bool(self._selected_ip())
+        self.btn_connect.setEnabled(selected and not getattr(self.window, '_connection_busy', False))
+        self.btn_copy_address.setEnabled(selected)
+        self.btn_pair.setEnabled(self._pair_worker is None and not self._pair_prompt
+                                 and not getattr(self.window, '_connection_busy', False))
+
+    def _copy_selected_address(self):
+        ip = self._selected_ip()
+        if not ip:
+            return
+        item = self.grid.item(self.grid.currentRow(), COL_IP)
+        port = item.data(Qt.UserRole + 1) if item else None
+        address = '{}:{}'.format(ip, port or self.spn_port.value())
+        QApplication.clipboard().setText(address)
+        self.lbl_summary.setText('Seçili cihaz adresi kopyalandı: ' + address)
+
     def _on_connection_changed(self, connected=False, target=None):
-        if getattr(self.core, 'connected', False) and getattr(self.core, 'target', None):
+        self._generation += 1
+        for label in (self.lbl_wifi_signal, self.lbl_wifi_speed, self.lbl_gw_ping, self.lbl_net_ip):
+            label.setText('—')
+        for label in (self.lbl_wifi_signal_detail, self.lbl_wifi_speed_detail,
+                      self.lbl_gw_ping_detail, self.lbl_net_ip_detail):
+            label.setText('Ölçüm bekleniyor')
+        self.lbl_diag_advice.setText('Mevcut cihazın ağ durumunu ölçmek için Test Et’i seçin.')
+        self._sync_device_controls()
+        if self._device_ready():
             self._fetch_dns_status()
+        elif connected:
+            self.lbl_dns_current.setText('Mevcut DNS: Bağlantının tamamlanması bekleniyor')
         else:
             self.lbl_dns_current.setText('Mevcut DNS: Cihaz bağlı değil')
 
     def _fetch_dns_status(self):
-        if not self.core.connected or not self.core.target:
-            self.lbl_dns_current.setText('Mevcut DNS: Cihaz bağlı değil')
+        if not self._device_ready():
+            self.lbl_dns_current.setText('Mevcut DNS: Bağlantı hazır değil')
             return
         target = self.core.target
+        generation = self._generation
+        self._dns_revision += 1
+        revision = self._dns_revision
+        current = lambda: (self.core.connected and self.core.target == target
+                           and self._generation == generation and self._dns_revision == revision
+                           and self._device_ready())
+        self.lbl_dns_current.setText('Mevcut DNS: Okunuyor…')
         def do():
+            if not current():
+                raise CancelledError('Bağlantı değişti.')
             return self.core.engine.private_dns_get(target)
         def on_ok(res):
-            mode = res.get('mode', 'off')
+            if not current():
+                return
+            mode = res.get('mode')
             spec = res.get('specifier', '')
             if mode == 'hostname' and spec:
-                if 'adguard' in spec.lower():
-                    name = f'🛡️ AdGuard DNS ({spec}) - Reklam Engelleme Aktif'
-                elif 'cloudflare' in spec.lower():
-                    name = f'⚡ Cloudflare DNS ({spec}) - Hızlı DNS Aktif'
-                elif 'google' in spec.lower():
-                    name = f'🔍 Google DNS ({spec}) - Aktif'
-                else:
-                    name = f'Özel DNS: {spec} (Aktif)'
-                color = kit.colors(self)['success']
-                self.lbl_dns_current.setText(f'Mevcut DNS: <font color="{color}"><b>{name}</b></font>')
+                self.lbl_dns_current.setText(f'Mevcut DNS: Sunucu kayıtlı: {spec}')
             elif mode == 'opportunistic':
-                self.lbl_dns_current.setText('Mevcut DNS: <b>Otomatik (Fırsatçı)</b>')
+                self.lbl_dns_current.setText('Mevcut DNS: Otomatik (Fırsatçı)')
+            elif mode == 'off':
+                self.lbl_dns_current.setText('Mevcut DNS: Kapalı (İSS / Modem Varsayılanı)')
             else:
-                self.lbl_dns_current.setText('Mevcut DNS: <font color="#94a3b8">Kapalı (İSS / Modem Varsayılanı)</font>')
+                self.lbl_dns_current.setText('Mevcut DNS: Ayar tam okunamadı; DNS Oku ile yeniden deneyin.')
         w = Worker(do)
         w.finished_ok.connect(on_ok)
+        w.failed.connect(lambda error: self.lbl_dns_current.setText('DNS okunamadı: ' + str(error))
+                         if current() else None)
         self.window._run(w)
 
     def _set_dns_preset(self, mode, specifier, label):
-        if not self.core.connected or not self.core.target:
+        if self._dns_busy:
+            return
+        if not self._device_ready():
             QMessageBox.information(self, 'Bağlantı Yok', 'DNS ayarlamak için önce bir TV cihazına bağlanın.')
             return
         target = self.core.target
+        generation = self._generation
+        self._dns_revision += 1
+        current = lambda: (self.core.connected and self.core.target == target
+                           and self._generation == generation and self._device_ready())
+        self._dns_busy = True
+        self._sync_device_controls()
         self.lbl_dns_current.setText(f'DNS ayarlanıyor: {label}...')
         def do():
+            if not current():
+                raise CancelledError('Bağlantı değişti.')
             return self.core.engine.private_dns_set(target, mode, specifier)
         def on_ok(res):
+            if not current():
+                return
             if hasattr(self.window, 'append_log'):
                 self.window.append_log(f'Özel DNS güncellendi: mode={mode}, specifier={specifier}', 'INFO')
             self._fetch_dns_status()
             QMessageBox.information(self, 'DNS Güncellendi', f'TV Özel DNS başarıyla ayarlandı:\n\n{label} ({specifier or "Kapalı"})')
         def on_fail(err):
+            if not current():
+                return
             self.lbl_dns_current.setText('DNS ayarlanamadı.')
             QMessageBox.warning(self, 'DNS Hatası', f'DNS ayarlanamadı:\n{err}')
         w = Worker(do)
         w.finished_ok.connect(on_ok)
         w.failed.connect(on_fail)
-        self.window._run(w, desc=f'DNS Ayarlanıyor: {label}')
+        def cleanup():
+            self._dns_busy = False
+            self._sync_device_controls()
+        w.finished.connect(cleanup)
+        try:
+            self.window._run(w, desc=f'DNS Ayarlanıyor: {label}')
+        except Exception:
+            cleanup()
+            raise
 
     def _apply_custom_dns(self):
         val = self.txt_custom_dns.text().strip()
@@ -460,11 +558,16 @@ class NetworkTab(QWidget):
         self._set_dns_preset('hostname', val, f'Özel ({val})')
 
     def _run_diagnostics(self):
-        if not self.core.connected or not self.core.target:
+        if self._diag_worker is not None:
+            return
+        if not self._device_ready():
             QMessageBox.information(self, 'Bağlantı Yok', 'Ağ teşhisi yapmak için önce bir cihaza bağlanın.')
             return
         target = self.core.target
         engine = self.core.engine
+        generation = self._generation
+        current = lambda: (self.core.connected and self.core.target == target
+                           and self._generation == generation and self._device_ready())
 
         self.btn_run_diag.setEnabled(False)
         self.diag_progress.setRange(0, 0)
@@ -472,9 +575,13 @@ class NetworkTab(QWidget):
         self.lbl_diag_advice.setText('Ağ ve Wi-Fi parametreleri ölçülüyor (ping, RSSI, link speed)...')
 
         def do():
+            if not current():
+                raise CancelledError('Bağlantı değişti.')
             return engine.network_diagnostics(target)
 
         def done(res):
+            if not current():
+                return
             self.btn_run_diag.setEnabled(True)
             self.diag_progress.hide()
 
@@ -517,21 +624,33 @@ class NetworkTab(QWidget):
             else:
                 self.lbl_net_ip_detail.setText('Ağ arabirimi')
 
-            rating = res.get('health_rating', 'İyi')
+            rating = res.get('health_rating') or 'Ölçüm eksik'
             advice = res.get('advice', '')
-            color = '#4caf50' if rating == 'Mükemmel' else '#ff9800' if 'Zayıf' in rating or 'Yüksek' in rating else '#f44336'
-            self.lbl_diag_advice.setText('<b>Durum: <font color="{}">{}</font></b> — {}'.format(color, rating, advice))
+            self.lbl_diag_advice.setText('Durum: {} — {}'.format(rating, advice))
 
         def fail(err):
+            if not current():
+                return
             self.btn_run_diag.setEnabled(True)
             self.diag_progress.hide()
             self.lbl_diag_advice.setText('Teşhis tamamlanamadı: {}'.format(err))
 
         w = Worker(do)
+        self._diag_worker = w
         w.job_name = 'TV Ağ Teşhisi'
         w.finished_ok.connect(done)
         w.failed.connect(fail)
-        self.window._run(w, desc='Ağ: TV WiFi ve bağlantı kalitesi test ediliyor')
+        def cleanup():
+            if self._diag_worker is w:
+                self._diag_worker = None
+                self._sync_device_controls()
+                self.diag_progress.hide()
+        w.finished.connect(cleanup)
+        try:
+            self.window._run(w, desc='Ağ: TV WiFi ve bağlantı kalitesi test ediliyor')
+        except Exception:
+            cleanup()
+            raise
 
     def _stop_scan(self):
         self._stop_flag = True
@@ -540,14 +659,21 @@ class NetworkTab(QWidget):
                 self._current_worker.cancel()
             except Exception:
                 pass
-        self.btn_scan.setEnabled(True)
+        self.btn_scan.setEnabled(self._current_worker is None)
         self.btn_stop.setEnabled(False)
         if self._found:
             self.lbl_summary.setText(f'⏹ Tarama durduruldu · {len(self._found)} cihaz bulundu.')
         else:
             self.lbl_summary.setText('⏹ Tarama durduruldu.')
+            kit.empty_state(self.grid, 'Tarama durduruldu',
+                            'Aramayı yeniden başlatmak için taramanın bitmesini bekleyin.')
 
     def scan(self):
+        if (self._current_worker is not None
+                or getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)):
+            return
+        self._pending_scan_target = None
         prefix = self.txt_subnet.text().strip()
         port = self.spn_port.value()
         start, end = self.spn_from.value(), self.spn_to.value()
@@ -562,12 +688,14 @@ class NetworkTab(QWidget):
             return
         if start > end:
             start, end = end, start
+        self._scan_port = port
 
         # Arayüzü sıfırla ve yeni taramaya hazırla
         self._found = []
         self.grid.setRowCount(0)
         self.grid.setFixedHeight(120)
-        kit.empty_state(self.grid, 'Ağ taranıyor...', 'Açık ADB portlu (5555) cihazlar aranıyor...')
+        kit.empty_state(self.grid, 'Ağ taranıyor...',
+                        '{} portu açık olan cihazlar aranıyor...'.format(port))
 
         self.lbl_summary.setText(f'🔍 Taranıyor: {prefix}{start}-{end} :{port} ...')
         self.btn_scan.setEnabled(False)
@@ -576,12 +704,38 @@ class NetworkTab(QWidget):
         self._stop_flag = False
 
         w = NetworkScanWorker(prefix, start, end, port)
+        self._scan_workers.add(w)
         self._current_worker = w
-        w.device_found.connect(self._on_device_found)
-        w.progress.connect(self._update_scan_progress)
-        w.finished_ok.connect(self._on_scan_finished)
-        w.failed.connect(self._on_scan_failed)
-        self.window._run(w, desc=f'Ağ: {prefix}{start}-{end} taranıyor')
+        active = lambda: self._current_worker is w and not self._stop_flag
+        w.device_found.connect(lambda ip, state, latency:
+                               self._on_device_found(ip, state, latency) if active() else None)
+        w.progress.connect(lambda completed, total:
+                           self._update_scan_progress(completed, total) if active() else None)
+        results, errors = [], []
+        w.finished_ok.connect(results.append)
+        w.failed.connect(errors.append)
+
+        def cleanup():
+            self._scan_workers.discard(w)
+            if self._current_worker is w:
+                stopped = self._stop_flag
+                self._current_worker = None
+                self.btn_scan.setEnabled(True)
+                self.btn_stop.setEnabled(False)
+                if (not stopped and not getattr(self.window, '_closing', False)
+                        and not getattr(self.window, '_close_pending', False)):
+                    if results:
+                        self._on_scan_finished(results[0])
+                    else:
+                        self._on_scan_failed(errors[-1] if errors else 'Tarama tamamlanamadı.')
+            QTimer.singleShot(0, self._connect_scan_target)
+
+        w.finished.connect(cleanup)
+        try:
+            self.window._run(w, desc=f'Ağ: {prefix}{start}-{end} taranıyor')
+        except Exception as error:
+            errors.append(str(error))
+            cleanup()
 
     @Slot(str, str, str)
     def _on_device_found(self, ip, state, lat):
@@ -596,6 +750,7 @@ class NetworkTab(QWidget):
         item_ip = QTableWidgetItem(f'📺  {ip}')
         item_ip.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         item_ip.setData(Qt.UserRole, ip)
+        item_ip.setData(Qt.UserRole + 1, getattr(self, '_scan_port', self.spn_port.value()))
 
         item_state = QTableWidgetItem(f'● {state}')
         item_state.setTextAlignment(Qt.AlignCenter)
@@ -644,7 +799,8 @@ class NetworkTab(QWidget):
                 f'✅ Tarama tamamlandı: {count} cihaz bulundu. Çift tıklayarak veya "Bağlan" butonuyla hemen bağlanabilirsiniz.')
         else:
             kit.empty_state(self.grid, 'Cihaz bulunamadı',
-                            'Belirtilen aralıkta açık ADB portu (5555) olan cihaz bulunamadı.\nTV\'nizin açık, aynı Wi-Fi ağında ve ADB hata ayıklamanın aktif olduğundan emin olun.')
+                            'Belirtilen aralıkta açık ADB portu ({}) olan cihaz bulunamadı.\nTV\'nizin açık, aynı ağda ve ADB hata ayıklamanın etkin olduğundan emin olun.'.format(
+                                getattr(self, '_scan_port', self.spn_port.value())))
             self.lbl_summary.setText('0 cihaz bulundu (port açık değil veya cihaz çevrimdışı).')
 
     def _on_scan_failed(self, err):
@@ -656,8 +812,13 @@ class NetworkTab(QWidget):
                 self.lbl_summary.setText(f'⏹ Tarama durduruldu · {len(self._found)} cihaz bulundu.')
             else:
                 self.lbl_summary.setText('⏹ Tarama kullanıcı tarafından durduruldu.')
+                kit.empty_state(self.grid, 'Tarama durduruldu',
+                                'Aramayı yeniden başlatmak için Ağda Ara düğmesine basın.')
         else:
             self.lbl_summary.setText(f'Tarama hatası: {err}')
+            if not self._found:
+                kit.empty_state(self.grid, 'Tarama tamamlanamadı',
+                                'Ağ bağlantınızı ve adres aralığını kontrol edip yeniden deneyin.')
 
     def _show_results(self, found):
         """Geriye dönük uyumluluk için toplu gösterim fonksiyonu."""
@@ -684,38 +845,112 @@ class NetworkTab(QWidget):
         if not ip:
             QMessageBox.information(self, 'Cihaz Seçin', 'Lütfen bağlanmak istediğiniz TV cihazını listeden seçin.')
             return
-        self._set_target(ip + ':' + str(self.spn_port.value()))
+        item = self.grid.item(self.grid.currentRow(), COL_IP)
+        port = item.data(Qt.UserRole + 1) if item else None
+        self._set_target(ip + ':' + str(port or self.spn_port.value()))
 
     def _on_double_click(self, index):
         it = self.grid.item(index.row(), COL_IP)
         if it:
             ip = it.data(Qt.UserRole) or it.text().replace('📺', '').strip()
-            self._set_target(ip + ':' + str(self.spn_port.value()))
+            self._set_target(ip + ':' + str(it.data(Qt.UserRole + 1) or self.spn_port.value()))
 
     def _set_target(self, target):
+        if getattr(self.window, '_connection_busy', False):
+            self.lbl_summary.setText('Bağlantı işlemi sürüyor; tamamlanınca cihazı yeniden seçin.')
+            return
         self._stop_scan()
+        self._pending_scan_target = target
+        QTimer.singleShot(0, self._connect_scan_target)
+
+    def _connect_scan_target(self):
+        target = self._pending_scan_target
+        if not target:
+            return
+        if getattr(self.window, '_closing', False) or getattr(self.window, '_close_pending', False):
+            self._pending_scan_target = None
+            return
+        if self._scan_workers:
+            return
+        if (getattr(self.window, '_connection_busy', False)
+                or getattr(self.window, '_workers', ())):
+            self._pending_scan_target = None
+            self.lbl_summary.setText('Devam eden işlem var; tamamlanınca cihazı yeniden seçin.')
+            return
+        self._pending_scan_target = None
         self.window._set_target_fields(target)
-        self.window._sync_target()
-        self.core.config.push_history(target)
-        try:
-            self.window.refresh_history_combo()
-        except Exception:
-            pass
-        self.window.append_log('Hedef ayarlandi, baglaniliyor: ' + target, 'INFO')
+        self.window.append_log('Seçili ağ cihazına bağlantı başlatılıyor.', 'INFO')
         self.window.on_connect()
 
     def _pair(self):
-        host, ok = QInputDialog.getText(self, 'Eşleştir', 'Eşleştirme adresi (IP:port):',
-                                       text=self.txt_subnet.text().strip() + '1:XXXXX')
-        if not ok or not host.strip():
+        if (self._pair_worker is not None or self._pair_prompt
+                or getattr(self.window, '_connection_busy', False)
+                or getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)):
             return
-        code, ok2 = QInputDialog.getText(self, 'Eşleştir', 'Eşleştirme kodu (TVde yazar):')
-        if not ok2 or not code.strip():
-            return
+        self._pair_prompt = True
+        self._sync_device_controls()
+        try:
+            host, ok = QInputDialog.getText(
+                self, 'Kablosuz eşleştirme',
+                'TV’deki eşleştirme adresi (IP:port). Bu port bağlantı portundan farklı olabilir:',
+                text=self.txt_subnet.text().strip() + '1:')
+            if not ok or not host.strip():
+                return
+            code, ok = QInputDialog.getText(
+                self, 'Kablosuz eşleştirme', 'TV’de gösterilen 6 haneli eşleştirme kodu:',
+                QLineEdit.Password)
+            if not ok:
+                return
+            host, code = host.strip(), code.strip()
+            if not re.fullmatch(r'[0-9]{6}', code):
+                QMessageBox.warning(self, 'Eşleştirme', 'Eşleştirme kodu 6 rakam olmalıdır.')
+                return
+            if (getattr(self.window, '_connection_busy', False)
+                    or getattr(self.window, '_closing', False)
+                    or getattr(self.window, '_close_pending', False)):
+                self.lbl_summary.setText('İşlem durumu değişti; eşleştirme başlatılmadı.')
+                return
+            engine = self.core.engine
 
-        def do():
-            return self.core.engine.pair(host.strip(), code.strip())
-        w = Worker(do)
-        w.job_name = 'Kablosuz eşleştirme'
-        w.finished_ok.connect(lambda m: QMessageBox.information(self, 'Eşleştirme', m or 'Eşleştirme tamam.'))
-        self.window._run(w, desc='Ag: kablosuz eşleştirme deneniyor')
+            def do():
+                w.check_cancel()
+                return engine.pair(host, code)
+
+            w = Worker(do)
+            w.job_name = 'Kablosuz eşleştirme'
+            results, errors = [], []
+            w.finished_ok.connect(results.append)
+            w.failed.connect(errors.append)
+            self._pair_worker = w
+            self.lbl_summary.setText('Kablosuz eşleştirme bekleniyor…')
+
+            def finished():
+                if self._pair_worker is not w:
+                    return
+                self._pair_worker = None
+                self._sync_device_controls()
+                if (getattr(self.window, '_closing', False)
+                        or getattr(self.window, '_close_pending', False)):
+                    return
+                if results:
+                    self.lbl_summary.setText('Eşleştirme tamamlandı. TV’deki bağlantı portuyla bağlanın.')
+                    QMessageBox.information(
+                        self, 'Eşleştirme tamamlandı',
+                        'TV eşleştirildi. Bağlanmak için TV’deki kablosuz hata ayıklama '
+                        'ekranının bağlantı adresini kullanın; eşleştirme portu farklı olabilir.')
+                else:
+                    self.lbl_summary.setText('Eşleştirme tamamlanamadı: ' +
+                                             str(errors[-1] if errors else 'Sonuç alınamadı.'))
+
+            w.finished.connect(finished)
+            try:
+                self.window._run(w, desc='Ağ: kablosuz eşleştirme')
+            except Exception as error:
+                errors.append(str(error))
+                finished()
+        except Exception as error:
+            self.lbl_summary.setText('Eşleştirme başlatılamadı: ' + str(error))
+        finally:
+            self._pair_prompt = False
+            self._sync_device_controls()

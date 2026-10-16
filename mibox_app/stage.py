@@ -34,11 +34,15 @@ _SNAPSHOT_REQUIRED_ACTIONS = {
 class Stage:
     def __init__(self):
         self._items = []  # [(action, pkg)]
+        self._item_tokens = {}
+        self._next_token = 0
 
     def add(self, action, pkg):
         key = (action, pkg)
         if key not in self._items:
             self._items.append(key)
+            self._next_token += 1
+            self._item_tokens[key] = self._next_token
             return True
         return False
 
@@ -53,11 +57,24 @@ class Stage:
         key = (action, pkg)
         if key in self._items:
             self._items.remove(key)
+            self._item_tokens.pop(key, None)
             return True
         return False
 
+    def items_with_tokens(self):
+        """Return staged entries with identities for safe async completion updates."""
+        return [(action, pkg, self._item_tokens[(action, pkg)])
+                for action, pkg in self._items]
+
+    def remove_if_unchanged(self, action, pkg, token):
+        """Remove an entry only if it is still the same queued instance."""
+        if self._item_tokens.get((action, pkg)) != token:
+            return False
+        return self.remove(action, pkg)
+
     def clear(self):
         self._items = []
+        self._item_tokens.clear()
 
     def items(self):
         return list(self._items)
@@ -98,25 +115,37 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
     from . import snapshot as snapmod
     items = stage.items() if isinstance(stage, Stage) else list(stage)
     try:
-        engine.connect(target)
+        engine.connect(target, cancel_check=is_cancelled)
     except AdbError as e:
+        if is_cancelled is not None and is_cancelled():
+            from .workers import CancelledError
+            raise CancelledError('kullanıcı durdurdu')
         return {'ok': 0, 'fail': len(items),
                 'details': [(p, False, str(e)) for _a, p in items],
+                'failed_items': list(items),
                 'action': 'stage', 'auto_snap': None}
     snap_name = None
     snapshot_failed = False
     try:
-        snap_name, _c = snapmod.take(engine, target)
+        snap_name, _c = snapmod.take(
+            engine, target, is_cancelled=is_cancelled)
         if log:
             log('Paket durumu snapshot\'ı: {} (uygulama verisi yedeklenmez)'.format(snap_name))
     except Exception as e:  # noqa: BLE001
+        from .workers import CancelledError
+        if isinstance(e, CancelledError):
+            raise
+        if is_cancelled is not None and is_cancelled():
+            raise CancelledError('kullanıcı durdurdu')
         snapshot_failed = True
         if log:
             log('Paket durumu snapshot\'ı alınamadı: {}'.format(e))
-    ok, fail, details, history_details = 0, 0, [], []
+    ok, fail, details, history_details, failed_items = 0, 0, [], [], []
 
     def record(action, pkg, succeeded, message, history_action=None):
         details.append((pkg, succeeded, message))
+        if not succeeded:
+            failed_items.append((action, pkg))
         history_details.append((
             action if history_action is None else history_action,
             pkg, succeeded, message))
@@ -199,4 +228,5 @@ def run_stage(engine, target, stage, protected=(), log=None, progress=None,
     except Exception:
         pass
     return {'ok': ok, 'fail': fail, 'details': details,
+            'failed_items': failed_items,
             'action': 'stage', 'auto_snap': snap_name}

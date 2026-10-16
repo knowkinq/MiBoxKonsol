@@ -79,34 +79,53 @@ def _temizle(paket_dir):
                 'mibox-islem-gecmisi.jsonl', 'mibox-işlem-geçmişi.jsonl',
                 'mibox-gecmis.csv', 'mibox-geçmiş.csv',
                 'debloat-kullanici.json', 'debloat-kullanıcı.json',
-                'mibox-selftest-ok.txt', 'mibox-logcat.txt', 'surum.txt')
+                'mibox-selftest-ok.txt', 'mibox-logcat.txt', 'surum.txt',
+                'ortam-bilgisi.txt', 'mibox-version.txt', 'scrcpy.exe')
     silinen = []
+    silinemeyen = []
+
+    def _sil(yol, ad):
+        try:
+            if os.path.islink(yol) or os.path.isfile(yol):
+                os.remove(yol)
+            elif os.path.isdir(yol):
+                shutil.rmtree(yol)
+            else:
+                raise OSError('Desteklenmeyen dosya türü')
+            silinen.append(ad)
+        except OSError as e:
+            silinemeyen.append((ad, e.strerror or type(e).__name__))
+
     for ad in gereksiz:
         yol = os.path.join(paket_dir, ad)
-        if os.path.exists(yol):
-            try:
-                os.remove(yol)
-                silinen.append(ad)
-            except OSError as e:
-                print('uyari: {} silinemedi: {}'.format(ad, e))
+        if os.path.lexists(yol):
+            _sil(yol, ad)
 
     for ad in ('logs', 'snapshots', 'ekran-goruntuleri', 'ekran-videolari',
-               'indirilen-apklar', 'apk-yedekleri', '_arsiv'):
+               'indirilen-apklar', 'apk-yedekleri', '_arsiv', 'scrcpy'):
         yol = os.path.join(paket_dir, ad)
-        if os.path.islink(yol) or os.path.isfile(yol):
-            os.remove(yol)
-            silinen.append(ad)
-        elif os.path.isdir(yol):
-            shutil.rmtree(yol)
-            silinen.append(ad)
+        if os.path.lexists(yol):
+            _sil(yol, ad)
 
-    for pattern in ('mibox-ayarlar.json.*', 'MiBox-ayarlar.json.*',
-                    'mibox-snapshot-*.json', '*.apk', '*.apks', '*.xapk',
-                    '*.log', '*.jsonl', '*.csv'):
-        for yol in glob.glob(os.path.join(paket_dir, pattern)):
-            if os.path.isfile(yol) or os.path.islink(yol):
-                os.remove(yol)
-                silinen.append(os.path.basename(yol))
+    for pattern in ('scrcpy-*', '.mibox-scrcpy-*'):
+        paths = glob.glob(os.path.join(glob.escape(paket_dir), pattern))
+        for yol in paths:
+            _sil(yol, os.path.basename(yol))
+
+    for pattern in (
+            'mibox-ayarlar.json.*', 'MiBox-ayarlar.json.*',
+            'mibox-ayar-yedek*.json*', '.mibox-ayar-yedek*.tmp',
+            '.mibox-debloat-favorites-*.tmp',
+            'mibox-snapshot-*.json', '.mibox-snapshot-*.tmp',
+            '.mibox-download-*.part', '*.apk', '*.apks', '*.xapk',
+            '*.log', '*.jsonl', '*.csv', '.scrcpy-preferred*',
+            '.scrcpy_download.tmp.zip', '.mibox-kurulum-devam'):
+        for yol in glob.glob(os.path.join(glob.escape(paket_dir), pattern)):
+            _sil(yol, os.path.basename(yol))
+    if silinemeyen:
+        details = ', '.join('{} ({})'.format(ad, error)
+                            for ad, error in silinemeyen)
+        raise OSError('Kullanıcı/çalışma zamanı dosyaları temizlenemedi: ' + details)
     if silinen:
         print('temizlenen dosyalar:', ', '.join(silinen))
 

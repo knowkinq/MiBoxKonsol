@@ -3,13 +3,39 @@
 from PySide6.QtCore import Qt, Signal, QTimer
 import math
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QFrame, QLabel, QPushButton,
     QComboBox, QPlainTextEdit, QMessageBox, QDialog, QDialogButtonBox,
 )
 
 from ..workers import Worker, CancelledError
 from . import kit
 from .flowlayout import FlowLayout
+
+
+class _NoWheelComboBox(QComboBox):
+    """Avoid changing a setting when the user scrolls the containing page."""
+
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+def _content_card(title, metric=False):
+    card = QFrame()
+    card.setObjectName('metricCard' if metric else 'contentCard')
+    card.setProperty('role', 'secondary')
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(10 if metric else 12, 10 if metric else 12,
+                              10 if metric else 12, 10 if metric else 12)
+    layout.setSpacing(6)
+    heading = QLabel(title)
+    heading.setObjectName('metricLabel' if metric else 'cardTitle')
+    heading.setProperty('role', 'quiet' if metric else 'primary')
+    heading.setWordWrap(True)
+    layout.addWidget(heading)
+    return card, layout
 
 
 def size_text(kb):
@@ -32,6 +58,7 @@ def measurement(value):
 
 class OptimizationTab(QWidget):
     analysis_ready = Signal(dict)
+    busy_changed = Signal(bool)
 
     def __init__(self, core, window, embedded=False):
         super().__init__()
@@ -45,32 +72,37 @@ class OptimizationTab(QWidget):
 
     def _build(self):
         root = kit.page(self)
-        intro = kit.hint_label('Kasma nedenlerini inceleyin, uygulamak istediğiniz adımları seçin. '
-                               'Animasyonları kısaltmak geçişleri hızlandırır; donanım gücünü artırmaz.')
+        intro_text = ('Kasma nedenlerini inceleyin, uygulamak istediğiniz adımları seçin. '
+                      'Animasyonları kısaltmak geçişleri hızlandırır; donanım gücünü artırmaz.')
+        if self._embedded:
+            intro_text += ' Ekran ve çözünürlük ayarları Cihaz ayarları bölümündedir.'
+        intro = kit.hint_label(intro_text)
         root.addWidget(intro)
-        metrics = QHBoxLayout()
+        metrics = QBoxLayout(QBoxLayout.LeftToRight)
+        metrics.setSpacing(8)
         for title, value_name, detail_name in (
                 ('Depolama doluluğu', 'lbl_disk', 'lbl_disk_detail'),
                 ('RAM kullanımı', 'lbl_ram', 'lbl_ram_detail'),
                 ('Animasyon ölçeği', 'lbl_anim', 'lbl_anim_detail')):
-            card = QGroupBox(title)
-            layout = QVBoxLayout(card)
+            card, layout = _content_card(title, metric=True)
             value = QLabel('—')
             value.setObjectName('metricValue')
+            value.setTextFormat(Qt.PlainText)
             detail = kit.hint_label('Henüz ölçülmedi')
+            detail.setTextFormat(Qt.PlainText)
             setattr(self, value_name, value)
             setattr(self, detail_name, detail)
             layout.addWidget(value)
             layout.addWidget(detail)
             metrics.addWidget(card, 1)
+        self._metrics_layout = metrics
         root.addLayout(metrics)
         if self._embedded:
             # Storage and RAM live in the health overview; keep the current
             # animation state next to its controls.
             for index in range(2):
                 metrics.itemAt(index).widget().hide()
-        diagnostics = QGroupBox('Cihaz analizi')
-        analysis_layout = QVBoxLayout(diagnostics)
+        diagnostics, analysis_layout = _content_card('Cihaz analizi')
         self.lbl_findings = kit.status_label('Önce cihaza bağlanın ve Analiz Et ile mevcut durumu okuyun.')
         self.lbl_findings.setTextFormat(Qt.PlainText)
         analysis_layout.addWidget(self.lbl_findings)
@@ -83,8 +115,7 @@ class OptimizationTab(QWidget):
         else:
             root.addWidget(diagnostics)
 
-        tuning = QGroupBox('Performans ve bakım adımları')
-        plan = QVBoxLayout(tuning)
+        tuning, plan = _content_card('Performans ve bakım adımları')
         self.chk_cache = kit.CheckBox('Uygulama önbelleklerini temizle')
         self.chk_cache.setChecked(True)
         plan.addWidget(self.chk_cache)
@@ -93,7 +124,7 @@ class OptimizationTab(QWidget):
         self.chk_animation = kit.CheckBox('Animasyon hızını değiştir')
         self.chk_animation.setChecked(False)
         plan.addWidget(self.chk_animation)
-        self.cmb_animation = QComboBox()
+        self.cmb_animation = _NoWheelComboBox()
         self.cmb_animation.addItem('Daha kısa geçişler · 0,5×', '0.5')
         self.cmb_animation.addItem('Standart geçişler · 1×', '1')
         self.cmb_animation.addItem('Animasyonları kapat · 0×', '0')
@@ -101,22 +132,23 @@ class OptimizationTab(QWidget):
         self.cmb_animation.setEnabled(self.chk_animation.isChecked())
         plan.addWidget(self.cmb_animation)
         plan.addWidget(kit.hint_label('Yalnızca seçilen adımlar uygulanır. Arka plandaki uygulamalar zorla kapatılmaz.'))
-        plan_buttons = QHBoxLayout()
+        plan_buttons = FlowLayout()
         self.btn_apply = QPushButton('Seçilenleri Uygula')
         self.btn_apply.setProperty('role', 'primary')
         self.btn_apply.clicked.connect(self._apply)
-        self.btn_boost = QPushButton('🚀 Tek Tıkla Süper Hızlandırma')
+        self.btn_boost = QPushButton('Hızlı Hızlandırma Uygula')
         self.btn_boost.setProperty('accent', True)
-        self.btn_boost.setToolTip('Arka plan süreçlerini kapatır, önbellekleri temizler ve animasyonları 0.5x yaparak TV belleğini anında rahatlatır.')
+        self.btn_boost.setToolTip(
+            'Arka plan süreçlerini sonlandırır, önbellekleri temizler ve animasyon hızını 0,5× yapar.')
         self.btn_boost.clicked.connect(self._quick_boost)
         plan_buttons.addWidget(self.btn_apply)
         plan_buttons.addWidget(self.btn_boost)
         plan.addLayout(plan_buttons)
         root.addWidget(tuning)
 
-        # Ekran Çözünürlüğü ve Görüntü Ayarları (DPI / Ekran Boyutu)
-        disp_group = QGroupBox('Ekran Çözünürlüğü ve Görüntü Ayarları (DPI / Ekran Boyutu)')
-        disp_layout = QVBoxLayout(disp_group)
+        # Retain the standalone display controls for callers that use this tab
+        # directly; the embedded Health view exposes DisplayPanel instead.
+        disp_group, disp_layout = _content_card('Ekran ve görüntü ayarları')
         disp_hint = kit.hint_label(
             'TV ekran çözünürlüğünü ve arayüz DPI ölçeğini değiştirin. '
             'Yanlış ayarda siyah ekranda kalmamanız için 15 saniyelik otomatik geri alma koruması bulunur.'
@@ -125,19 +157,22 @@ class OptimizationTab(QWidget):
 
         self.lbl_disp_current = QLabel('Mevcut Ekran: Henüz sorgulanmadı')
         self.lbl_disp_current.setProperty('role', 'quiet')
+        self.lbl_disp_current.setTextFormat(Qt.PlainText)
+        self.lbl_disp_current.setWordWrap(True)
         disp_layout.addWidget(self.lbl_disp_current)
 
-        disp_controls = QHBoxLayout()
+        disp_controls = QBoxLayout(QBoxLayout.LeftToRight)
         disp_controls.setSpacing(8)
+        self._display_controls_layout = disp_controls
 
-        self.cmb_resolution = QComboBox()
+        self.cmb_resolution = _NoWheelComboBox()
         self.cmb_resolution.addItem('Çözünürlük: Değiştirme', None)
         self.cmb_resolution.addItem('1080p Full HD (1920×1080) · Standart TV', (1920, 1080))
         self.cmb_resolution.addItem('720p HD (1280×720) · Yüksek Hız / Eski TV', (1280, 720))
         self.cmb_resolution.addItem('4K UHD (3840×2160)', (3840, 2160))
         self.cmb_resolution.addItem('Fabrika Çözünürlüğüne Sıfırla', 'reset')
 
-        self.cmb_density = QComboBox()
+        self.cmb_density = _NoWheelComboBox()
         self.cmb_density.addItem('DPI Ölçeği: Değiştirme', None)
         self.cmb_density.addItem('240 DPI (Kompakt · Ekranda Daha Çok Öğe)', 240)
         self.cmb_density.addItem('280 DPI (Orta)', 280)
@@ -145,7 +180,7 @@ class OptimizationTab(QWidget):
         self.cmb_density.addItem('360 DPI (Büyük & Kolay Okunur)', 360)
         self.cmb_density.addItem('Fabrika DPI Değerine Sıfırla', 'reset')
 
-        self.cmb_overscan = QComboBox()
+        self.cmb_overscan = _NoWheelComboBox()
         self.cmb_overscan.addItem('Kenar Taşması (Overscan): Değiştirme', None)
         self.cmb_overscan.addItem('Kenarları Sıfırla (0px)', (0, 0, 0, 0))
         self.cmb_overscan.addItem('Kenarlardan 20px İçeri Çek (Hafif Kırpılma)', (20, 20, 20, 20))
@@ -156,7 +191,7 @@ class OptimizationTab(QWidget):
         disp_controls.addWidget(self.cmb_overscan, 1)
         disp_layout.addLayout(disp_controls)
 
-        disp_btn_row = QHBoxLayout()
+        disp_btn_row = FlowLayout()
         self.btn_apply_disp = QPushButton('Görüntü Ayarlarını Uygula')
         self.btn_apply_disp.setProperty('role', 'primary')
         self.btn_apply_disp.clicked.connect(self._apply_display_settings)
@@ -168,7 +203,6 @@ class OptimizationTab(QWidget):
         disp_btn_row.addWidget(self.btn_apply_disp)
         disp_btn_row.addWidget(self.btn_read_disp)
         disp_btn_row.addWidget(self.btn_reset_disp_all)
-        disp_btn_row.addStretch(1)
         disp_layout.addLayout(disp_btn_row)
 
         self.disp_group = disp_group
@@ -187,17 +221,28 @@ class OptimizationTab(QWidget):
         for button in (apps, files, self.btn_reboot):
             tools.addWidget(button)
         root.addLayout(tools)
-        self.lbl_status = kit.status_label('Hazır.')
+        self.lbl_status = kit.status_label('Analiz bekliyor. Cihaza bağlanıp Analiz Et’i seçin.')
         self.lbl_status.setTextFormat(Qt.PlainText)
         root.addWidget(self.lbl_status)
         self.txt_report = QPlainTextEdit()
         self.txt_report.setReadOnly(True)
         self.txt_report.setPlaceholderText('Uygulanan adımların ve önce/sonra ölçümlerinin sonucu burada görünür.')
-        self.txt_report.setMinimumHeight(90)
-        self.txt_report.setMaximumHeight(180)
+        self.txt_report.setMinimumHeight(72)
+        self.txt_report.setMaximumHeight(132)
         self.txt_report.setMaximumBlockCount(120)
         root.addWidget(self.txt_report)
         root.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        compact = self.width() < 760
+        direction = QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight
+        metrics_layout = getattr(self, '_metrics_layout', None)
+        if metrics_layout is not None:
+            metrics_layout.setDirection(direction)
+        display_layout = getattr(self, '_display_controls_layout', None)
+        if display_layout is not None:
+            display_layout.setDirection(direction)
 
     def _open_running_apps(self):
         health = getattr(self.window, 'tab_health_inner', None)
@@ -230,7 +275,7 @@ class OptimizationTab(QWidget):
         self.txt_report.clear()
 
     def _ready(self):
-        if self._busy:
+        if self._busy or getattr(self.window, "_closing", False) or getattr(self.window, "_close_pending", False):
             return False
         if getattr(self.window, '_connection_busy', False) or not self.core.connected or not self.core.target:
             self.lbl_status.setText('Önce cihaz bağlantısının kurulmasını bekleyin.')
@@ -263,7 +308,9 @@ class OptimizationTab(QWidget):
 
         def check():
             worker.check_cancel()
-            if generation != self._generation or not self.core.connected or self.core.target != target or getattr(self.window, '_connection_busy', False):
+            if (generation != self._generation or not self.core.connected or self.core.target != target
+                    or engine is not self.core.engine or getattr(self.window, '_connection_busy', False)
+                    or getattr(self.window, '_closing', False) or getattr(self.window, '_close_pending', False)):
                 raise CancelledError('Bağlantı değişti; işlem durduruldu.')
 
         def do():
@@ -277,7 +324,11 @@ class OptimizationTab(QWidget):
         self._worker = worker
         self._set_busy(True)
         self.lbl_status.setText('Cihaz analiz ediliyor…' if kind == 'analyze' else 'Seçilen adımlar uygulanıyor…')
-        current = lambda: generation == self._generation and target == self.core.target and self.core.connected
+        current = lambda: (generation == self._generation and target == self.core.target
+                           and self.core.connected and engine is self.core.engine
+                           and not getattr(self.window, '_connection_busy', False)
+                           and not getattr(self.window, '_closing', False)
+                           and not getattr(self.window, '_close_pending', False))
         worker.finished_ok.connect(lambda result: self._show_analysis(result) if current() and kind == 'analyze'
                                    else self._show_result(result) if current() else None)
         worker.failed.connect(lambda error: self.lbl_status.setText('İşlem tamamlanamadı: ' + str(error)) if current() else None)
@@ -300,6 +351,7 @@ class OptimizationTab(QWidget):
                        self.btn_apply_disp, self.btn_read_disp, self.btn_reset_disp_all):
             widget.setEnabled(not busy)
         self.cmb_animation.setEnabled(not busy and self.chk_animation.isChecked())
+        self.busy_changed.emit(self._busy)
 
     def _show_analysis(self, result):
         health, animations = dict(result.get('health', {})), result.get('animations', {})
@@ -378,7 +430,11 @@ class OptimizationTab(QWidget):
         except Exception as error:
             self.lbl_status.setText('Cihaz motoru hazır değil: ' + str(error))
             return
-        current = lambda: generation == self._generation and target == self.core.target and self.core.connected
+        current = lambda: (generation == self._generation and target == self.core.target
+                           and self.core.connected and engine is self.core.engine
+                           and not getattr(self.window, '_connection_busy', False)
+                           and not getattr(self.window, '_closing', False)
+                           and not getattr(self.window, '_close_pending', False))
 
         def dispatch():
             worker.check_cancel()
@@ -421,6 +477,12 @@ class OptimizationTab(QWidget):
         if getattr(self.window, '_workers', []):
             self.lbl_status.setText('Diğer işlemlerin bitmesini bekleyip yeniden deneyin.')
             return
+        target, generation = self.core.target, self._generation
+        try:
+            engine = self.core.engine
+        except Exception as error:
+            self.lbl_status.setText('Cihaz motoru hazır değil: ' + str(error))
+            return
         if QMessageBox.question(
                 self, 'Süper Hızlandırma',
                 'Tek tıkla süper hızlandırma uygulanacak:\n\n'
@@ -430,23 +492,33 @@ class OptimizationTab(QWidget):
                 'Devam edilsin mi?',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        target, generation = self.core.target, self._generation
-        try:
-            engine = self.core.engine
-        except Exception as error:
-            self.lbl_status.setText('Cihaz motoru hazır değil: ' + str(error))
+        if (not self._ready() or target != self.core.target or generation != self._generation
+                or engine is not self.core.engine or getattr(self.window, '_workers', [])):
+            self.lbl_status.setText('Cihaz veya işlem durumu değişti. Yeniden deneyin.')
             return
 
+        current = lambda: (generation == self._generation and target == self.core.target
+                           and self.core.connected and engine is self.core.engine
+                           and not getattr(self.window, '_connection_busy', False)
+                           and not getattr(self.window, '_closing', False)
+                           and not getattr(self.window, '_close_pending', False))
+
+        def check():
+            worker.check_cancel()
+            if not current():
+                raise CancelledError('Bağlantı değişti; hızlandırma durduruldu.')
+
         def do():
-            return engine.quick_boost(target)
+            return engine.quick_boost(target, check_cancel=check)
 
         worker = Worker(do)
         worker.job_name = 'Süper Hızlandırma'
+        self._worker = worker
+        results, errors = [], []
         self._set_busy(True)
         self.lbl_status.setText('Süper hızlandırma uygulanıyor…')
 
         def done(res):
-            self._set_busy(False)
             res = res or {}
             freed = measurement(res.get('freed_mb'))
             summary = res.get('summary') or []
@@ -509,15 +581,33 @@ class OptimizationTab(QWidget):
                 QMessageBox.warning(self, dialog_title, msg)
             else:
                 QMessageBox.information(self, dialog_title, msg)
-            self.refresh()
 
-        def fail(err):
+        worker.finished_ok.connect(results.append)
+        worker.failed.connect(errors.append)
+
+        def finish():
+            if self._worker is not worker:
+                return
+            self._worker = None
             self._set_busy(False)
-            self.lbl_status.setText('Hızlandırma hatası: ' + str(err))
+            if not current():
+                return
+            if errors:
+                self.lbl_status.setText('Hızlandırma tamamlanamadı: ' + str(errors[-1]))
+            elif results:
+                done(results[-1])
+            else:
+                self.lbl_status.setText('Hızlandırma durduruldu. Bazı adımlar uygulanmış olabilir.')
 
-        worker.finished_ok.connect(done)
-        worker.failed.connect(fail)
-        self.window._run(worker, desc='Süper Hızlandırma')
+        worker.finished.connect(finish)
+        try:
+            self.window._run(worker, desc='Süper Hızlandırma')
+        except Exception as error:
+            if self._worker is worker:
+                self._worker = None
+                self._set_busy(False)
+            if current():
+                self.lbl_status.setText('Hızlandırma başlatılamadı: ' + str(error))
 
     def _read_display_settings(self):
         if not self._ready():
@@ -532,9 +622,9 @@ class OptimizationTab(QWidget):
         worker.job_name = 'Ekran Bilgisi Okuma'
 
         def done(info):
-            txt = f"Mevcut: <b>{info['width']}×{info['height']}</b> @ {info['fps']}Hz · <b>{info['density']} DPI</b>"
+            txt = f"Mevcut: {info['width']}×{info['height']} @ {info['fps']}Hz · {info['density']} DPI"
             if info.get('override_width') or info.get('override_density'):
-                txt += " <font color='#2196f3'>[Özel Ayar Etkin]</font>"
+                txt += ' · Özel ayar etkin'
             if info.get('sink_name'):
                 txt += f" · {info['sink_name']}"
             if info.get('overscan'):

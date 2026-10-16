@@ -3,7 +3,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget, QLineEdit, QPushButton, QTableWidgetItem, QHeaderView, QTabBar,
+    QWidget, QVBoxLayout, QBoxLayout, QFrame, QLabel, QLineEdit, QPushButton,
+    QTableWidgetItem, QHeaderView, QTabBar,
 )
 
 from ..workers import AppScanWorker, BulkActionWorker
@@ -17,25 +18,44 @@ class BackgroundPanel(QWidget):
         super().__init__()
         self.core, self.window = core, window
         self._apps = []
+        self._has_scan = False
         self._busy = False
         self._worker = None
         self._generation = 0
         root = kit.page(self)
-        root.addWidget(kit.hint_label('Arka planda çalışma izinlerini burada yönetin. '
-                                     'Kısıtlama bildirimleri ve eşitlemeyi etkileyebilir; '
-                                     'çalışan bir işlem olması, uygulamanın ekranda açık olduğu anlamına gelmez.'))
+
+        card = QFrame()
+        card.setObjectName('contentCard')
+        card.setProperty('role', 'secondary')
+        content = QVBoxLayout(card)
+        content.setContentsMargins(12, 12, 12, 12)
+        content.setSpacing(8)
+        heading = QLabel('Arka plan uygulamaları')
+        heading.setObjectName('cardTitle')
+        heading.setProperty('role', 'primary')
+        content.addWidget(heading)
+        content.addWidget(kit.hint_label(
+            'Arka planda çalışma izinlerini yönetin. Kısıtlama bildirimleri ve eşitlemeyi etkileyebilir; '
+            'bir işlemin çalışıyor görünmesi, uygulamanın ekranda açık olduğu anlamına gelmez.'
+        ))
+
         self.category_tabs = QTabBar()
         self.category_tabs.setAccessibleName('Uygulama türü')
         self.category_tabs.setExpanding(False)
-        self.category_tabs.addTab('Kullanıcı (0)')
-        self.category_tabs.addTab('Sistem (0)')
+        self.category_tabs.addTab('Kullanıcı (—)')
+        self.category_tabs.addTab('Sistem (—)')
         self.category_tabs.currentChanged.connect(self._render)
-        root.addWidget(self.category_tabs)
         self.search = QLineEdit()
         self.search.setPlaceholderText('Uygulama veya paket ara…')
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._render)
-        root.addWidget(self.search)
+        filters = QBoxLayout(QBoxLayout.LeftToRight)
+        filters.setSpacing(8)
+        filters.addWidget(self.category_tabs)
+        filters.addWidget(self.search, 1)
+        self._filter_layout = filters
+        content.addLayout(filters)
+
         self.grid = kit.make_table(5, ['Seç', 'Uygulama', 'Paket', 'Arka plan izni', 'Çalışıyor'])
         for col in (1, 2):
             self.grid.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
@@ -44,8 +64,7 @@ class BackgroundPanel(QWidget):
         self.grid.horizontalHeader().setSortIndicatorShown(True)
         self.grid.horizontalHeader().setSortIndicator(1, Qt.AscendingOrder)
         self.grid.setSortingEnabled(True)
-        self.grid.setMinimumHeight(150)
-        root.addWidget(self.grid, 1)
+        content.addWidget(self.grid, 1)
         kit.empty_state(self.grid, 'Henüz tarama yok', 'Yenile ile uygulamaların izinlerini okuyun.')
         actions = FlowLayout()
         self.btn_refresh = QPushButton('Yenile')
@@ -56,17 +75,27 @@ class BackgroundPanel(QWidget):
         self.btn_free.clicked.connect(lambda: self._apply(False))
         for button in (self.btn_refresh, self.btn_restrict, self.btn_free):
             actions.addWidget(button)
-        root.addLayout(actions)
-        self.status = kit.status_label('Hazır. Korunan ve devre dışı paketler değiştirilemez.')
+        content.addLayout(actions)
+        self.status = kit.status_label('Henüz tarama yapılmadı. Cihaza bağlanıp Yenile’ye basın.')
         self.status.setTextFormat(Qt.PlainText)
-        root.addWidget(self.status)
+        content.addWidget(self.status)
+        root.addWidget(card, 1)
         core.connection_changed.connect(self._connection_changed)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        layout = getattr(self, '_filter_layout', None)
+        if layout is not None:
+            direction = (QBoxLayout.TopToBottom if self.width() < 620
+                         else QBoxLayout.LeftToRight)
+            layout.setDirection(direction)
 
     def _connection_changed(self, _connected, _target):
         self._generation += 1
         if self._worker is not None:
             self._worker.cancel()
         self._apps = []
+        self._has_scan = False
         self._render()
         self.status.setText('Bağlantı değişti. Yeniden tarayın.')
 
@@ -108,6 +137,7 @@ class BackgroundPanel(QWidget):
 
     def _loaded(self, apps):
         self._apps = [dict(app) for app in apps if app.get('installed_user0', True)]
+        self._has_scan = True
         self._render()
         self.status.setText('{} paket incelendi. Seçerek kısıtlayabilir veya serbest bırakabilirsiniz.'.format(len(self._apps)))
 
@@ -115,8 +145,12 @@ class BackgroundPanel(QWidget):
         text = self.search.text().casefold().replace('ı', 'i')
         system_count = sum(bool(app.get('system', False)) for app in self._apps)
         user_count = len(self._apps) - system_count
-        self.category_tabs.setTabText(0, 'Kullanıcı ({})'.format(user_count))
-        self.category_tabs.setTabText(1, 'Sistem ({})'.format(system_count))
+        if self._has_scan:
+            self.category_tabs.setTabText(0, 'Kullanıcı ({})'.format(user_count))
+            self.category_tabs.setTabText(1, 'Sistem ({})'.format(system_count))
+        else:
+            self.category_tabs.setTabText(0, 'Kullanıcı (—)')
+            self.category_tabs.setTabText(1, 'Sistem (—)')
         show_system = self.category_tabs.currentIndex() == 1
         header = self.grid.horizontalHeader()
         sort_column, sort_order = header.sortIndicatorSection(), header.sortIndicatorOrder()

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMenu, QToolButton,
 )
 
-from ..debloat_db import (all_categories, CAT_COLORS, add_user_entry, remove_user_entry,
+from ..debloat_db import (all_categories, CAT_COLORS, add_user_entry, remove_user_entries,
                             uad_removal_of, uad_list_of, needed_by, REMOVAL_TR,
                             REMOVAL_COLOR, CAT_LABELS)
 from ..profiles import PROFILES, profile_summary, validate_profile
@@ -19,6 +19,7 @@ from .theme import cat_colors_for, removal_colors_for
 from ..workers import CancelledError, PackageActionWorker, Worker
 from . import kit
 from .flowlayout import FlowLayout
+from .actions_dialog import search_key
 
 COL_CHECK = 0
 COL_NAME = 1
@@ -28,6 +29,16 @@ COL_PRESENT = 4
 COL_STATE = 5
 COL_UAD = 6
 COL_SAFETY = 7
+
+
+class _NoWheelComboBox(QComboBox):
+    """Keep the selected Android user stable while scrolling the page."""
+
+    def wheelEvent(self, event):
+        if self.view().isVisible():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 class DebloatTab(QWidget):
@@ -148,6 +159,8 @@ class DebloatTab(QWidget):
         self.txt_search.setMinimumWidth(100)
         self.txt_search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.txt_search.setPlaceholderText('Paketlerde ara...')
+        self.txt_search.setAccessibleName('Paket adı veya paket kimliği ara')
+        self.txt_search.setClearButtonEnabled(True)
         self.txt_search.textChanged.connect(self._reload)
 
         self.lbl_presence = QLabel('Cihaz: bekleniyor')
@@ -187,7 +200,7 @@ class DebloatTab(QWidget):
         self.chk_unlisted.setToolTip('UAD unlisted filtresi: DB de olmayan cihaz paketlerini gosterir')
         self.chk_unlisted.toggled.connect(self._unlisted_toggle)
 
-        self.cmb_user = QComboBox()
+        self.cmb_user = _NoWheelComboBox()
         self.cmb_user.setMinimumWidth(150)
         self.cmb_user.setMaximumWidth(200)
         self.cmb_user.setToolTip('İşlem uygulanacak Android kullanıcısı (UAD multi-user)')
@@ -306,6 +319,12 @@ class DebloatTab(QWidget):
                 lambda _checked=False, target=button: target.click())
         self.btn_select_menu.setMenu(select_menu)
 
+        self.btn_reset_filters = QPushButton('Filtreleri Sıfırla')
+        self.btn_reset_filters.setAccessibleName('Debloat filtrelerini sıfırla')
+        self.btn_reset_filters.setToolTip(
+            'Güvenli kategoriyi seçer ve arama ile gelişmiş filtreleri temizler.')
+        self.btn_reset_filters.clicked.connect(self._reset_filters)
+
         self.btn_other = QToolButton()
         self.btn_other.setText('Diğer işlemler')
         self.btn_other.setPopupMode(QToolButton.InstantPopup)
@@ -347,7 +366,7 @@ class DebloatTab(QWidget):
             button.hide()
 
         actions = FlowLayout(margin=0, hspacing=4, vspacing=4)
-        for widget in (self.btn_select_menu, self.lbl_sel, self.btn_smart,
+        for widget in (self.btn_reset_filters, self.btn_select_menu, self.lbl_sel, self.btn_smart,
                        self.btn_disable, self.btn_restore, self.lbl_stage,
                        self.btn_stage_show, self.btn_other):
             actions.addWidget(widget)
@@ -385,6 +404,26 @@ class DebloatTab(QWidget):
 
     def reload(self):
         self._fill_categories()
+        self._reload()
+
+    def _reset_filters(self):
+        filters = (self.cmb_cat, self.txt_search, self.cmb_removal,
+                   self.cmb_ulist, self.chk_unlisted)
+        previous_signal_states = [widget.blockSignals(True) for widget in filters]
+        try:
+            safe_category = self.cmb_cat.findData('guvenli')
+            if safe_category >= 0:
+                self.cmb_cat.setCurrentIndex(safe_category)
+            self.txt_search.clear()
+            self.cmb_removal.setCurrentIndex(0)
+            self.cmb_ulist.setCurrentIndex(0)
+            self.chk_unlisted.setChecked(False)
+        finally:
+            for widget, was_blocked in zip(filters, previous_signal_states):
+                widget.blockSignals(was_blocked)
+        if getattr(self.core.config, 'show_unlisted', False):
+            self.core.config.show_unlisted = False
+            self.core.config.save()
         self._reload()
 
     def apply_theme(self):
@@ -433,7 +472,7 @@ class DebloatTab(QWidget):
                                 'Debloat listesi yalnızca bağlı cihazda kurulu paketleri gösterir.')
             return
         cat = self.cmb_cat.currentData() or 'guvenli'
-        q = self.txt_search.text().strip().lower()
+        q = search_key(self.txt_search.text()).strip()
         removal_f = self.cmb_removal.currentData() or ''
         ulist_f = self.cmb_ulist.currentData() or ''
         show_unlisted = self.chk_unlisted.isChecked()
@@ -466,7 +505,7 @@ class DebloatTab(QWidget):
         self.grid.setRowCount(0)
         shown = 0
         for pkg, name, desc, entry_cat in entries:
-            if q and q not in (name + ' ' + pkg + ' ' + desc).lower():
+            if q and q not in search_key(name + ' ' + pkg + ' ' + desc):
                 continue
             # UAD filtreleri
             if ulist_f and uad_list_of(pkg) != ulist_f:
@@ -622,13 +661,36 @@ class DebloatTab(QWidget):
             return
         if not self._revalidate_mutation_context(context, 'Sahne'):
             return
-        w = StageWorker(engine, target, st.items(),
+        submitted = st.items_with_tokens()
+        submitted_items = [(action, pkg) for action, pkg, _token in submitted]
+        w = StageWorker(engine, target, submitted_items,
                         self.core.config.protected,
                         user_id=int(self.core.config.user_id or 0))
-        w.finished_ok.connect(self._on_done)
-        def on_ok(_result):
+        w.finished_ok.connect(
+            lambda result: self._on_done(result)
+            if self._mutation_context_current(context) else None)
+        def on_ok(result):
             if self._mutation_context_current(context):
-                self._stage_clear()
+                failed = None
+                if isinstance(result, dict):
+                    raw_failed = result.get('failed_items')
+                    if isinstance(raw_failed, (list, tuple)):
+                        try:
+                            failed = {
+                                (item[0], item[1]) for item in raw_failed
+                                if isinstance(item, (list, tuple)) and len(item) == 2
+                                and all(isinstance(value, str) for value in item)
+                            }
+                            if len(failed) != len(raw_failed):
+                                failed = None
+                        except (TypeError, ValueError):
+                            failed = None
+                # Unknown result formats must not discard staged work.
+                if failed is not None:
+                    for action, pkg, token in submitted:
+                        if (action, pkg) not in failed:
+                            st.remove_if_unchanged(action, pkg, token)
+                self._stage_refresh_label()
                 self._scan_presence()
         self.window._run(w, on_ok=on_ok)
 
@@ -702,6 +764,8 @@ class DebloatTab(QWidget):
             user_id=user_id)
 
         def show_profile_result(result):
+            if not self._mutation_context_current(context):
+                return
             applied_count = result.get('ok', 0) if isinstance(result, dict) else 0
             result_text = format_action_result(result, self._debloat_name)
             counts = (
@@ -839,7 +903,9 @@ class DebloatTab(QWidget):
                 worker = PackageActionWorker(
                     engine, target, regular_pkgs, action,
                     self.core.config.protected, user_id=user_id)
-                worker.finished_ok.connect(self._on_done)
+                worker.finished_ok.connect(
+                    lambda result: self._on_done(result)
+                    if self._mutation_context_current(context) else None)
                 def remove_risky_after_regular(result):
                     if (worker.isInterruptionRequested()
                             or not isinstance(result, dict) or result.get('cancelled')):
@@ -891,7 +957,9 @@ class DebloatTab(QWidget):
         w = PackageActionWorker(engine, target, pkgs,
                                 action, self.core.config.protected,
                                 user_id=user_id)
-        w.finished_ok.connect(self._on_done)
+        w.finished_ok.connect(
+            lambda result: self._on_done(result)
+            if self._mutation_context_current(context) else None)
         self.window._run(
             w, on_ok=lambda _: self._scan_presence()
             if self._mutation_context_current(context) else None)
@@ -916,7 +984,9 @@ class DebloatTab(QWidget):
         w = SmartRemoveWorker(engine, target, pkgs,
                               self.core.config.protected,
                               user_id=user_id)
-        w.finished_ok.connect(self._on_done_smart)
+        w.finished_ok.connect(
+            lambda result: self._on_done_smart(result)
+            if self._mutation_context_current(context) else None)
         self.window._run(
             w, on_ok=lambda _: self._scan_presence()
             if self._mutation_context_current(context) else None)
@@ -988,16 +1058,42 @@ class DebloatTab(QWidget):
             QMessageBox.information(self, 'Kullanıcılar', "Bağlı cihaz yok. Kullanıcıları listelemek için önce TV'ye bağlanın.")
             return
         engine, target = self.core.engine, self.core.target
+        generation = self._presence_generation
+        user_id = int(self.core.config.user_id or 0)
+        context = (engine, target, generation)
+
+        def current():
+            try:
+                return (self._mutation_context_current(context)
+                        and int(self.core.config.user_id or 0) == user_id)
+            except Exception:
+                return False
+
         def do():
+            if not current():
+                raise CancelledError('bağlantı değişti')
             engine.connect(target)
-            return engine.list_users(target)
+            if not current():
+                raise CancelledError('bağlantı değişti')
+            users = engine.list_users(target)
+            if not current():
+                raise CancelledError('bağlantı değişti')
+            return users
         w = Worker(do)
-        w.finished_ok.connect(lambda users: self._show_users(users, target, engine))
+        w.finished_ok.connect(
+            lambda users: self._show_users(
+                users, target, engine, generation, user_id))
         self.window._run(w)
 
-    def _show_users(self, users, target=None, engine=None):
+    def _show_users(self, users, target=None, engine=None,
+                    generation=None, user_id=None):
         if ((target is not None and self.core.target != target)
-                or (engine is not None and self.core.engine is not engine)):
+                or (engine is not None and self.core.engine is not engine)
+                or (target is not None and not self.core.connected)
+                or (generation is not None
+                    and self._presence_generation != generation)
+                or (user_id is not None
+                    and int(self.core.config.user_id or 0) != user_id)):
             return
         cur = int(self.core.config.user_id or 0)
         self.cmb_user.blockSignals(True)
@@ -1239,7 +1335,12 @@ class DebloatTab(QWidget):
         name, ok2 = QInputDialog.getText(self, 'Favori Ekle', 'Dost ad (opsiyonel):')
         if not ok2:
             return
-        if add_user_entry(pkg, name.strip() or pkg, 'Kullanıcı favorisi'):
+        try:
+            added = add_user_entry(pkg, name.strip() or pkg, 'Kullanıcı favorisi')
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, 'Favori kaydedilemedi', str(error))
+            return
+        if added:
             self.reload()
         else:
             QMessageBox.information(self, 'Favori', 'Bu paket zaten listede.')
@@ -1252,8 +1353,11 @@ class DebloatTab(QWidget):
         if not pkgs:
             QMessageBox.information(self, 'Seçim', 'Önce paket seçin.')
             return
-        for p in pkgs:
-            remove_user_entry(p)
+        try:
+            remove_user_entries(pkgs)
+        except OSError as error:
+            QMessageBox.critical(self, 'Favoriler kaydedilemedi', str(error))
+            return
         self.reload()
 
     def _export_csv(self):

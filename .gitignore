@@ -45,16 +45,24 @@ mibox-ayarlar.json
 MiBox-ayarlar.json
 mibox-ayarlar.json.*
 MiBox-ayarlar.json.*
+mibox-ayar-yedek*.json*
+.mibox-ayar-yedek*.tmp
 mibox-islem-gecmisi.jsonl
 mibox-işlem-gecmisi.jsonl
 debloat-kullanici.json
 debloat-kullanıcı.json
+.mibox-debloat-favorites-*.tmp
 mibox-gecmis.csv
 mibox-geçmiş.csv
 mibox-bilinen-uygulamalar.json
 MiBox-bilinen-uygulamalar.json
 mibox-snapshot-*.json
+.mibox-snapshot-*.tmp
+.mibox-download-*.part
+.mibox-kurulum-devam
 mibox-selftest-ok.txt
+ortam-bilgisi.txt
+surum.txt
 mibox-*.csv
 mibox-logcat.txt
 uad_exported_selection.txt
@@ -66,6 +74,9 @@ uad_exported_selection.txt
 *.zip
 *.tar.gz
 scrcpy/
+scrcpy-*/
+.mibox-scrcpy-*/
+.scrcpy-preferred*
 scrcpy.exe
 .scrcpy_download.tmp.zip
 

@@ -13,12 +13,13 @@ Faz 3 disiplini: uzun isler her fazda ve dongude check_cancel() cagirir.
   gibi yardimcilar is_cancelled callback'i alir (StageWorker/SnapshotWorker
   self.isInterruptionRequested verir).
 """
+import copy
 import inspect
 import re
 
 from PySide6.QtCore import QThread, Signal
 
-from .adb_engine import AdbError, is_valid_package, safe_remote_path
+from .adb_engine import AdbError, check_user_id, is_valid_package, safe_remote_path
 
 # Sistem uygulamasi tespiti: APK yolu bu koklerden birindeyse paket
 # ROM'un parcasi demektir (/data/app/... ise kullanici uygulamasidir).
@@ -309,7 +310,7 @@ class BulkActionWorker(BaseWorker):
         self._restrict = restrict
         self._protected = protected
         self._validate_packages = validate_packages
-        self._user_id = int(user_id or 0)
+        self._user_id = check_user_id(0 if user_id is None else user_id)
 
     def _work(self):
         methods = ['restrict' if self._restrict else 'unrestrict']
@@ -386,10 +387,10 @@ class PackageActionWorker(BaseWorker):
         self.job_name = 'Paket islemi'
         self._engine = engine
         self._target = target
-        self._packages = packages
+        self._packages = tuple(dict.fromkeys(packages))
         self._action = action
-        self._protected = protected
-        self._user_id = int(user_id or 0)
+        self._protected = frozenset(protected)
+        self._user_id = check_user_id(0 if user_id is None else user_id)
         self._auto_snapshot = auto_snapshot and action in (
             'uninstall', 'disable', 'restore', 'enable')
         self._snapshot_required = auto_snapshot and action in ('uninstall', 'disable')
@@ -571,6 +572,8 @@ def format_action_result(res, name_of=None, max_items=60):
         return str(pkg)
 
     lines = ['{} başarılı, {} başarısız/atlandı.'.format(ok, fail)]
+    if res.get('cancelled'):
+        lines.append('İşlem kullanıcı tarafından durduruldu; sonuç kısmi olabilir.')
     if res.get('user_id') is not None:
         lines.append('İşlem kullanıcısı: user {}'.format(res['user_id']))
     if res.get('auto_snap'):
@@ -612,7 +615,7 @@ class SmartRemoveWorker(BaseWorker):
         self._packages = packages
         self._protected = protected
         self._auto_snapshot = auto_snapshot
-        self._user_id = int(user_id or 0)
+        self._user_id = check_user_id(0 if user_id is None else user_id)
 
     def _take_safety_snapshot(self):
         """Toplu işlem öncesi paket durumu snapshot'ı. Başarısızsa None."""
@@ -709,15 +712,21 @@ class SnapshotWorker(BaseWorker):
     """Snapshot al veya uygula (arka plan). mode: 'take' | 'apply'."""
 
     def __init__(self, engine, target, mode, snapshot_name=None, protected=(),
-                 user_id=0):
+                 user_id=0, snapshot_data=None):
         super().__init__()
         self.job_name = 'Snapshot'
         self._engine = engine
         self._target = target
         self._mode = mode
         self._snapshot_name = snapshot_name
-        self._protected = protected
-        self._user_id = int(user_id or 0)
+        self._protected = frozenset(protected or ())
+        self._user_id = check_user_id(0 if user_id is None else user_id)
+        if snapshot_data is None:
+            self._snapshot_data = None
+        else:
+            from . import snapshot as snapmod
+            self._snapshot_data = copy.deepcopy(snapshot_data)
+            snapmod.validate(self._snapshot_data)
 
     def _work(self):
         from . import snapshot as snapmod
@@ -730,9 +739,10 @@ class SnapshotWorker(BaseWorker):
             self.check_cancel()
             self.finished_ok.emit({'name': name, 'count': count,
                                    'user_id': self._user_id})
-        else:
+        elif self._mode == 'apply':
             self.check_cancel()
-            snap = snapmod.load(self._snapshot_name)
+            snap = (self._snapshot_data if self._snapshot_data is not None
+                    else snapmod.load(self._snapshot_name))
             self.check_cancel()
             snapshot_user_id = int(snap.get('user_id', 0) or 0)
             if snapshot_user_id != self._user_id:
@@ -744,17 +754,26 @@ class SnapshotWorker(BaseWorker):
                                 log=self.log.emit,
                                 progress=self.progress.emit,
                                 is_cancelled=self.isInterruptionRequested)
+            history_saved = False
             try:
                 from . import history as histmod
-                histmod.append_many(
+                history_saved = histmod.append_many(
                     self._target, 'snapshot', res.get('details', []),
                     user_id=self._user_id)
+                if not history_saved:
+                    self.log.emit('User {} işlem geçmişi kaydedilemedi.'.format(
+                        self._user_id))
             except Exception as e:
-                if self._user_id != 0:
-                    self.log.emit('User {} işlem geçmişi kaydedilemedi: {}'.format(
-                        self._user_id, e))
+                self.log.emit('User {} işlem geçmişi kaydedilemedi: {}'.format(
+                    self._user_id, e))
             res['user_id'] = self._user_id
+            if res.get('cancelled'):
+                status = 'kaydedildi' if history_saved else 'kaydedilemedi'
+                self.log.emit('Snapshot uygulaması kullanıcı tarafından durduruldu; '
+                              'tamamlanan ayrıntıların geçmişi {}.'.format(status))
             self.finished_ok.emit(res)
+        else:
+            raise AdbError('Bilinmeyen snapshot işlemi: {}'.format(self._mode))
 
 
 class HealthWorker(BaseWorker):
@@ -783,7 +802,7 @@ class StageWorker(BaseWorker):
         self._target = target
         self._items = list(items)
         self._protected = protected
-        self._user_id = int(user_id or 0)
+        self._user_id = check_user_id(0 if user_id is None else user_id)
 
     def _run_for_user(self, stagemod):
         """Execute stage actions through the user-scoped engine and snapshot APIs."""
@@ -813,6 +832,7 @@ class StageWorker(BaseWorker):
             self.check_cancel()
             return {'ok': 0, 'fail': len(items),
                     'details': [(pkg, False, str(e)) for _action, pkg in items],
+                    'failed_items': list(items),
                     'action': 'stage', 'auto_snap': None,
                     'user_id': self._user_id}
 
@@ -836,11 +856,14 @@ class StageWorker(BaseWorker):
         ok = 0
         fail = 0
         details = []
+        failed_items = []
         history_details = []
         required_actions = stagemod._SNAPSHOT_REQUIRED_ACTIONS
 
         def record(action, pkg, succeeded, message, history_action=None):
             details.append((pkg, succeeded, message))
+            if not succeeded:
+                failed_items.append((action, pkg))
             history_details.append((
                 action if history_action is None else history_action,
                 pkg, succeeded, message))
@@ -921,6 +944,7 @@ class StageWorker(BaseWorker):
         except Exception:
             pass
         return {'ok': ok, 'fail': fail, 'details': details,
+                'failed_items': failed_items,
                 'action': 'stage', 'auto_snap': snap_name,
                 'user_id': self._user_id}
 
@@ -993,7 +1017,7 @@ class ApkBackupWorker(BaseWorker):
         self.job_name = 'APK yedekleme'
         self._engine = engine
         self._target = target
-        self._packages = packages
+        self._packages = tuple(dict.fromkeys(packages or ()))
         self._dest = dest_dir
 
     @staticmethod
@@ -1009,6 +1033,37 @@ class ApkBackupWorker(BaseWorker):
             raise AdbError('Cihaz geçersiz bir APK dosya adı döndürdü.')
         return path
 
+    def _validate_staged_apk(self, path):
+        """Validate APK structure and stream contents to verify CRC before publication."""
+        import os
+        import stat
+        import struct
+        import zipfile
+        import zlib
+
+        file_stat = os.lstat(path)
+        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size <= 0:
+            raise AdbError('Çekilen APK dosyası boş veya geçersiz.')
+        try:
+            with zipfile.ZipFile(path, 'r') as archive:
+                manifest = archive.getinfo('AndroidManifest.xml')
+                if manifest.is_dir() or manifest.file_size <= 0:
+                    raise AdbError('Çekilen APK içinde boş bir AndroidManifest.xml var.')
+                for entry in archive.infolist():
+                    self.check_cancel()
+                    if entry.is_dir():
+                        continue
+                    with archive.open(entry, 'r') as content:
+                        while True:
+                            self.check_cancel()
+                            if not content.read(128 * 1024):
+                                break
+        except KeyError as exc:
+            raise AdbError('Çekilen APK içinde AndroidManifest.xml bulunamadı.') from exc
+        except (zipfile.BadZipFile, EOFError, UnicodeDecodeError, struct.error,
+                RuntimeError, NotImplementedError, zlib.error) as exc:
+            raise AdbError('Çekilen dosya geçerli bir APK ZIP arşivi değil.') from exc
+
     def _pull_single_atomically(self, remote, destination, pkg):
         import os
         import shutil
@@ -1021,6 +1076,7 @@ class ApkBackupWorker(BaseWorker):
             self._engine.pull(
                 self._target, remote, staged_path,
                 cancel_check=self.isInterruptionRequested)
+            self._validate_staged_apk(staged_path)
             self.check_cancel()
             os.replace(staged_path, destination)
         finally:
@@ -1040,9 +1096,11 @@ class ApkBackupWorker(BaseWorker):
                 # Local names are generated only from the validated list order;
                 # never join a path component derived from device output.
                 local_name = 'base.apk' if index == 0 else 'split_{:03d}.apk'.format(index)
+                staged_path = os.path.join(staging_dir, local_name)
                 self._engine.pull(
-                    self._target, remote, os.path.join(staging_dir, local_name),
+                    self._target, remote, staged_path,
                     cancel_check=self.isInterruptionRequested)
+                self._validate_staged_apk(staged_path)
             self.check_cancel()
 
             if os.path.lexists(package_dir):
@@ -1053,9 +1111,10 @@ class ApkBackupWorker(BaseWorker):
                 os.rmdir(old_dir)
                 os.replace(package_dir, old_dir)
             try:
+                self.check_cancel()
                 os.replace(staging_dir, package_dir)
                 staging_dir = None
-            except OSError as replace_error:
+            except (CancelledError, OSError) as replace_error:
                 if old_dir is not None:
                     try:
                         os.replace(old_dir, package_dir)
@@ -1087,11 +1146,13 @@ class ApkBackupWorker(BaseWorker):
         ok = 0
         fail = 0
         cancelled = 0
+        details = []
         total = len(self._packages)
         for i, pkg in enumerate(self._packages, 1):
             if self.isInterruptionRequested():
                 fail += 1
                 cancelled += 1
+                details.append((pkg, False, 'kullanıcı durdurdu'))
                 self.progress.emit(i, total)
                 continue
             self.progress.emit(i, total)
@@ -1102,6 +1163,7 @@ class ApkBackupWorker(BaseWorker):
                 if not paths:
                     self.log.emit('{}: APK yolu bulunamadı.'.format(pkg))
                     fail += 1
+                    details.append((pkg, False, 'APK yolu bulunamadı.'))
                     continue
                 remote_paths = [self._validated_remote_apk_path(path) for path in paths]
                 if len(set(remote_paths)) != len(remote_paths):
@@ -1113,21 +1175,26 @@ class ApkBackupWorker(BaseWorker):
                     pkgdir = os.path.join(self._dest, pkg)
                     self._pull_split_set(remote_paths, pkgdir, pkg)
                 ok += 1
+                details.append((pkg, True, 'yedeklendi'))
             except CancelledError:
                 self.log.emit('{}: yedekleme kullanıcı tarafından durduruldu.'.format(pkg))
                 fail += 1
                 cancelled += 1
+                details.append((pkg, False, 'kullanıcı durdurdu'))
             except (AdbError, OSError) as e:
                 fail += 1
                 if self.isInterruptionRequested():
                     cancelled += 1
                     self.log.emit(
                         '{}: yedekleme kullanıcı tarafından durduruldu.'.format(pkg))
+                    details.append((pkg, False, 'kullanıcı durdurdu'))
                 else:
                     self.log.emit('{}: {}'.format(pkg, e))
+                    details.append((pkg, False, str(e)))
         if cancelled:
             self.log.emit(u'⏹ {} paket yedeklenmedi (kullanıcı durdurdu).'.format(cancelled))
-        self.finished_ok.emit({'ok': ok, 'fail': fail, 'cancelled': cancelled})
+        self.finished_ok.emit({'ok': ok, 'fail': fail, 'cancelled': cancelled,
+                               'details': details})
 
 
 class NetworkScanWorker(BaseWorker):

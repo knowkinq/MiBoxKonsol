@@ -1,5 +1,75 @@
 # Değişiklik günlüğü
 
+## [1.4.0] - 2026-10-16
+
+- Başarısız terminal komutlarının standart çıktı ve hata ayrıntıları korunur; komut ve cihaz bilgileri günlüklerde maskeli kalır. Onaysız görüntü ayarı geri alınırken bağlantı kesme ve genel durdurma geri alma işi tamamlanana kadar bekler.
+- Durum kaydı içe aktarma ve okuma işlemleri, aşırı büyük JSON dosyalarına karşı dosya ve paket sayısı sınırlarıyla korunur.
+- Katalogdan indirilen APK'nin paket kimliği artık manifestin kök özniteliğinden doğrulanır; manifest okunamazsa kurulum başlamaz.
+- Gelişmiş komut kapısı, tırnak ve kaçış karakterleriyle gizlenen `adb_enabled 0` ayarını da reddeder.
+- Animasyon ölçekleri uygulanırken kısmi başarısızlıkta önceki değerler geri yüklenir ve geri alma doğrulanır.
+- İşlem geçmişi dosyası silinemediğinde hata artık kullanıcıya açıkça bildirilir; zaten bulunmayan dosya başarılı temizlik sayılır.
+
+- Favori paket listesi atomik kaydedilir; kayıt başarısızsa önceki liste korunur ve arayüz hatayı gösterir. Bozuk paket adları favoriye eklenmez.
+
+- 30 günden eski günlük ve Scrcpy operasyon kayıtları açılışta temizlenir; en yeni 20 çökme günlüğü korunur.
+
+- Scrcpy başlatma satırındaki cihaz hedefi ve yerel yollar tanılama günlüğüne yazılmadan önce maskelenir.
+
+- Taşınabilir kurulum boş olmayan yabancı hedefi reddeder, açık uygulamayı güncellemez ve kesilen ilk kurulumu güvenli işaretçiyle sürdürür. Kaldırma komutu uzunluk sınırına takılmaz; yalnızca tanınan uygulama dosyaları ile isteğe bağlı MiBox verilerini temizler, başka dosyaları korur ve hata sonrası yeniden denenebilir. Kısayollar yönlendirilmiş Masaüstü konumunda hedef doğrulamasıyla yönetilir.
+
+- Taşınabilir paket temizliği Scrcpy indirmelerini ve geçici verileri de kaldırır; özel karakterli klasör yollarında güvenle çalışır ve hassas dosya silinemezse yayın paketinin oluşturulmasını durdurur.
+
+- Günlük dosyaları ve dışa aktarılan kayıtlarda cihaz hedefleri, eşleştirme bilgileri, TV'ye gönderilen metinler, terminal ve kurulum konsolunda yazılan komutlar, URL'ler, IP adresleri ve mutlak yerel yollar gizlenir. ADB dosya komutlarının yerel ve cihaz üzerindeki yol argümanları maskelenir. Bağlantı günlükleri hedef kimliğini, dışa aktarma kaydı da tam yerel klasör yolunu içermez.
+
+- TV görüntü ayarları sıfırlanırken veya birden fazla değer uygulanırken hata, iptal ya da bağlantı değişikliği olursa çözünürlük ve DPI adımları geri alınır; başlatma ve okuma hataları görünür şekilde bildirilir. Android’in standart ADB komutu mevcut overscan değerini vermediğinde geri alma bu alanı fabrika değerine sıfırlayabilir; onay penceresi bu sınırlamayı açıklar.
+
+- Sağlık sorguları ve otomatik başlama kısıtlamasında eski cihaz sonuçları bastırılır; işlem kilidi gerçek tamamlanmaya kadar korunur. Hızlandırma onayı cihaz değişiminde geçersiz olur ve adımlar arasında iptal denetlenir. Okunamayan RAM farkı sıfır kazanç olarak sunulmaz; başlatma hataları kontrolleri kilitli bırakmaz.
+
+- Dosya işlemleri tamamlanma sinyaline kadar kilitli kalır; geciken sonuçlar ve açık menü/dosya pencereleri cihaz değişiminde işlem başlatmaz. İndirilen dosyanın bilinen boyutu geçici dosyayla karşılaştırılır; eşleşmezse mevcut yerel dosya korunur. APK yedekleri yayımlanmadan önce ZIP yapısı, boş olmayan Android manifesti ve dosya içeriklerinin CRC bütünlüğü doğrulanır; geçersiz dosya mevcut yedeğin yerine geçmez. Sonuçlar uygulama bazında hata ve durdurma ayrımıyla gösterilir. Geçici indirme dosyaları Git ve dağıtım dışında tutulur.
+- Elle bağlantı başlatılırken eski otomatik yoklama geçersiz kılınır; çalışan işlemler aynı hedefe yeniden bağlantıyla çakışmaz. Bağlanma/kesme iş parçacığı başlatılamazsa kontroller açılır ve hata gösterilir. Kapanış sırasında yoklama durur, geç gelen sonuçlar bağlantıyı yeniden açmaz. Başarılı bağlantı yoklama bekleme süresini sıfırlar. Ağ bağlantısı kesme hatası artık başarılı sonuç gibi gösterilmez; USB cihazında mantıksal ayrılma korunur.
+- Ağ taraması durdurulunca yeni tarama önceki iş parçacığının bitmesini bekler; sonuç ve hata sonrası kontroller tamamlanmada açılır. Seçili cihaza bağlantı başlatılırken diğer işlemler ve bağlantı geçişi kontrol edilir; bağlantı başlamadan cihaz geçmişi değiştirilmez. Kablosuz eşleştirmede adres/port ve 6 haneli kod doğrulaması, gizli kod girişi, tek işlem kilidi ve bağlantı portu yönlendirmesi eklendi; başarı için ADB onayı aranır, çıktıdaki kod/adres maskelenir. İş parçacığı başlatma hatasında ortak işlem kaydı temizlenir; bağlantı engeli kalmaz.
+- Katalog ve yerel APK kurulumlarının çakışması engellendi; kurulum kontrolleri iş parçacığı bitince açılır. Bağlantı değişiminde katalog indirmesi iptal edilir; kurulum başlamadan iptal tekrar kontrol edilir. Durdurma isteği sırasında zaten tamamlanan kurulum doğrulanır ve açıkça bildirilir. İndirilen APK için ZIP dizini ve boş olmayan Android manifesti kontrol edilir; iptal ağ isteğinden önce ve dosya yayımlanmadan önce de denetlenir. Boyutu bilinmeyen indirmelerde belirsiz ilerleme gösterilir; başlatma komutu sonucu ekranın açıldığı iddiasıyla sunulmaz.
+- Durum kaydı alma, fark hesaplama ve uygulama işlemleri başlangıç cihazına bağlandı; eski bağlantının sonuçları yeni cihazda gösterilmez. Uygulama onayında kaynak, hedef ve Android kullanıcısı gösterilir; onaylanan kayıt içeriği işlem boyunca korunur. Durum kaydı ve geçmişten geri alma çakışmaları engellendi; geri alma hatasında bekleyen kuyruk serbest bırakılır. Dışa aktarma doğrulanmış içerikle atomik yapılır, başarısız silme bildirilir.
+- Uygulamalar sayfasında paket işlemi, APK yedekleme ve tarama çakışmaları engellendi; kontroller işlem gerçekten bitince açılır. Sağ tık menüsü açıldığı cihazı korur, bağlantı geçişinde işlem başlatmaz. Tekli ve toplu işlemler ortak onay yolunu kullanır; paket/koruma listeleri işlem başlangıcında kopyalanır. APK klasörü oluşturma hataları arka plan işleminde bildirilir.
+- Ayar yükleme ve yedek içe aktarmaya ortak tür/aralık doğrulaması eklendi; geçersiz cihaz geçmişi açılışı durdurmaz, metin değerleri yanlışlıkla izinleri açmaz. Cihaz geçmişi tekilleştirilir; yeniden bağlanmada uyandırma tercihi kayda dahil edilir. Ayar ve yedek kaydı benzersiz geçici dosya üzerinden yapılır; başarısız kayıt eski dosyayı korur ve kurtarma engelinin nedeni gösterilir.
+- Scrcpy indirme/başlatma ilk cihaza bağlandı; iptalden sonra otomatik açılma ve eşzamanlı indirmeler engellendi. Yeniden indirme önbelleği atlar, mevcut kurulumu korur; klasör kısayolu gerçek kurulum yolunu açar. İndirme boyutu, çıkarılmış dosya doğrulaması ve iptal kontrolleri güçlendirildi; süreç kapanışı izlenir, günlük klasörü yazılamasa da başlatma denenir. İndirilen sürüm ve geçici klasörler Git dışında tutulur.
+- Uyku zamanlayıcısı gerçek geçen süreye ve başlangıç cihazına bağlandı; kumanda meşgul diye sessizce atlanan komut ve erken başarı bildirimi düzeltildi. Link ve ekran koruyucu işlemleri cihaz bağlamını korur; ADB çıktısındaki açık hata satırları sıfır çıkış kodunda da hata sayılır. Link hataları özel adresi günlüğe eklemez.
+- Video kaydı başlatma arka plana taşındı; başlatma ve aktarım sırasında ikinci kayıt engellendi. Kapanış ve bağlantıyı kesme, kayıt hazırlığını/aktarımını bekler. Aktarım sabit cihaz/motor üzerinden geçici dosyaya yapılır, MP4 doğrulandıktan sonra son adına geçirilir; başarısız aktarımda TV dosyası korunur ve yazma izni varsa yerel kurtarma notu bırakılır. Süre sayacı gerçek geçen süreyi kullanır.
+- Kumandada yeniden başlatma, cihaz bilgisi, önbellek temizleme ve APK kurma işlemleri seçildikleri cihaza sabitlendi; onay açıkken bağlantı değişirse işlem yeni cihaza yönlendirilmez. Güç menüsünde normal yeniden başlatmanın yanlış modu kullanması ve uyku/uyandırmanın eksik metot çağırması düzeltildi. Hızlandırmada önbellek temizleme parametresi düzeltildi; başarısız adımlar ve ölçülemeyen RAM kazancı başarı gibi gösterilmez.
+- Kumandada sessize alma ve ses sorgulama/ayarlama işlemleri başladıkları cihaz bağlamına sabitlendi. Bağlantı geçişinde yeni komutlar engellenir; geçersiz sonuçlar atılır ve işlem kilitleri serbest bırakılır. Ses okunamazsa eski değer gizlenir. Canlı ekran hatasında otomatik yenileme durur; Kaydet yalnızca geçerli görüntü varken etkinleşir.
+- Cihaz seçiminde Türkçe durumlar ve izin/bağlantı yönlendirmeleri eklendi. Başarısız ADB sorgusu boş liste gibi gösterilmez; önceki liste korunur. Başlangıç ve elle yenileme aynı sorgu kilidini kullanır.
+- Destek paylaşımı için yalnızca uygulama ve ortam sürümlerini içeren önizlenebilir özet eklendi. Dosya yolları, cihaz bilgileri ve günlükler özete eklenmez; ayarlar, hata çubuğu ve hızlı erişimden açılır.
+- Dosya işlemlerine yerel ilerleme ve aktarımı durdurma alanı eklendi. İşlem sürerken hedef klasör gezintisi kilitlenir; tamamlanma ve hata sonrasında kontroller yeniden açılır.
+- Yerel APK kuyruğunda yalnızca başarısız ve dosyası mevcut paketleri yeniden deneme eklendi; mevcut kurulum onayı ve seçenekleri korunur.
+- Ağ ekranında seçili cihazın adresini kopyalama eklendi; bağlantı ve DNS işlemlerine göre düğmeler güncellenir. DNS durumu ölçülmemiş hız veya reklam engelleme sonucu bildirmez; eksik teşhis sonucu “iyi” olarak gösterilmez.
+- Logcat’e yerel Türkçe arama, kayıt sayacı, görünen kayıtları kopyalama ve sabit duraklatılmış görünüm eklendi. Seviye renkleri düzeltildi; okuma hataları boş veya başarılı sonuç gibi gösterilmez. Etiket yazımı ve cihaz günlüğü temizliği sırasındaki işlem çakışmaları engellendi.
+- Terminalde komut geçmişi giriş alanıyla sınırlandı; taslak korunur ve geçmiş 100 komutla sınırlıdır. Hazır komutlar dar pencerede satırlara yayılır; açık tema çıktı okunabilirliği ve bağlantı değişimi denetimi iyileştirildi.
+- Paket temizliğine Türkçe karakterlere duyarlı olmayan arama ve güvenli başlangıç filtrelerine dönüş eklendi; filtre sıfırlama Android kullanıcısını değiştirmez.
+- İşlem günlüğüne Türkçe arama, görünen kayıtları kopyalama ve otomatik kaydırmayı kapatma eklendi; arama ve düzey filtreleri birlikte çalışır.
+- Ayarlardaki koruma listesine arama ve paket sayısı eklendi; kaldırma yalnızca görünür bir paket seçiliyken etkinleşir. Tercihlerin kaydedilme biçimi ve destek bilgisindeki yerel yollar açıklanır.
+- Başlangıç ekranından adres girişi, cihaz bulma, bağlantı yardımı ve kalıcı geçmiş doğrudan açılır; bağlantı işlemi sürerken özet buna göre güncellenir.
+- TV kataloğuna filtre sıfırlama ve uygulama ayrıntıları penceresi eklendi; kurulum durumu sorgusu başarısız olduğunda yeniden deneme açıklanır.
+- Bağlantı yardımı eklendi; cihaz ve son adres seçenekleri bağlantı alanının altına alındı. Bağlanma ve bağlantıyı kesme sırasında ilerleme durumu açıklanır.
+- Dosya listesine öğe ve bilinen boyut özeti, aktarım alanına seçim ve hedef bilgisi eklendi; boş, yükleniyor ve hata durumları açıklanır.
+- Geçmişte arama ve seçim bilgisi eklendi; geri alma seçenekleri kaydın uygunluğuna göre etkinleşir. Durum kayıtlarının kapsamı açıklanır.
+- Uygulama listesinde Türkçe karakterlere duyarlı olmayan arama, filtre sıfırlama ve seçim temizleme eklendi. Seçim araçları ile paket işlemleri ayrıldı; seyrek işlemler menüye taşındı. İşlem düğmeleri yalnızca bağlantı ve uygun seçim varken etkinleşir.
+- Kumanda ve ekran önizlemesi pencere alanına uyarlanır; tuş yazıları için gereken alan korunur. Bağlantısız ekran açıklamaları ve açık tema görünümü düzenlendi.
+- Sağlık özetinde gerçek depolama ve bellek ölçümleri açıklanır; eski ölçüm, eksik sonuç ve bağlantısız durum ayrılır. Bağlantı ve bakım işlemlerinden sonra Yenile düğmesinin kapalı kalması giderildi.
+- Yeni Başlangıç ekranı; bağlantı durumu, günlük araçlara kısayollar ve bu oturumdaki son işlemleri bir araya getirir. Sol menü günlük kullanım, bakım ve gelişmiş araçlar sırasıyla düzenlendi.
+- Hızlı erişim sonuçları tek tıklamayla açılır. Başlangıç için `Ctrl+Home`, ayarlar için `Ctrl+,` kısayolları eklendi; çakışan sayfa kısayolları giderildi.
+- Katalogda bağlantı yokken kurulu değil bilgisi gösterilmez; doğrulanmamış durum ve boş arama sonuçları açıklanır. Kurulum sonrası uygulama başlatma arayüzü bekletmeden ve hedef yeniden kontrol edilerek yapılır.
+- Sağlık bölümü, seçilen alt paneli gösteren gezinme ve dar pencerelere uyumlu bilgi kartlarıyla düzenlendi. Görüntü ayarları tek yerde toplandı.
+- Görüntü ayarı işlemlerinin çakışması ve geri alma sonrasında eski ölçümlerin görünmesi önlendi; geri alma yalnızca değiştirilen alanlara uygulanır.
+- Ağ taramalarında eski sonuçların yeni taramaya karışması giderildi. Bulunan cihazlar, tarandıkları port üzerinden bağlanır.
+- DNS ve ağ teşhisi sonuçları cihaz bağlantısı değiştiğinde geçersiz sayılır. Dar pencerelerde ağ kontrolleri uygun satırlara yerleşir.
+- EXE için `--version --report-file` desteği eklendi; sürüm paketleme akışında dosya içeriğiyle doğrulanır.
+- Hata günlükleri eşzamanlı uygulama örneklerinde birbirinin üzerine yazılmaz. Kurulum bağımlılıklarının mimari seçimleri eşitlendi.
+- Uygulamalar, debloat, kumanda, dosyalar, kurulum, geçmiş ve terminalde bağlantı değiştikten sonra eski işlem sonuçlarının kullanılması önlendi.
+- Kurulum kataloğunda açıklama, kategori ve geliştirici ayrıntıları her pencere boyutunda korunur; uzun metinler satırlara yayılır. Yerel APK seçenekleri iş parçacığı başlamadan alınır; kapanış sırasında sonuç penceresi açılmaz.
+- Logcat başlatılırken arayüzü bekleten bağlantı çağrısı kaldırıldı; üst üste yoklamalar ve eski oturum çıktıları engellendi.
+- Snapshot iptali tamamlanan değişikliklerin geçmiş kaydını korur. Korunan depolama köklerinin yeniden adlandırılması ve geçersiz Android kullanıcı kimlikleri engellendi.
+- Ayar yedeği içe aktarıldığında tema ve seçenekler arayüze yansıtılır; gelişmiş konsolda ayar değiştiren komutlar da onay ister.
+
 ## [1.3.1] - 2026-10-15
 
 - Açık ve koyu temalar, sol menü, kartlar ve sekmeler ortak lacivert/mor tasarımla yenilendi.

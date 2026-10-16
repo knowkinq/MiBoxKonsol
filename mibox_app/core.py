@@ -93,13 +93,13 @@ class Core(QObject):
         self.engine.connect(t, timeout=timeout)
         self.connected = True
         self.connection_changed.emit(True, t)
-        self.log_msg('Baglandi: {}'.format(t))
+        self.log_msg('Baglanti kuruldu')
 
     def disconnect(self):
-        try:
-            self.engine.disconnect(self.target)
-        except AdbError:
-            pass
+        target = self.target
+        self.engine.disconnect(target)
+        if self.target != target:
+            return
         self.connected = False
-        self.connection_changed.emit(False, self.target)
-        self.log_msg('Bağlantı kesildi: {}'.format(self.target))
+        self.connection_changed.emit(False, target)
+        self.log_msg('Bağlantı kesildi')

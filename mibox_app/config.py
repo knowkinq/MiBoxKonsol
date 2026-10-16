@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 
 
@@ -261,50 +262,53 @@ class Config:
                         'Ayar dosyası okunamadı ve güvenli biçimde yedeklenemedi: {} '
                         '({}). Ayarlar bu dosyaya yazılmayacak.'
                         .format(path, backup_error))
-        self.load_warning = '\n'.join(warnings)
         if isinstance(cfg, dict):
-            data = cfg
-            if isinstance(data.get('protected'), list):
-                self.protected = [str(p) for p in data['protected']]
-            if data.get('last_target'):
-                self.last_target = str(data['last_target'])
-            if data.get('include_system') is not None:
-                self.include_system = bool(data['include_system'])
-            if data.get('dark_mode') is not None:
-                self.dark_mode = bool(data['dark_mode'])
-            if data.get('auto_refresh_min') is not None:
-                try:
-                    self.auto_refresh_min = int(data['auto_refresh_min'])
-                except (TypeError, ValueError):
-                    self.auto_refresh_min = 0
-            if data.get('log_to_file') is not None:
-                self.log_to_file = bool(data['log_to_file'])
-            if data.get('device_history'):
-                self.device_history = [str(x) for x in data['device_history']][:10]
-            if data.get('screenshot_hd') is not None:
-                self.screenshot_hd = bool(data['screenshot_hd'])
-            if data.get('auto_maint') is not None:
-                self.auto_maint = bool(data['auto_maint'])
-            if data.get('maint_last'):
-                self.maint_last = str(data['maint_last'])
-            if data.get('user_id') is not None:
-                try:
-                    self.user_id = int(data['user_id'])
-                except (TypeError, ValueError):
-                    self.user_id = 0
-            if data.get('show_unlisted') is not None:
-                self.show_unlisted = bool(data['show_unlisted'])
-            if data.get('show_removed') is not None:
-                self.show_removed = bool(data['show_removed'])
-            if data.get('keyboard_nav') is not None:
-                self.keyboard_nav = bool(data['keyboard_nav'])
-            if data.get('install_grant_perms') is not None:
-                self.install_grant_perms = bool(data['install_grant_perms'])
-            if data.get('auto_connect_last') is not None:
-                self.auto_connect_last = bool(data['auto_connect_last'])
+            values, value_warnings = self.validated_values(cfg)
+            for key, value in values.items():
+                setattr(self, key, value)
+            warnings.extend(value_warnings)
+        self.load_warning = '\n'.join(warnings)
         # NOT: mibox-bilinen-uygulamalar.json ARTIK OKUNMUYOR/YAZILMIYOR.
         # Adlar cihazdan gelir; bu dosya varsa yoksayilir (asagida
         # save_known_apps artik dosyayi SILER).
+
+    @staticmethod
+    def validated_values(data, strict=False):
+        """Validate known fields without turning malformed values into permissions."""
+        if not isinstance(data, dict):
+            raise ValueError('Ayar verisi bir JSON nesnesi olmalıdır.')
+        boolean_fields = {
+            'include_system', 'dark_mode', 'log_to_file', 'screenshot_hd',
+            'auto_maint', 'show_unlisted', 'show_removed', 'keyboard_nav',
+            'install_grant_perms', 'auto_connect_last', 'wake_on_reconnect',
+        }
+        text_fields = {'last_target', 'maint_last'}
+        integer_limits = {'auto_refresh_min': 35791, 'user_id': 21474}
+        values, warnings = {}, []
+        for key, value in data.items():
+            valid = True
+            if key in boolean_fields:
+                valid = type(value) is bool
+            elif key in text_fields:
+                valid = isinstance(value, str)
+            elif key in integer_limits:
+                valid = type(value) is int and 0 <= value <= integer_limits[key]
+            elif key in ('protected', 'device_history'):
+                valid = isinstance(value, list) and all(isinstance(x, str) for x in value)
+                if valid:
+                    value = list(dict.fromkeys(x.strip() for x in value if x.strip()))
+                    if key == 'device_history':
+                        value = value[:10]
+            else:
+                continue
+            if valid:
+                values[key] = value
+            else:
+                message = 'Geçersiz ayar değeri: {}.'.format(key)
+                if strict:
+                    raise ValueError(message)
+                warnings.append(message + ' Mevcut veya varsayılan değer korunuyor.')
+        return values, warnings
 
     def to_dict(self):
         with self._lock:
@@ -325,6 +329,7 @@ class Config:
                 'keyboard_nav': self.keyboard_nav,
                 'install_grant_perms': self.install_grant_perms,
                 'auto_connect_last': self.auto_connect_last,
+                'wake_on_reconnect': self.wake_on_reconnect,
             }
 
     @staticmethod
@@ -347,39 +352,45 @@ class Config:
 
     def _write_atomic_locked(self, data):
         """JSON'u atomik yaz: tmp -> fsync -> os.replace (tum yazma yollari)."""
-        tmp = CONFIG_PATH + '.tmp'
+        tmp = None
         try:
             os.makedirs(BASE_DIR, exist_ok=True)
-            with open(tmp, 'w', encoding='utf-8') as f:
+            with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', dir=BASE_DIR,
+                    prefix='mibox-ayarlar.json.', suffix='.tmp', delete=False) as f:
+                tmp = f.name
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
+                os.fsync(f.fileno())
             # Atomik degisim: elektrik kesintisinde yari-yazilmis JSON kalmaz.
             os.replace(tmp, CONFIG_PATH)
             self.save_error = ''
             return True
-        except OSError as error:
+        except (OSError, TypeError, ValueError) as error:
             try:
-                if os.path.exists(tmp):
+                if tmp and os.path.exists(tmp):
                     os.remove(tmp)
             except OSError:
                 pass
-            self.save_error = 'Ayar dosyası kaydedilemedi ({}): {}'.format(
-                CONFIG_PATH, error)
-            if self._on_persistence_error is not None:
-                try:
-                    self._on_persistence_error(self.save_error)
-                except Exception:
-                    pass
-            return False
+            return self._persistence_failed(
+                'Ayar dosyası kaydedilemedi ({}): {}'.format(CONFIG_PATH, error))
+
+    def _persistence_failed(self, message):
+        self.save_error = message
+        if self._on_persistence_error is not None:
+            try:
+                self._on_persistence_error(message)
+            except Exception:
+                pass
+        return False
 
     def save(self):
-        if self._recovery_blocked:
-            return False
-        return self._write_atomic(self.to_dict())
+        with self._write_lock:
+            if self._recovery_blocked:
+                return self._persistence_failed(
+                    'Okunamayan ayar dosyası yedeklenemediği için kayıt engellendi. '
+                    'Dosyayı güvenli bir yere kopyalayıp uygulamayı yeniden açın.')
+            return self._write_atomic_locked(self.to_dict())
 
     def save_known_apps(self):
         # LEGACY: artik dosya YAZILMAZ; varsa kalinti temizlenir.
@@ -429,11 +440,10 @@ class Config:
 
     def push_history(self, target):
         target = (target or '').strip()
-        if not target or self._recovery_blocked:
+        if not target:
             return False
         with self._lock:
             hist = [t for t in self.device_history if t != target]
             hist.insert(0, target)
             self.device_history = hist[:10]
-            data = self.to_dict()
-        return self._write_atomic(data)
+        return self.save()

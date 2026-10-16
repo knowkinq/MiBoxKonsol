@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mibox-konsol"
-version = "1.3.1"
+version = "1.4.0"
 description = "Xiaomi Mi Box ve Android TV cihazları için modern, açık kaynaklı yönetim merkezi ve debloat aracı"
 readme = "README.md"
 authors = [
@@ -29,9 +29,8 @@ classifiers = [
 keywords = ["mibox", "android-tv", "adb", "debloat", "remote", "pyside6", "pyqt5"]
 requires-python = ">=3.10"
 dependencies = [
-    "PySide6>=6.5.0; platform_machine != 'x86' and platform_machine != 'i686'",
-    "PyQt5>=5.15.0; platform_machine == 'x86' or platform_machine == 'i686'",
-    "shiboken6>=6.5.0; platform_machine != 'x86' and platform_machine != 'i686'",
+    "PySide6>=6.6; platform_machine != 'x86' and platform_machine != 'i386' and platform_machine != 'i686'",
+    "PyQt5>=5.15; platform_machine == 'x86' or platform_machine == 'i386' or platform_machine == 'i686'",
 ]
 
 [project.optional-dependencies]

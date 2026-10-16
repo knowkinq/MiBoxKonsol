@@ -8,6 +8,7 @@ Serbest konsol yerine sınıflı çalıştırma:
   - REFUSED: wipe/factory reset/bootloader/su/adb_enabled 0/... → ASLA çalışmaz
 """
 import re
+import shlex
 
 # Asla çalıştırılmayacaklar (alt-string değil, komut bazında)
 REFUSED_PATTERNS = [
@@ -75,6 +76,18 @@ def classify(cmdline):
     for pat in REFUSED_PATTERNS:
         if re.search(pat, low):
             return 'REFUSED'
+
+    # Shell removes quotes and unquoted backslash escapes before Android sees
+    # the arguments, so inspect parsed tokens as well as the raw command text.
+    try:
+        tokens = shlex.split(c)
+    except ValueError:
+        return 'REFUSED'
+    for key, value in zip(tokens, tokens[1:]):
+        if key.lower() == 'adb_enabled':
+            # Avoid int()'s digit limit: a very long zero string still means 0.
+            if re.fullmatch(r'[+-]?0+', value):
+                return 'REFUSED'
 
     def matches_prefix(prefix):
         prefix = prefix.rstrip()

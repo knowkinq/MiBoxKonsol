@@ -12,6 +12,9 @@ Her giris: (paket, ad, aciklama)
 """
 import json
 import os
+import tempfile
+
+from .adb_engine import is_valid_package
 
 DEBLOAT_DB = {
     'guvenli': [
@@ -337,6 +340,7 @@ def all_packages():
 # ---------------------------------------------------------------------------
 _FAVORITES = []
 _user_entries_loaded = False
+_user_entries_load_error = ''
 
 
 def _user_entries_path():
@@ -346,22 +350,73 @@ def _user_entries_path():
     return os.path.join(BASE_DIR, 'debloat-kullanici.json')
 
 
+def _save_user_entries():
+    """Persist favorites atomically so an interrupted write keeps the old file."""
+    path = _user_entries_path()
+    directory = os.path.dirname(path)
+    fd = None
+    temporary_path = None
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(
+            prefix='.mibox-debloat-favorites-', suffix='.tmp', dir=directory)
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            fd = None
+            json.dump(_FAVORITES, output, ensure_ascii=False, indent=2)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
+
+
 def _load_user_entries():
-    global _user_entries_loaded
+    global _user_entries_loaded, _user_entries_load_error
     if _user_entries_loaded:
         return
     _user_entries_loaded = True
     try:
         path = _user_entries_path()
-        if os.path.exists(path):
+        try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            if isinstance(data, list):
-                for it in data:
-                    if isinstance(it, list) and len(it) >= 3:
-                        _FAVORITES.append((str(it[0]), str(it[1]), str(it[2])))
+        except FileNotFoundError:
+            return
+        if not isinstance(data, list):
+            raise ValueError('Dosya kökünde liste bekleniyordu.')
+        loaded = []
+        for index, item in enumerate(data, 1):
+            if (not isinstance(item, list) or len(item) < 3
+                    or not all(isinstance(value, str) for value in item[:3])):
+                raise ValueError('{} numaralı kayıt bozuk.'.format(index))
+            pkg = item[0].strip()
+            if not is_valid_package(pkg) or ':' in pkg:
+                raise ValueError('{} numaralı kaydın paket adı geçersiz.'.format(index))
+            loaded.append((pkg, item[1], item[2]))
+        _FAVORITES.extend(loaded)
     except (OSError, ValueError):
-        pass
+        try:
+            _user_entries_load_error = (
+                'Kullanıcı favori dosyası okunamadı: {}. Dosyanın yedeğini alıp '
+                'düzeltene kadar üzerine yazılmayacak.'.format(_user_entries_path()))
+        except OSError:
+            _user_entries_load_error = 'Kullanıcı favori dosyası okunamadı; üzerine yazılmayacak.'
+
+
+def _ensure_user_entries_writable():
+    _load_user_entries()
+    if _user_entries_load_error:
+        raise OSError(_user_entries_load_error)
 
 
 def user_entries():
@@ -372,9 +427,12 @@ def user_entries():
 
 def add_user_entry(pkg, name, desc, category='guvenli'):
     """Yeni favori girisi ekler ve kalici olarak yazar. Geri: True (eklendi)/False."""
-    if not pkg:
-        return False
-    _load_user_entries()
+    if not isinstance(pkg, str):
+        raise ValueError('Geçerli bir Android paket adı girin.')
+    pkg = pkg.strip()
+    if not is_valid_package(pkg) or ':' in pkg:
+        raise ValueError('Geçerli bir Android paket adı girin.')
+    _ensure_user_entries_writable()
     # Zaten DB'de veya kullanici listesinde mi?
     existing = set()
     for entries in DEBLOAT_DB.values():
@@ -384,29 +442,36 @@ def add_user_entry(pkg, name, desc, category='guvenli'):
         existing.add(p)
     if pkg in existing:
         return False
-    _FAVORITES.append((pkg, name or pkg, desc or ''))
+    entry = (pkg, str(name or pkg).strip()[:128] or pkg,
+             str(desc or '').strip()[:512])
+    _FAVORITES.append(entry)
     try:
-        path = _user_entries_path()
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump([[p, n, d] for p, n, d in _FAVORITES], f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+        _save_user_entries()
+    except Exception:
+        _FAVORITES.pop()
+        raise
+    return True
+
+
+def remove_user_entries(pkgs):
+    """Remove favorites as one transaction; retain the old list on write failure."""
+    _ensure_user_entries_writable()
+    selected = {pkg for pkg in pkgs if isinstance(pkg, str)}
+    before = list(_FAVORITES)
+    remaining = [entry for entry in before if entry[0] not in selected]
+    if len(remaining) == len(before):
+        return False
+    _FAVORITES[:] = remaining
+    try:
+        _save_user_entries()
+    except Exception:
+        _FAVORITES[:] = before
+        raise
     return True
 
 
 def remove_user_entry(pkg):
-    global _FAVORITES
-    before = len(_FAVORITES)
-    _FAVORITES = [t for t in _FAVORITES if t[0] != pkg]
-    if len(_FAVORITES) != before:
-        try:
-            path = _user_entries_path()
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump([[p, n, d] for p, n, d in _FAVORITES], f, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
-        return True
-    return False
+    return remove_user_entries((pkg,))
 
 
 def get_category_with_user(name):

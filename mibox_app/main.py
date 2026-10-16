@@ -13,7 +13,7 @@ import os
 import sys
 
 
-def _print_info():
+def _print_info(output_path=None):
     """Surum + ortam bilgisi (tek kaynak: mibox_app.diagnostics).
 
     .exe penceresiz derlendigi icin ciktiyi gormek uzere yonlendirin:
@@ -21,8 +21,17 @@ def _print_info():
 
     Not: burada print() CLI ciktisi icin bilerek kullanilir; GUI log'u degildir.
     """
-    from . import diagnostics
+    try:
+        from . import diagnostics
+    except ImportError:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from mibox_app import diagnostics
     text = diagnostics.metin()
+    if output_path:
+        with open(output_path, 'w', encoding='utf-8') as report:
+            report.write(text + '\n')
     stream = sys.stdout
     if stream is None:
         return
@@ -137,6 +146,28 @@ def _prune_empty_crash_logs(logdir, keep=20):
         pass
 
 
+def _prune_old_runtime_logs(logdir, max_age_days=30):
+    """Remove expired MiBox operational logs, leaving user history untouched."""
+    import re
+    import time
+
+    cutoff = time.time() - max_age_days * 24 * 60 * 60
+    try:
+        names = os.listdir(logdir)
+    except OSError:
+        return
+    for name in names:
+        if (name != 'scrcpy.log'
+                and not re.fullmatch(r'(?:mibox|scrcpy)-\d{8}\.log', name)):
+            continue
+        path = os.path.join(logdir, name)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def _install_crash_traps():
     """Crash'i loga dusur: faulthandler + excepthook + Qt mesajlari.
 
@@ -165,6 +196,7 @@ def _install_crash_traps():
         logdir = config.LOG_DIR
         os.makedirs(logdir, exist_ok=True)
         _prune_empty_crash_logs(logdir)
+        _prune_old_runtime_logs(logdir)
     except Exception:
         return None
 
@@ -179,9 +211,9 @@ def _install_crash_traps():
             return state['fh']
         try:
             path = os.path.join(
-                logdir, 'crash-{}.log'.format(
-                    datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
-            fh = open(path, 'w', encoding='utf-8')
+                logdir, 'crash-{}-{}.log'.format(
+                    datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'), os.getpid()))
+            fh = open(path, 'x', encoding='utf-8')
             fh.write('crash traps aktif\n')
             fh.flush()
             state['fh'] = fh
@@ -332,7 +364,16 @@ def main(argv=None):
     """
     argv = list(sys.argv if argv is None else argv)
     if '--version' in argv or '--bilgi' in argv:
-        _print_info()
+        output_path = None
+        if '--report-file' in argv:
+            index = argv.index('--report-file')
+            if index + 1 >= len(argv) or argv[index + 1].startswith('--'):
+                return 2
+            output_path = argv[index + 1]
+        try:
+            _print_info(output_path)
+        except OSError:
+            return 2
         return 0
     return run(selftest='--selftest' in argv)
 

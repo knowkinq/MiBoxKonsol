@@ -48,8 +48,12 @@ jobs:
       run: |
         $exe = '.\dist-onedir\MiBoxKonsol\MiBoxKonsol.exe'
         if (-not (Test-Path $exe)) { throw 'Packaged executable was not created' }
-        $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version' -PassThru -Wait -WindowStyle Hidden
+        $report = Join-Path $env:RUNNER_TEMP 'mibox-version.txt'
+        $versionCheck = Start-Process -FilePath $exe -ArgumentList '--version', '--report-file', "`"$report`"" -PassThru -Wait -WindowStyle Hidden
         if ($versionCheck.ExitCode -ne 0) { throw "Version check failed with exit code $($versionCheck.ExitCode)" }
+        if (-not (Test-Path $report)) { throw 'Packaged application did not write a version report' }
+        $expectedVersion = python -c "from mibox_app import __version__; print(__version__)"
+        if (-not (Get-Content $report -Raw).Contains("MiBox Konsol v$expectedVersion")) { throw 'Packaged version report does not match the source version' }
         $env:QT_QPA_PLATFORM = 'offscreen'
         $selftest = Start-Process -FilePath $exe -ArgumentList '--selftest' -PassThru -Wait -WindowStyle Hidden
         if ($selftest.ExitCode -ne 0) { throw "Packaged application selftest failed with exit code $($selftest.ExitCode)" }

@@ -13,7 +13,7 @@ ACTION_TR = {
     'clear': 'Veri silme',
     'enable': 'Aktif etme',
     'disable': 'Devre dışı bırakma',
-    'uninstall': 'Kaldırma (user)',
+    'uninstall': 'Kullanıcı için kaldırma',
     'restore': 'Geri yükleme',
     'launch': 'Açma',
     'restrict': 'Kısıtlama',
@@ -54,7 +54,8 @@ def confirm_action(parent, action, pkgs, name_of, extra=''):
     if action == 'clear':
         body += '\n\nUygulama verileri kalıcı olarak silinir. Durum kaydı bu verileri geri getirmez.'
     elif action == 'uninstall':
-        body += ('\n\nAndroid uygulama verilerini korumaya çalışır; tekrar kurulumda '
+        body += ('\n\nUygulama, işlem için seçili Android kullanıcısından kaldırılır. '
+                 'Android uygulama verilerini korumaya çalışır; tekrar kurulumda '
                  'kullanılabilir. Bu işlem bir veri yedeği değildir ve Android sürümü '
                  'ile uygulama durumu geri yüklemeyi etkileyebilir.')
     if extra:

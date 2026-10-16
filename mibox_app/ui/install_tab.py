@@ -6,14 +6,16 @@ animasyon kapatma, command gate), android-tv-debloat-toolkit (launcher akışı)
 """
 import os
 import glob
+import html
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QComboBox,
     QLineEdit, QPlainTextEdit, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QTabWidget, QProgressBar, QHeaderView,
+    QDialog, QDialogButtonBox,
 )
 
 from ..workers import Worker
@@ -54,10 +56,13 @@ class _SnapshotEngineView:
         self._engine = engine
         self._target = target
 
-    def connect(self, target):
+    def connect(self, target, cancel_check=None):
         if target != self._target:
             raise ValueError('Snapshot hedefi değiştirilemez.')
         # InstallTab checked the user's existing connection before starting.
+        if cancel_check is not None and cancel_check():
+            from ..workers import CancelledError
+            raise CancelledError('kullanıcı durdurdu')
 
     def __getattr__(self, name):
         return getattr(self._engine, name)
@@ -69,6 +74,7 @@ class InstallTab(QWidget):
         self.core = core
         self.window = window
         self._connection_generation = 0
+        self._catalog_refresh_generation = 0
         self._files = []
         self._statuses = {}
         self._installing = False
@@ -78,7 +84,15 @@ class InstallTab(QWidget):
         self._install_operation = None
         self._meta_cache = {}
         self._installed_pkgs = set()
+        self._catalog_status_known = False
+        self._catalog_status_target = None
+        self._catalog_status_error_target = None
         self._catalog_installing = set()
+        self._catalog_worker = None
+        self._catalog_refresh_pending = False
+        self._catalog_layout_timer = QTimer(self)
+        self._catalog_layout_timer.setSingleShot(True)
+        self._catalog_layout_timer.timeout.connect(self._update_catalog_columns)
         self._build()
         self._populate_catalog_table()
         connection_changed = getattr(self.core, 'connection_changed', None)
@@ -108,11 +122,22 @@ class InstallTab(QWidget):
         self.cmb_catalog_cat = QComboBox()
         for c in TV_CATEGORIES:
             self.cmb_catalog_cat.addItem(c)
+        self.cmb_catalog_cat.setAccessibleName('Katalog kategorisi')
+        self.cmb_catalog_cat.setAccessibleDescription('Uygulamaları kategoriye göre filtreleyin.')
+        self.cmb_catalog_cat.setToolTip('Katalog uygulamalarını kategoriye göre filtreleyin.')
         self.cmb_catalog_cat.currentIndexChanged.connect(lambda _: self._populate_catalog_table())
 
         self.txt_catalog_search = QLineEdit()
+        self.txt_catalog_search.setClearButtonEnabled(True)
+        self.txt_catalog_search.setAccessibleName('Katalogda uygulama ara')
+        self.txt_catalog_search.setToolTip('Uygulama adı, açıklaması veya paket adına göre arayın.')
         self.txt_catalog_search.setPlaceholderText('Popüler uygulama ara (SmartTube, Kodi, VLC, Launcher)...')
         self.txt_catalog_search.textChanged.connect(lambda _: self._populate_catalog_table())
+
+        self.btn_catalog_reset = QPushButton('Filtreleri Sıfırla')
+        self.btn_catalog_reset.setAccessibleName('Katalog filtrelerini sıfırla')
+        self.btn_catalog_reset.setToolTip('Kategori filtresini Tümü yapın ve arama metnini temizleyin.')
+        self.btn_catalog_reset.clicked.connect(self._reset_catalog_filters)
 
         self.btn_catalog_refresh = QPushButton('Kurulum Durumunu Güncelle')
         self.btn_catalog_refresh.clicked.connect(self._refresh_catalog_statuses)
@@ -120,19 +145,36 @@ class InstallTab(QWidget):
         cat_toolbar.addWidget(QLabel('Kategori:'))
         cat_toolbar.addWidget(self.cmb_catalog_cat)
         cat_toolbar.addWidget(self.txt_catalog_search, 1)
+        cat_toolbar.addWidget(self.btn_catalog_reset)
         cat_toolbar.addWidget(self.btn_catalog_refresh)
         cat_layout.addLayout(cat_toolbar)
 
+        self.lbl_catalog_summary = QLabel()
+        self.lbl_catalog_summary.setProperty('role', 'quiet')
+        cat_layout.addWidget(self.lbl_catalog_summary)
+
         self.table_catalog = kit.make_table(6, ['Uygulama', 'Kategori', 'Açıklama', 'Geliştirici', 'Durum', 'İşlem'])
         self.table_catalog.setMinimumHeight(240)
+        self.table_catalog.setWordWrap(True)
+        self.table_catalog.setTextElideMode(Qt.ElideNone)
+        self.table_catalog.setAccessibleName('Popüler TV uygulamaları kataloğu')
+        self.table_catalog.setAccessibleDescription(
+            'Altı sütunlu uygulama kataloğu. Uygulama ayrıntılarını görmek için bir satıra çift tıklayın. '
+            'İşlem sütunundaki düğmeler uygulamayı TV’de açar veya kurar.')
+        self.table_catalog.setToolTip(
+            'Tam açıklama ve kaynak bilgileri için uygulama satırına çift tıklayın.')
+        self.table_catalog.doubleClicked.connect(self._show_catalog_details)
         hdr = self.table_catalog.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(5, QHeaderView.Fixed)
+        for column in range(6):
+            hdr.setSectionResizeMode(column, QHeaderView.Fixed)
+        self.table_catalog.setColumnWidth(0, 190)
         self.table_catalog.setColumnWidth(5, 185)
+        self.table_catalog.setColumnWidth(1, 145)
+        self.table_catalog.setColumnWidth(3, 145)
+        self.table_catalog.setColumnWidth(4, 120)
+        for column in range(5):
+            self.table_catalog.horizontalHeaderItem(column).setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table_catalog.viewport().installEventFilter(self)
         cat_layout.addWidget(self.table_catalog, 1)
 
         self.progress_catalog = QProgressBar()
@@ -172,6 +214,7 @@ class InstallTab(QWidget):
 
         g, gv = card('APK kurulumu')
         self._info = QLabel('Tek APK kurun veya paketleri kuyruğa ekleyin. '
+                            'Başarılı paketler kuyruktan kaldırılır; başarısızlar yeniden deneme için kalır. '
                             'Kurulum öncesi paket durumu kaydedilir; uygulama verileri yedeklenmez.')
         self._info.setWordWrap(True)
         self._info.setProperty('role', 'quiet')
@@ -185,11 +228,17 @@ class InstallTab(QWidget):
         self.btn_install = QPushButton('Kuyruktakileri Kur')
         self.btn_install.setProperty('accent', True)
         self.btn_install.clicked.connect(self._install_all)
+        self.btn_retry_failed = QPushButton('Başarısızları Yeniden Dene')
+        self.btn_retry_failed.setToolTip(
+            'Yalnızca hâlâ mevcut olan başarısız kuyruk paketlerini açık onayınızla yeniden dener.')
+        self.btn_retry_failed.setEnabled(False)
+        self.btn_retry_failed.clicked.connect(self._retry_failed)
         self.btn_single_install = QPushButton('Tek APK Seç ve Kur')
         self.btn_single_install.clicked.connect(self._install_single)
         queue_actions = kit.action_bar()
         for button in (self.btn_add, self.btn_add_dir, self.btn_rm,
-                       self.btn_single_install, self.btn_install):
+                       self.btn_single_install, self.btn_install,
+                       self.btn_retry_failed):
             queue_actions.addWidget(button)
         gv.addLayout(queue_actions)
 
@@ -267,7 +316,7 @@ class InstallTab(QWidget):
         local_layout.addWidget(g2)
         local_layout.addStretch()
 
-        self.subtabs.addTab(tab_local, '📦 Yerel Paket Kurulumu & Ana Ekran')
+        self.subtabs.addTab(tab_local, '📦 Yerel APK ve ana ekran')
 
         # ----------------------------------------------------
         # SEKME 3: Gelişmiş Komut Konsolu
@@ -350,7 +399,8 @@ class InstallTab(QWidget):
             min_sdk = meta.get('min_sdk') or '?'
             self.lbl_meta.setText(
                 '🏷️ <b>{}</b>  ·  📦 {}  ·  🔢 v{} ({})  ·  ⚙️ Min SDK: {}'.format(
-                    label, pkg, ver, code, min_sdk))
+                    *(html.escape(str(value)) for value in
+                      (label, pkg, ver, code, min_sdk))))
             self.lbl_meta.setVisible(True)
         else:
             self.lbl_meta.setVisible(False)
@@ -375,6 +425,7 @@ class InstallTab(QWidget):
         self.lbl_apk_empty.setVisible(not self._files)
         self.lst.setFixedHeight(min(150, max(80, len(self._files) * 30 + 8)))
         self._refresh_queue_summary()
+        self._update_retry_failed_enabled()
         self._on_queue_selection_changed()
 
     @staticmethod
@@ -402,6 +453,26 @@ class InstallTab(QWidget):
             'Başarısız: {}  ·  İptal: {}'.format(
                 len(self._files), counts['queued'], counts['installing'], counts['success'],
                 counts['failed'], counts['cancelled']))
+
+    def _failed_queue_files(self):
+        failed = []
+        for path in self._files:
+            if self._statuses.get(self._path_key(path)) != 'failed':
+                continue
+            if os.path.isdir(path):
+                eligible = any(os.path.isfile(item)
+                               for item in glob.glob(os.path.join(path, '*.apk')))
+            else:
+                eligible = (os.path.isfile(path)
+                            and path.lower().endswith(_PACKAGE_EXTENSIONS))
+            if eligible:
+                failed.append(path)
+        return tuple(failed)
+
+    def _update_retry_failed_enabled(self):
+        self.btn_retry_failed.setEnabled(
+            not self._installing and self._catalog_worker is None
+            and bool(self._failed_queue_files()))
 
     def _add_paths(self, paths):
         if self._installing:
@@ -469,34 +540,130 @@ class InstallTab(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._catalog_layout_timer.start(0)
         if getattr(self.core, 'connected', False):
             self._refresh_catalog_statuses()
 
-    def _on_connection_changed(self, connected=False, *_):
+    def _on_connection_changed(self, connected=False, target=None, *_):
         self._connection_generation += 1
+        if self._catalog_worker is not None:
+            self._catalog_worker.cancel()
+        self._catalog_refresh_generation += 1
+        current_target = target or getattr(self.core, 'target', None)
+        if (not connected or current_target != self._catalog_status_target):
+            self._catalog_status_known = False
+            self._catalog_status_target = None
+            self._catalog_status_error_target = None
+            self._installed_pkgs = set()
+        self._launchers_target = None
+        self._launchers_generation = None
+        if hasattr(self, 'cmb_launch'):
+            self.cmb_launch.clear()
+        if hasattr(self, 'lbl_home'):
+            self.lbl_home.setText('Mevcut HOME: —')
+        if self._catalog_installing:
+            self.progress_catalog.hide()
+            self.lbl_catalog_status.setText(
+                'Hedef değişti; önceki cihazın kurulum sonucu gösterilmeyecek.')
         if connected or getattr(self.core, 'connected', False):
             self._refresh_catalog_statuses()
         else:
-            self._installed_pkgs = set()
             self._populate_catalog_table()
+
+    def _target_is_current(self, target, generation):
+        return (generation == self._connection_generation
+                and getattr(self.core, 'connected', False)
+                and getattr(self.core, 'target', None) == target
+                and not getattr(self.window, '_connection_busy', False))
+
+    def _catalog_status_known_for(self, target):
+        return (self._catalog_status_known
+                and self._catalog_status_target == target
+                and self._target_is_current(target, self._connection_generation))
+
+    def _catalog_item_verified_installed(self, item):
+        target = getattr(self.core, 'target', None)
+        return (self._catalog_status_target == target
+                and self._target_is_current(target, self._connection_generation)
+                and self._is_catalog_item_installed(item))
+
+    def _reset_catalog_filters(self):
+        category_index = self.cmb_catalog_cat.findText('Tümü')
+        category_signals_were_blocked = self.cmb_catalog_cat.blockSignals(True)
+        search_signals_were_blocked = self.txt_catalog_search.blockSignals(True)
+        try:
+            if category_index >= 0:
+                self.cmb_catalog_cat.setCurrentIndex(category_index)
+            self.txt_catalog_search.clear()
+        finally:
+            self.cmb_catalog_cat.blockSignals(category_signals_were_blocked)
+            self.txt_catalog_search.blockSignals(search_signals_were_blocked)
+        self._populate_catalog_table()
+
+    def _show_catalog_details(self, index):
+        name_item = self.table_catalog.item(index.row(), 0)
+        item = name_item.data(Qt.UserRole) if name_item else None
+        if not isinstance(item, dict):
+            return
+
+        name = str(item.get('name') or 'Uygulama')
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Uygulama Ayrıntıları — {}'.format(name))
+        dialog.setAccessibleName('Uygulama ayrıntıları: {}'.format(name))
+        layout = QVBoxLayout(dialog)
+        details = QPlainTextEdit(dialog)
+        details.setReadOnly(True)
+        details.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        details.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        details.setAccessibleName('{} uygulama ayrıntıları'.format(name))
+        details.setPlainText(
+            'Açıklama:\n{description}\n\nKategori: {category}\nRozet: {badge}\n'
+            'Geliştirici: {author}\nResmî web sitesi: {website}'.format(
+                description=str(item.get('description') or 'Belirtilmemiş'),
+                category=str(item.get('category') or 'Belirtilmemiş'),
+                badge=str(item.get('badge') or 'Belirtilmemiş'),
+                author=str(item.get('author') or 'Belirtilmemiş'),
+                website=str(item.get('website') or 'Belirtilmemiş')))
+        layout.addWidget(details)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+        buttons.button(QDialogButtonBox.Close).setText('Kapat')
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        available = self.screen().availableGeometry()
+        max_width = max(1, available.width() - 32)
+        max_height = max(1, available.height() - 48)
+        dialog.setMaximumSize(max_width, max_height)
+        dialog.resize(min(620, max_width), min(460, max_height))
+        dialog.exec()
 
     def _populate_catalog_table(self):
         cat = self.cmb_catalog_cat.currentText() if hasattr(self, 'cmb_catalog_cat') else 'Tümü'
         search = self.txt_catalog_search.text() if hasattr(self, 'txt_catalog_search') else ''
         items = get_catalog(category=cat, search=search)
+        target = getattr(self.core, 'target', None)
+        status_known = self._catalog_status_known_for(target)
+        connected = bool(getattr(self.core, 'connected', False) and target)
 
         self.table_catalog.setRowCount(0)
         self.table_catalog.setRowCount(len(items))
         action_width = 220
+        installed_count = 0
 
         for row, item in enumerate(items):
             # Col 0: Uygulama (Icon + Name)
             it_name = QTableWidgetItem('{}  {}'.format(item['icon'], item['name']))
-            it_name.setToolTip(item.get('website', ''))
+            it_name.setData(Qt.UserRole, item)
+            tooltip = [item.get('description', ''),
+                       'Geliştirici: {}'.format(item.get('author', ''))]
+            if item.get('website'):
+                tooltip.append('Web: {}'.format(item['website']))
+            it_name.setToolTip('\n'.join(value for value in tooltip if value))
             self.table_catalog.setItem(row, 0, it_name)
 
             # Col 1: Kategori
             it_cat = QTableWidgetItem('{} · {}'.format(item['category'], item['badge']))
+            it_cat.setToolTip('{} · {}'.format(item['category'], item['badge']))
             self.table_catalog.setItem(row, 1, it_cat)
 
             # Col 2: Açıklama
@@ -506,15 +673,32 @@ class InstallTab(QWidget):
 
             # Col 3: Geliştirici
             it_author = QTableWidgetItem(item['author'])
+            it_author.setToolTip('Geliştirici: {}'.format(item['author']))
             self.table_catalog.setItem(row, 3, it_author)
 
             # Col 4: Durum
-            is_installed = self._is_catalog_item_installed(item)
-            it_status = QTableWidgetItem('✓ TV\'de Kurulu' if is_installed else 'Kurulu Değil')
-            it_status.setData(Qt.UserRole, is_installed)
+            is_installed = self._catalog_item_verified_installed(item)
+            if not connected:
+                status_text = 'Bağlantı yok'
+            elif not status_known and not is_installed:
+                status_text = ('Kontrol başarısız'
+                               if self._catalog_status_error_target == target
+                               else 'Kontrol bekleniyor')
+            else:
+                status_text = '✓ TV\'de Kurulu' if is_installed else 'Kurulu Değil'
+            it_status = QTableWidgetItem(status_text)
+            it_status.setData(Qt.UserRole, is_installed if status_known or is_installed else None)
+            if status_text == 'Kontrol başarısız':
+                it_status.setToolTip(
+                    'TV uygulama durumu sorgulanamadı; yeniden denemek için '
+                    'Kurulum Durumunu Güncelle düğmesini kullanın.')
+            else:
+                it_status.setToolTip(status_text)
             palette = kit.colors(self)
-            it_status.setForeground(QColor(palette['success'] if is_installed else palette['muted']))
+            it_status.setForeground(QColor(
+                palette['success'] if is_installed else palette['muted']))
             self.table_catalog.setItem(row, 4, it_status)
+            installed_count += int(is_installed)
 
             # Col 5: İşlem Butonları
             cell_widget = QWidget()
@@ -535,7 +719,8 @@ class InstallTab(QWidget):
 
                 btn_reinstall = QPushButton('Yeniden Kur')
                 btn_reinstall.setProperty('role', 'secondary')
-                btn_reinstall.clicked.connect(lambda _, it=item: self._install_catalog_app(it))
+                btn_reinstall.clicked.connect(
+                    lambda _, it=item: self._install_catalog_app(it, require_installed=True))
                 cell_layout.addWidget(btn_reinstall)
             else:
                 btn_inst = QPushButton('İndir ve TV\'ye Kur')
@@ -545,6 +730,8 @@ class InstallTab(QWidget):
 
             for index in range(cell_layout.count()):
                 button = cell_layout.itemAt(index).widget()
+                button.setEnabled(not self._installing and self._catalog_worker is None
+                                  and not getattr(self.window, '_connection_busy', False))
                 button.setObjectName('catalogAction')
                 button.setProperty('compact', True)
                 button.ensurePolished()
@@ -562,7 +749,54 @@ class InstallTab(QWidget):
                 for index in range(cell_layout.count())
             ) + margins.left() + margins.right() + cell_layout.spacing() * (cell_layout.count() - 1)
             action_width = max(action_width, required_width + 8, cell_widget.sizeHint().width() + 8)
+        if not items:
+            summary = 'Aramayla eşleşen uygulama yok.'
+            kit.empty_state(self.table_catalog, 'Eşleşen uygulama yok',
+                            'Arama metnini temizleyin veya başka bir kategori seçin.')
+        elif not connected:
+            summary = 'Filtrede {} uygulama · Kurulum durumunu görmek için TV’ye bağlanın.'.format(
+                len(items))
+        elif status_known:
+            summary = 'Filtrede {} uygulama · TV’de kurulu: {}'.format(
+                len(items), installed_count)
+        else:
+            summary = 'Filtrede {} uygulama · Kurulum durumu kontrol bekliyor.'.format(
+                len(items))
+        if self._catalog_status_error_target == target:
+            summary += (' Yeni kurulum durumu sorgulanamadı; varsa önceki doğrulanmış '
+                        'sonuçlar gösteriliyor. Bağlantıyı kontrol edip '
+                        '“Kurulum Durumunu Güncelle” ile yeniden deneyin.')
+        self.lbl_catalog_summary.setText(summary)
         self.table_catalog.setColumnWidth(5, action_width)
+        self._update_catalog_columns()
+
+    def _update_catalog_columns(self):
+        """Keep catalog details readable, including in smaller windows."""
+        if not hasattr(self, 'table_catalog'):
+            return
+        table = self.table_catalog
+        for column in range(6):
+            table.setColumnHidden(column, False)
+        other_width = sum(table.columnWidth(column) for column in (0, 1, 3, 4, 5))
+        # Narrow windows scroll horizontally instead of losing application details.
+        table.setColumnWidth(2, max(300, table.viewport().width() - other_width))
+        table.resizeRowsToContents()
+        for row in range(table.rowCount()):
+            actions = table.cellWidget(row, 5)
+            minimum = max(64, actions.sizeHint().height() + 8) if actions else 64
+            table.setRowHeight(row, max(minimum, table.rowHeight(row) + 8))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._catalog_layout_timer.start(0)
+
+    def eventFilter(self, watched, event):
+        if (hasattr(self, 'table_catalog')
+                and watched is self.table_catalog.viewport()
+                and event.type() in (QEvent.Resize, QEvent.Show)):
+            # The scroll area lays out its viewport after the parent resize.
+            self._catalog_layout_timer.start(0)
+        return super().eventFilter(watched, event)
 
     def _is_catalog_item_installed(self, item):
         candidates = [item['package']] + item.get('alt_packages', [])
@@ -575,9 +809,23 @@ class InstallTab(QWidget):
                 return c
         return item['package']
 
-    def _install_catalog_app(self, item):
+    def _install_catalog_app(self, item, require_installed=False):
+        if (self._catalog_worker is not None or self._installing
+                or getattr(self.window, '_connection_busy', False)
+                or getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)):
+            self.lbl_catalog_status.setText('Devam eden işlem bitmeden yeni kurulum başlatılamaz.')
+            return
+        item = dict(item)
         if not self.core.connected or not self.core.target:
             QMessageBox.information(self, 'Bağlantı Yok', 'Uygulama kurmak için önce bir TV cihazına bağlanın.')
+            return
+
+        target = self.core.target
+        if require_installed and not self._catalog_item_verified_installed(item):
+            self.lbl_catalog_status.setText(
+                'Kurulum durumu doğrulanmadı; yeniden kurma başlatılmadı.')
+            self._populate_catalog_table()
             return
 
         install_key = item.get('id') or item['package']
@@ -585,7 +833,7 @@ class InstallTab(QWidget):
             self.lbl_catalog_status.setText('{} için kurulum zaten sürüyor.'.format(item['name']))
             return
 
-        target = self.core.target
+        generation = self._connection_generation
         engine = self.core.engine
         app_name = item['name']
         pkg = item['package']
@@ -601,26 +849,41 @@ class InstallTab(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
+        if (self._catalog_worker is not None or self._installing
+                or getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)
+                or not self._target_is_current(target, generation)):
+            self.lbl_catalog_status.setText('Hedef veya işlem durumu değişti; kurulum başlatılmadı.')
+            return
         self._catalog_installing.add(install_key)
+        self._catalog_refresh_generation += 1
 
         self.lbl_catalog_status.setText('{} indiriliyor ve kuruluyor...'.format(app_name))
-        self.progress_catalog.setValue(0)
+        self.progress_catalog.setRange(0, 0)
         self.progress_catalog.show()
 
         def do():
+            w.check_cancel()
+
             def prog(downloaded, total):
-                if total > 0:
-                    w.progress.emit(int(downloaded), int(total))
+                w.progress.emit(int(downloaded), int(total))
 
             apk_path = download_apk(item, progress_cb=prog, check_cancel=w.check_cancel)
+            w.check_cancel()
+            if not self._target_is_current(target, generation):
+                raise RuntimeError('Hedef veya bağlantı değişti; APK kurulmadı.')
             meta = engine.read_apk_metadata(apk_path)
             actual_pkg = meta.get('package')
             if not actual_pkg or actual_pkg != item['package']:
                 raise RuntimeError('İndirilen APK beklenen paket kimliğine sahip değil.')
 
             w.progress.emit(100, 100)
+            if not self._target_is_current(target, generation):
+                raise RuntimeError('Hedef veya bağlantı değişti; APK kurulmadı.')
+            w.check_cancel()
             res = engine.install_apk(target, apk_path, reinstall=True,
-                                     grant_perms=grant_perms)
+                                     grant_perms=grant_perms,
+                                     cancel_check=w.check_cancel)
             try:
                 engine.invalidate_pkg_cache(target)
             except Exception:
@@ -628,35 +891,47 @@ class InstallTab(QWidget):
             installed = engine.is_installed(target, actual_pkg)
             if not installed:
                 raise RuntimeError('{} paketinin TV\'ye kurulduğu doğrulanamadı.'.format(actual_pkg))
-            return {'installed': installed, 'output': getattr(res, 'output', ''), 'package': actual_pkg}
+            return {'installed': installed, 'output': getattr(res, 'output', ''),
+                    'package': actual_pkg, 'cancel_requested': w.isInterruptionRequested()}
 
         w = Worker(do)
         w.job_name = '{} Kurulumu'.format(app_name)
 
         def on_prog(cur, total):
+            if not self._target_is_current(target, generation):
+                return
             if total > 0:
+                self.progress_catalog.setRange(0, 100)
                 pct = min(100, max(0, int(cur * 100 / total)))
                 self.progress_catalog.setValue(pct)
-                if cur >= total or pct >= 99:
+                if cur == 100 and total == 100:
                     self.lbl_catalog_status.setText('{} TV\'ye yükleniyor (ADB)...'.format(app_name))
                 else:
                     dl_mb = cur / (1024 * 1024)
                     tot_mb = total / (1024 * 1024)
                     self.lbl_catalog_status.setText('{} indiriliyor: {:.1f} / {:.1f} MB (%{})'.format(app_name, dl_mb, tot_mb, pct))
             else:
-                self.progress_catalog.setValue(0)
+                self.progress_catalog.setRange(0, 0)
                 self.lbl_catalog_status.setText('{} indiriliyor...'.format(app_name))
 
         def on_done(res):
             self._catalog_installing.discard(install_key)
+            if not self._target_is_current(target, generation):
+                return
             if not isinstance(res, dict) or not res.get('installed') or not res.get('package'):
                 on_fail('TV üzerinde kurulum doğrulanamadı.')
                 return
             actual_pkg = res['package']
             self.progress_catalog.hide()
             self.lbl_catalog_status.setText('✓ {} TV\'ye başarıyla kuruldu!'.format(app_name))
+            self._catalog_status_target = target
             self._installed_pkgs.add(actual_pkg)
             self._populate_catalog_table()
+
+            if res.get('cancel_requested'):
+                self.lbl_catalog_status.setText(
+                    '{} kuruldu ve doğrulandı; durdurma isteği başlamış kurulumu geri almadı.'.format(app_name))
+                return
 
             box = QMessageBox(self)
             box.setWindowTitle('Kurulum Başarılı')
@@ -666,45 +941,122 @@ class InstallTab(QWidget):
             box.addButton('Kapat', QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() == btn_launch:
-                try:
-                    engine.launch_app(target, actual_pkg)
-                except Exception as err:
-                    QMessageBox.warning(self, 'Başlatma Uyarısı', 'Uygulama açılamadı: ' + str(err))
+                if self._target_is_current(target, generation):
+                    self._launch_catalog_app(item)
+                else:
+                    self.lbl_catalog_status.setText(
+                        'Hedef veya bağlantı değişti; uygulama başlatılmadı.')
 
         def on_fail(err):
             self._catalog_installing.discard(install_key)
+            if not self._target_is_current(target, generation):
+                return
             self.progress_catalog.hide()
+            if 'kullanıcı durdurdu' in str(err).casefold():
+                self.lbl_catalog_status.setText('Kurulum durduruldu; indirilmiş APK yerelde kalabilir.')
+                return
             self.lbl_catalog_status.setText('Kurulum başarısız: ' + str(err))
             QMessageBox.critical(self, 'Kurulum Hatası', '{}\n{}'.format(app_name, err))
 
+        results, errors = [], []
         w.progress.connect(on_prog)
-        w.finished_ok.connect(on_done)
-        w.failed.connect(on_fail)
-        self.window._run(w, desc='Kurulum: {} indiriliyor ve kuruluyor'.format(app_name))
+        w.finished_ok.connect(results.append)
+        w.failed.connect(errors.append)
+        self._catalog_worker = w
+        self._set_queue_controls_enabled(False)
+        self.btn_catalog_refresh.setEnabled(False)
+        self._populate_catalog_table()
+
+        def finished():
+            if self._catalog_worker is not w:
+                return
+            self._catalog_worker = None
+            self.progress_catalog.hide()
+            self.btn_catalog_refresh.setEnabled(True)
+            self._catalog_installing.discard(install_key)
+            self._set_queue_controls_enabled(not self._installing)
+            self._populate_catalog_table()
+            if (self._catalog_refresh_pending
+                    and not getattr(self.window, '_closing', False)
+                    and not getattr(self.window, '_close_pending', False)):
+                self._refresh_catalog_statuses()
+            if (getattr(self.window, '_closing', False)
+                    or getattr(self.window, '_close_pending', False)
+                    or not self._target_is_current(target, generation)):
+                return
+            if results:
+                on_done(results[0])
+            else:
+                on_fail(errors[-1] if errors else 'Kurulum tamamlanamadı.')
+
+        w.finished.connect(finished)
+        try:
+            self.window._run(w, desc='Kurulum: {} indiriliyor ve kuruluyor'.format(app_name))
+        except Exception as error:
+            errors.append(str(error))
+            finished()
 
     def _launch_catalog_app(self, item):
+        if (self._catalog_worker is not None or self._installing
+                or getattr(self.window, '_connection_busy', False)):
+            return
         if not self.core.connected or not self.core.target:
             QMessageBox.information(self, 'Bağlantı Yok', 'Uygulamayı başlatmak için önce cihaza bağlanın.')
             return
         target = self.core.target
+        if not self._catalog_item_verified_installed(item):
+            QMessageBox.information(
+                self, 'Kurulum Durumu Bilinmiyor',
+                'Uygulama durumu bu TV için doğrulanmadı. Kurulum durumunu güncelleyin.')
+            return
+        generation = self._connection_generation
+        engine = self.core.engine
         pkg = self._get_installed_pkg(item)
         app_name = item['name']
 
         def do():
-            return self.core.engine.launch_app(target, pkg)
+            w.check_cancel()
+            if not self._target_is_current(target, generation):
+                from ..workers import CancelledError
+                raise CancelledError('bağlantı değişti')
+            return engine.launch_app(target, pkg)
+
+        def on_done(_):
+            if self._target_is_current(target, generation):
+                self.lbl_catalog_status.setText('{} için başlatma komutu gönderildi.'.format(app_name))
+
+        def on_fail(err):
+            if self._target_is_current(target, generation):
+                QMessageBox.warning(self, 'Başlatma Uyarısı', 'Uygulama açılamadı:\n' + str(err))
 
         w = Worker(do)
         w.job_name = '{} Başlatma'.format(app_name)
-        w.finished_ok.connect(lambda _: self.lbl_catalog_status.setText('✓ {} TV ekranında açıldı.'.format(app_name)))
-        w.failed.connect(lambda err: QMessageBox.warning(self, 'Başlatma Uyarısı', 'Uygulama açılamadı:\n' + str(err)))
+        w.finished_ok.connect(on_done)
+        w.failed.connect(on_fail)
         self.window._run(w, desc='Katalog: {} TV ekranında başlatılıyor'.format(app_name))
 
     def _refresh_catalog_statuses(self):
+        if self._catalog_worker is not None or self._installing:
+            self._catalog_refresh_pending = True
+            return
+        self._catalog_refresh_pending = False
+        self._catalog_refresh_generation += 1
+        request_generation = self._catalog_refresh_generation
         if not self.core.connected or not self.core.target:
+            self._catalog_status_known = False
+            self._catalog_status_target = None
+            self._catalog_status_error_target = None
             self._installed_pkgs = set()
             self._populate_catalog_table()
             return
         target = self.core.target
+        if self._catalog_status_target != target:
+            self._catalog_status_known = False
+            self._catalog_status_target = None
+            self._catalog_status_error_target = None
+            self._installed_pkgs = set()
+            self._populate_catalog_table()
+        connection_generation = self._connection_generation
         engine = self.core.engine
 
         def do():
@@ -712,11 +1064,27 @@ class InstallTab(QWidget):
 
         w = Worker(do)
         w.job_name = 'TV Uygulama Durumu'
-        w.finished_ok.connect(lambda pkgs: (setattr(self, '_installed_pkgs', pkgs), self._populate_catalog_table()))
+        def on_done(pkgs):
+            if (request_generation == self._catalog_refresh_generation
+                    and self._target_is_current(target, connection_generation)):
+                self._installed_pkgs = pkgs
+                self._catalog_status_target = target
+                self._catalog_status_known = True
+                self._catalog_status_error_target = None
+                self._populate_catalog_table()
+
+        def on_fail(_error):
+            if (request_generation == self._catalog_refresh_generation
+                    and self._target_is_current(target, connection_generation)):
+                self._catalog_status_error_target = target
+                self._populate_catalog_table()
+
+        w.finished_ok.connect(on_done)
+        w.failed.connect(on_fail)
         self.window._run(w, desc='Katalog: kurulu TV uygulamaları taranıyor')
 
     def _install_all(self):
-        if self._installing:
+        if self._installing or self._catalog_worker is not None:
             return
         if getattr(self.window, '_connection_busy', False):
             self._set_install_status('Bağlantı işlemi sürüyor; tamamlanınca kurulumu başlatın.')
@@ -726,8 +1094,19 @@ class InstallTab(QWidget):
             return
         self._start_install(tuple(self._files), 'batch')
 
+    def _retry_failed(self):
+        if self._installing or self._catalog_worker is not None:
+            return
+        files = self._failed_queue_files()
+        if not files:
+            self._refresh_list()
+            self._set_install_status(
+                'Yeniden denenecek başarısız paket yok; dosyaları ve kuyruk durumunu kontrol edin.')
+            return
+        self._start_install(files, 'batch')
+
     def _install_single(self):
-        if self._installing:
+        if self._installing or self._catalog_worker is not None:
             return
         target = getattr(self.core, 'target', None)
         connection_generation = self._connection_generation
@@ -750,7 +1129,7 @@ class InstallTab(QWidget):
 
     def _start_install(self, files, mode, expected_target=None,
                        expected_connection_generation=None):
-        if self._installing:
+        if self._installing or self._catalog_worker is not None:
             return
         if getattr(self.window, '_connection_busy', False):
             self._set_install_status('Bağlantı işlemi sürüyor; tamamlanınca kurulumu başlatın.')
@@ -784,7 +1163,10 @@ class InstallTab(QWidget):
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.No) != QMessageBox.Yes:
             return
-        if (getattr(self.window, '_connection_busy', False) or
+        if (self._installing or self._catalog_worker is not None or
+                getattr(self.window, '_closing', False) or
+                getattr(self.window, '_close_pending', False) or
+                getattr(self.window, '_connection_busy', False) or
                 not getattr(self.core, 'connected', False) or
                 getattr(self.core, 'target', None) != target or
                 self._connection_generation != connection_generation):
@@ -802,10 +1184,18 @@ class InstallTab(QWidget):
         operation = {'files': files, 'target': target, 'mode': mode,
                      'successes': [], 'failures': [],
                      'msgs': [], 'snap': None, 'cancelled': False, 'cancel_reason': ''}
+        reinstall = self.chk_reinstall.isChecked()
+        grant_perms = self.chk_grant_perms.isChecked()
+        allow_downgrade = self.chk_downgrade.isChecked()
         self._install_snapshot = files
         self._install_result = None
         self._install_operation = operation
         self._installing = True
+        self._catalog_refresh_generation += 1
+        self._catalog_status_known = False
+        self._catalog_status_target = None
+        self._catalog_refresh_pending = True
+        self._populate_catalog_table()
         if mode == 'batch':
             for path in files:
                 self._statuses[self._path_key(path)] = 'queued'
@@ -817,6 +1207,10 @@ class InstallTab(QWidget):
         def do():
             eng = engine
             t = target
+
+            def target_is_current():
+                return self._target_is_current(t, connection_generation)
+
             try:
                 worker.check_cancel()
             except Exception as exc:
@@ -826,10 +1220,9 @@ class InstallTab(QWidget):
                     operation['cancel_reason'] = 'Kullanıcı durdurdu.'
                     return operation
                 raise
-            if (getattr(self.window, '_connection_busy', False) or
-                    not getattr(self.core, 'connected', False)):
+            if not target_is_current():
                 operation['cancelled'] = True
-                operation['cancel_reason'] = 'Bağlantı kesildi; paketler korunuyor.'
+                operation['cancel_reason'] = 'Hedef veya bağlantı değişti; paketler korunuyor.'
                 return operation
             try:
                 sname, _c = snapmod.take(_SnapshotEngineView(eng, t), t)
@@ -845,26 +1238,45 @@ class InstallTab(QWidget):
                     operation['cancelled'] = True
                     operation['cancel_reason'] = 'Kullanıcı durdurdu; kalanlar kuyrukta.'
                     break
-                if (getattr(self.window, '_connection_busy', False) or
-                        not getattr(self.core, 'connected', False)):
+                if not target_is_current():
                     operation['cancelled'] = True
-                    operation['cancel_reason'] = 'Bağlantı kesildi; kalan paketler korunuyor.'
+                    operation['cancel_reason'] = 'Hedef veya bağlantı değişti; kalan paketler korunuyor.'
                     break
-                reinstall = self.chk_reinstall.isChecked()
-                grant_perms = self.chk_grant_perms.isChecked()
-                allow_downgrade = self.chk_downgrade.isChecked()
                 try:
                     if os.path.isdir(f) or f.lower().endswith(('.apks', '.apkm', '.xapk')):
                         eng.install_multiple(t, f, reinstall=reinstall,
-                                             grant_perms=grant_perms, allow_downgrade=allow_downgrade)
+                                             grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                                             cancel_check=worker.check_cancel)
                     else:
                         eng.install_apk(t, f, reinstall=reinstall,
-                                        grant_perms=grant_perms, allow_downgrade=allow_downgrade)
+                                        grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                                        cancel_check=worker.check_cancel)
                     operation['successes'].append(f)
                     operation['msgs'].append('+ ' + os.path.basename(f))
+                    if worker.isInterruptionRequested():
+                        operation['cancelled'] = True
+                        operation['cancel_reason'] = (
+                            'Durdurma isteği geldi; başlamış son kurulum tamamlandı.'
+                            if i == total else
+                            'Durdurma isteği geldi; başlamış kurulum tamamlandı, '
+                            'kalan paketler kuyrukta bırakıldı.')
+                        break
+                except CancelledError:
+                    operation['cancelled'] = True
+                    operation['cancel_reason'] = 'Kullanıcı durdurdu; kalanlar kuyrukta.'
+                    break
                 except Exception as e:
                     operation['failures'].append(f)
                     operation['msgs'].append('X {}: {}'.format(os.path.basename(f), e))
+                    if worker.isInterruptionRequested():
+                        operation['cancelled'] = True
+                        operation['cancel_reason'] = (
+                            'Durdurma isteği geldi; başlayan son kurulum başarısız oldu, '
+                            'başarısız paket kuyrukta tutuldu.'
+                            if i == total else
+                            'Durdurma isteği geldi; başlayan kurulum başarısız oldu, '
+                            'başarısız ve kalan paketler kuyrukta tutuldu.')
+                        break
             try:
                 eng.invalidate_pkg_cache(t)
             except Exception:
@@ -874,7 +1286,8 @@ class InstallTab(QWidget):
         worker.job_name = 'Tek APK kurma' if mode == 'single' else 'APK kuyruk kurulumu'
         worker.finished_ok.connect(self._install_done)
         worker.progress.connect(self._install_progress)
-        worker.failed.connect(lambda error: self._install_failed(operation, error))
+        worker.failed.connect(
+            lambda error: self._install_failed(operation, error, worker))
         worker.finished.connect(lambda: self._install_complete(operation, worker))
         self._install_worker = worker
         try:
@@ -886,13 +1299,19 @@ class InstallTab(QWidget):
             self._installing = False
             self._install_worker = None
             self._set_queue_controls_enabled(True)
+            self._populate_catalog_table()
+            self._refresh_catalog_statuses()
             raise
 
     def _set_queue_controls_enabled(self, enabled):
+        enabled = bool(enabled and self._catalog_worker is None)
         for button in (self.btn_add, self.btn_add_dir, self.btn_rm,
-                       self.btn_single_install, self.btn_install):
+                       self.btn_single_install, self.btn_install,
+                       self.chk_reinstall, self.chk_grant_perms,
+                       self.chk_downgrade):
             button.setEnabled(bool(enabled))
         self.lst.setEnabled(bool(enabled))
+        self._update_retry_failed_enabled()
 
     def _install_progress(self, current, total):
         if not self._installing:
@@ -917,8 +1336,15 @@ class InstallTab(QWidget):
             else:
                 self._set_install_status('Tek APK kuruluyor: {}'.format(os.path.basename(path)))
 
-    def _install_failed(self, operation, error):
-        operation['worker_error'] = str(error)
+    def _install_failed(self, operation, error, worker=None):
+        message = str(error)
+        if (worker is not None and worker.isInterruptionRequested()
+                and 'kullanıcı durdurdu' in message.casefold()):
+            operation['cancelled'] = True
+            operation['cancel_reason'] = (
+                'İşlem başlamadan durduruldu; paketler kuyrukta korundu.')
+            return
+        operation['worker_error'] = message
 
     def _install_done(self, res):
         self._install_result = res
@@ -946,6 +1372,12 @@ class InstallTab(QWidget):
         if worker is None or worker is self._install_worker:
             self._install_worker = None
         self._set_queue_controls_enabled(True)
+        self._populate_catalog_table()
+        closing = (getattr(self.window, '_closing', False)
+                   or getattr(self.window, '_close_pending', False))
+        if closing:
+            return
+        self._refresh_catalog_statuses()
         self._refresh_list()
 
         if result.get('mode') == 'single':
@@ -959,7 +1391,8 @@ class InstallTab(QWidget):
                 lines = ['Tek APK kurulamadı: {}'.format(os.path.basename(path))]
         else:
             lines = ['Kuyruk sonucu: {} kuruldu, {} başarısız.'.format(
-                len(result.get('successes', [])), len(result.get('failures', [])))]
+                len(result.get('successes', [])), len(result.get('failures', []))),
+                     'Başarılılar kuyruktan kaldırıldı; başarısızlar kuyrukta tutuldu.']
         if result.get('snap'):
             lines.append('Paket durumu snapshot’ı: {} (uygulama verileri yedeklenmez).'.format(
                 result['snap']))
@@ -977,16 +1410,30 @@ class InstallTab(QWidget):
 
     # --- HOME ---
     def _scan_launchers(self):
+        target = getattr(self.core, 'target', None)
+        generation = self._connection_generation
+        if not self._target_is_current(target, generation):
+            QMessageBox.information(self, 'Launcher', 'Önce bir TV cihazına bağlanın.')
+            return
+        engine = self.core.engine
+
         def do():
-            self.core.engine.connect(self.core.target)
-            return self.core.engine.launcher_apps(self.core.target)
+            engine.connect(target)
+            return engine.launcher_apps(target)
+
         w = Worker(do)
         w.job_name = 'Launcher tarama'
-        w.finished_ok.connect(self._show_launchers)
+        w.finished_ok.connect(
+            lambda items: self._show_launchers(items, target, generation))
         self.window._run(w, desc='Kurulum: launcherlar taraniyor')
 
-    def _show_launchers(self, items):
+    def _show_launchers(self, items, target=None, generation=None):
+        if (target is not None and generation is not None
+                and not self._target_is_current(target, generation)):
+            return
         self.cmb_launch.clear()
+        self._launchers_target = target
+        self._launchers_generation = generation
         if not items:
             self.cmb_launch.addItem('(bulunamadı)', '')
             return
@@ -1002,18 +1449,38 @@ class InstallTab(QWidget):
             self.cmb_launch.setItemData(index, c, Qt.ToolTipRole)
 
     def _show_home(self):
+        target = getattr(self.core, 'target', None)
+        generation = self._connection_generation
+        if not self._target_is_current(target, generation):
+            QMessageBox.information(self, 'HOME', 'Önce bir TV cihazına bağlanın.')
+            return
+        engine = self.core.engine
+
         def do():
-            self.core.engine.connect(self.core.target)
-            return self.core.engine.home_activity(self.core.target)
+            engine.connect(target)
+            return engine.home_activity(target)
+
+        def on_done(current):
+            if self._target_is_current(target, generation):
+                self.lbl_home.setText('Mevcut HOME: ' + current)
+
         w = Worker(do)
         w.job_name = 'HOME okuma'
-        w.finished_ok.connect(lambda cur: self.lbl_home.setText('Mevcut HOME: ' + cur))
+        w.finished_ok.connect(on_done)
         self.window._run(w, desc='Kurulum: mevcut HOME okunuyor')
 
     def _set_home(self):
         comp = self.cmb_launch.currentData()
         if not comp:
             QMessageBox.information(self, 'HOME', 'Önce Launcherları Tara ile seçin.')
+            return
+        target = getattr(self.core, 'target', None)
+        generation = self._connection_generation
+        if (not self._target_is_current(target, generation)
+                or getattr(self, '_launchers_target', None) != target
+                or getattr(self, '_launchers_generation', None) != generation):
+            QMessageBox.information(self, 'HOME',
+                                    'Hedef değişti; launcherları bu cihazda yeniden tarayın.')
             return
         try:
             disp = self.cmb_launch.currentText()
@@ -1026,19 +1493,32 @@ class InstallTab(QWidget):
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.No) != QMessageBox.Yes:
             return
+        if (not self._target_is_current(target, generation)
+                or getattr(self, '_launchers_target', None) != target
+                or getattr(self, '_launchers_generation', None) != generation
+                or self.cmb_launch.currentData() != comp):
+            QMessageBox.information(self, 'HOME',
+                                    'Hedef veya launcher seçimi değişti; HOME ayarlanmadı.')
+            return
+        engine = self.core.engine
 
         def do():
-            eng = self.core.engine
-            eng.connect(self.core.target)
-            eng.set_home_activity(self.core.target, comp)
-            return {'home': eng.home_activity(self.core.target),
-                    'notes': list(getattr(eng, 'last_home_notes', []) or [])}
+            engine.connect(target)
+            engine.set_home_activity(target, comp)
+            return {'home': engine.home_activity(target),
+                    'notes': list(getattr(engine, 'last_home_notes', []) or [])}
+
+        def on_done(result):
+            self._home_done(result, target, generation)
+
         w = Worker(do)
         w.job_name = 'HOME ayarlama'
-        w.finished_ok.connect(self._home_done)
+        w.finished_ok.connect(on_done)
         self.window._run(w, desc='Kurulum: HOME ayarlaniyor: ' + comp)
 
-    def _home_done(self, res):
+    def _home_done(self, res, target, generation):
+        if not self._target_is_current(target, generation):
+            return
         if isinstance(res, dict):
             cur = res.get('home', '?')
             notes = res.get('notes') or []
@@ -1053,6 +1533,11 @@ class InstallTab(QWidget):
     # --- konsol ---
     def _run_cmd(self):
         from .. import gate
+        target = getattr(self.core, 'target', None)
+        generation = self._connection_generation
+        if not self._target_is_current(target, generation):
+            self.txt_out.appendPlainText('Komut için önce bir cihaza bağlanın.')
+            return
         cmd = self.txt_cmd.text().strip()
         if not cmd:
             return
@@ -1061,22 +1546,46 @@ class InstallTab(QWidget):
             QMessageBox.critical(self, 'Kapı', gate.REFUSED_MSG)
             self.txt_out.appendPlainText('$ ' + cmd + '\nREDDEDİLDİ (yıkıcı komut).')
             return
-        if cls == 'CHANGE':
+        if cls in ('SETTING', 'CHANGE'):
             if QMessageBox.question(self, 'Onay',
-                                    '[{}] {}\n\nCihazda değişiklik yapar. Çalıştırılsın mı?'.format(cls, cmd)
-                                    ) != QMessageBox.Yes:
+                                    '[{}] {}\n\nCihazda değişiklik yapar. Çalıştırılsın mı?'.format(cls, cmd),
+                                    QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.No) != QMessageBox.Yes:
                 return
+        if not self._target_is_current(target, generation):
+            self.txt_out.appendPlainText('Hedef veya bağlantı değişti; komut çalıştırılmadı.')
+            return
         parts = cmd.split()
+        engine = self.core.engine
+        worker_ref = {}
 
         def do():
-            eng = self.core.engine
-            eng.connect(self.core.target)
-            r = eng.shell(self.core.target, *parts, timeout=30)
+            worker = worker_ref['worker']
+            worker.check_cancel()
+            if not self._target_is_current(target, generation):
+                raise RuntimeError('Hedef veya bağlantı değişti; komut çalıştırılmadı.')
+            try:
+                engine.connect(target, cancel_check=worker.isInterruptionRequested)
+            except Exception:
+                worker.check_cancel()
+                raise
+            worker.check_cancel()
+            if not self._target_is_current(target, generation):
+                raise RuntimeError('Hedef veya bağlantı değişti; komut çalıştırılmadı.')
+            try:
+                r = engine.shell(
+                    target, *parts, timeout=30, hide_from_trace=True,
+                    cancel_check=worker.isInterruptionRequested)
+            except Exception:
+                worker.check_cancel()
+                raise
             return '[{}] exit={}\n{}{}'.format(
                 cls, r.exit_code,
                 (r.output + '\n' if r.output else ''),
                 (r.error if r.error else ''))
         w = Worker(do)
+        worker_ref['worker'] = w
         w.job_name = 'Konsol komutu'
-        w.finished_ok.connect(lambda out: self.txt_out.appendPlainText('$ ' + cmd + '\n' + out))
-        self.window._run(w, desc='Kurulum konsolu: ' + cmd[:80])
+        w.finished_ok.connect(lambda out: self.txt_out.appendPlainText('$ ' + cmd + '\n' + out)
+                              if self._target_is_current(target, generation) else None)
+        self.window._run(w, desc='Kurulum konsolu komutu')

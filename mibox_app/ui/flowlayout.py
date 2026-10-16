@@ -87,12 +87,12 @@ class FlowLayout(QLayout):
             space_x = self._h
             space_y = self._v
             if w is not None:
-                space_x += w.style().layoutSpacing(
-                    QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Horizontal)
-                space_y += w.style().layoutSpacing(
-                    QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Vertical)
+                space_x += max(0, w.style().layoutSpacing(
+                    QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Horizontal))
+                space_y += max(0, w.style().layoutSpacing(
+                    QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Vertical))
             nxt_x = x + item.sizeHint().width() + space_x
-            if nxt_x - space_x > area.right() and line_h > 0:
+            if nxt_x - space_x > area.right() + 1 and line_h > 0:
                 place_line()
                 x = area.x()
                 y = y + line_h + space_y
@@ -104,4 +104,4 @@ class FlowLayout(QLayout):
             x = nxt_x
             line_h = max(line_h, item.sizeHint().height())
         place_line()
-        return y + line_h - rect.y() + m.top() + m.bottom()
+        return y + line_h - rect.y() + m.bottom()

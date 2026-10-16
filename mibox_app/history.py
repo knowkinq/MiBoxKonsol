@@ -37,7 +37,7 @@ def _path():
 
 
 def append(target, action, package, method='', ok=True, user_id=0):
-    """Tek kayıt ekler. Hata verirse sessizce geçer (kritik yol değil)."""
+    """Tek kayıt ekler; yazma başarısını döndürür."""
     if type(user_id) is not int or not 0 <= user_id <= 21474:
         raise ValueError('Geçersiz kullanıcı kimliği.')
     rec = {
@@ -54,12 +54,10 @@ def append(target, action, package, method='', ok=True, user_id=0):
         with _HIST_LOCK:
             with open(_path(), 'a', encoding='utf-8') as f:
                 f.write(line)
-                try:
-                    f.flush()
-                except OSError:
-                    pass
+                f.flush()
     except OSError:
-        pass
+        return False
+    return True
 
 
 def append_many(target, action, details, user_id=0):
@@ -69,6 +67,7 @@ def append_many(target, action, details, user_id=0):
     `(action, pkg, ok, msg)` biçimi işlem sahnelerinde paket başına doğru
     geri alma türünü korur.
     """
+    saved = True
     for detail in details:
         if len(detail) == 4:
             record_action, pkg, ok, msg = detail
@@ -83,7 +82,9 @@ def append_many(target, action, details, user_id=0):
                 method = 'uninstall'
         if not method and record_action in ('disable', 'uninstall'):
             method = record_action
-        append(target, record_action, pkg, method, ok, user_id=user_id)
+        if not append(target, record_action, pkg, method, ok, user_id=user_id):
+            saved = False
+    return saved
 
 
 def read_all(limit=500):
@@ -112,11 +113,12 @@ def read_all(limit=500):
 
 
 def clear():
-    try:
-        with _HIST_LOCK:
+    with _HIST_LOCK:
+        try:
             os.remove(_path())
-    except OSError:
-        pass
+        except FileNotFoundError:
+            # An already-empty history is the requested end state.
+            pass
 
 
 def inverse_of(action):

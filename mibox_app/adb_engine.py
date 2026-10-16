@@ -12,6 +12,7 @@ import os
 import posixpath
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,47 @@ from urllib.parse import urlsplit
 from types import SimpleNamespace
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+_LOG_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+|magnet:[^\s'\"<>]+")
+_LOG_ABS_PATH = re.compile(
+    r'(?i)(?:[a-z]:[\\/][^\r\n"<>|]+|\\\\[^\r\n"<>|]+'
+    r'|/[^\r\n]+)')
+_LOG_QUOTED_PATH = re.compile(
+    r'''(?i)(["'])(?=[^"'\r\n]*[\\/])[^"'\r\n]*\1''')
+_LOG_IPV4 = re.compile(
+    r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?![\w.])')
+
+
+def sanitize_log_text(value, private_values=()):
+    """Redact known secrets, URLs, local paths, and IPv4 endpoints from logs."""
+    text = str(value or '')
+    for private in sorted(set(str(item) for item in private_values if item),
+                          key=len, reverse=True):
+        pattern = r'(?<![\w]){}(?![\w])'.format(re.escape(private))
+        text = re.sub(pattern, '******', text, flags=re.IGNORECASE)
+    text = _LOG_QUOTED_PATH.sub('"******"', text)
+    text = _LOG_URL.sub('******', text)
+    text = _LOG_ABS_PATH.sub('******', text)
+    return _LOG_IPV4.sub('******', text)
+
+
+def target_private_values(target):
+    """Return a network target and its host portion for log redaction."""
+    value = str(target or '').strip()
+    if not value:
+        return []
+    values = [value]
+    if value.startswith('[') and ']' in value:
+        host = value[1:value.find(']')]
+    elif ':' in value:
+        host, _, port = value.rpartition(':')
+        if not port.isdigit():
+            host = ''
+    else:
+        host = ''
+    if host and host not in values:
+        values.append(host)
+    return values
 
 # input text icin transliterasyon: ADB 'input text' ASCII disi karakterleri
 # ve shell metakarakterlerini kabul etmez; Turkce harfleri ASCII'ye indirger,
@@ -248,9 +290,16 @@ def clamp_lines(lines, default=200, lo=1, hi=2000):
 
 
 def check_user_id(user_id):
-    try:
-        n = int(user_id)
-    except (TypeError, ValueError):
+    if isinstance(user_id, bool):
+        raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
+    if isinstance(user_id, int):
+        n = user_id
+    elif isinstance(user_id, str):
+        try:
+            n = int(user_id.strip())
+        except ValueError:
+            raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
+    else:
         raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
     if not 0 <= n <= 21474:
         raise AdbError('Geçersiz kullanıcı id: {!r}'.format(user_id))
@@ -312,12 +361,79 @@ class AdbEngine:
     Komut izi (v8.1): her calistirilan ADB cagrisi trace_cb'ye bildirilir:
       trace_cb(cmd_list, ok: bool, ms: int, err: str)
     UI bunu Canli Log'a 'ADB' seviyesiyle yazar. trace_cb yoksa sessizdir.
-    Uzun cikti kirpilir; hassas veri (pair kodu) maskelenir.
+    Hassas hedefler, pair verileri, girilen metinler ve yerel yollar maskelenir.
     """
 
     # logda gosterilmeyecek/gizlenecek komutlar
     _MASK_ARGS = {'pair'}
-    _URL_ARG = re.compile(r'(?i)(?:https?://|rtsp://|magnet:)')
+    _URL_ARG = _LOG_URL
+    _LOCAL_PATH_ARG = re.compile(
+        r'(?i)^(?:[a-z]:[\\/]|\\\\|/(?:users|home|private|tmp)/|~[\\/])')
+    def _safe_trace_args(self, args, hide_shell=False):
+        """Return trace args with device targets, user text and local paths hidden."""
+        shown = [str(a) for a in args]
+        private_values = []
+
+        def hide(index):
+            if 0 <= index < len(shown) and shown[index] != '******':
+                if shown[index]:
+                    private_values.append(shown[index])
+                shown[index] = '******'
+
+        # ADB global options can precede the command. Do not record serials or
+        # server hosts, which commonly contain a LAN address or device name.
+        for i, value in enumerate(shown[:-1]):
+            if value in ('-s', '-t', '-H'):
+                endpoint = shown[i + 1]
+                hide(i + 1)
+                if value in ('-s', '-H'):
+                    private_values.extend(target_private_values(endpoint))
+
+        lowered = [value.lower() for value in shown]
+        for i, value in enumerate(lowered):
+            if value in self._MASK_ARGS:
+                if i + 1 < len(shown):
+                    private_values.extend(target_private_values(shown[i + 1]))
+                for j in range(i + 1, len(shown)):
+                    hide(j)
+            elif value in ('connect', 'disconnect') and i + 1 < len(shown):
+                private_values.extend(target_private_values(shown[i + 1]))
+                hide(i + 1)
+            elif value == 'shell' and (hide_shell or len(shown) == i + 2):
+                # Interactive console commands may contain arbitrary values.
+                for j in range(i + 1, len(shown)):
+                    hide(j)
+            elif value == 'text' and i > 0 and lowered[i - 1] == 'input':
+                for j in range(i + 1, len(shown)):
+                    hide(j)
+            elif value in ('push', 'pull'):
+                # Both ends can reveal a local account or private storage path.
+                for j in range(i + 1, len(shown)):
+                    if not shown[j].startswith('-'):
+                        hide(j)
+            elif value in ('install', 'install-multiple'):
+                for j in range(i + 1, len(shown)):
+                    if (shown[j].lower().endswith(('.apk', '.apks', '.aab'))
+                            or self._LOCAL_PATH_ARG.match(shown[j])):
+                        hide(j)
+
+        for i, value in enumerate(shown):
+            if value == '******':
+                continue
+            path_value = value.strip("'\"")
+            if (self._URL_ARG.search(value)
+                    or self._LOCAL_PATH_ARG.match(value)
+                    or '/' in path_value or '\\' in path_value):
+                hide(i)
+        return shown, sorted(set(private_values), key=len, reverse=True)
+
+    @staticmethod
+    def _has_opaque_shell_command(args, hide_shell=False):
+        if hide_shell:
+            return True
+        parts = [str(value).lower() for value in args]
+        return any(value == 'shell' and len(parts) == index + 2
+                   for index, value in enumerate(parts))
 
     def __init__(self, adb_path=None, trace_cb=None):
         self.adb_path = adb_path or self.find_adb()
@@ -332,31 +448,16 @@ class AdbEngine:
         # Onbellek ARTIK ornek basina; kilit class seviyesinde (eski orneklerle
         # ortak kullanima da guvenli) — asagida _pkg_cache_lock tanimli.
 
-    def _trace(self, args, ok, ms, err='', probe=False):
+    def _trace(self, args, ok, ms, err='', probe=False, hide_shell=False):
         cb = getattr(self, 'trace_cb', None)
         if not cb:
             return
         try:
-            shown = list(args)
-            private_values = []
-            for i, a in enumerate(shown):
-                # 'adb pair HOST:PORT KOD' -> host ve kodun TAMAMI maskelenir
-                value = str(a).lower()
-                if self._URL_ARG.search(str(a)):
-                    private_values.append(str(a))
-                    shown[i] = '******'
-                    continue
-                is_private_text = (value == 'text' and i > 0
-                                   and str(shown[i - 1]).lower() == 'input')
-                if value in self._MASK_ARGS or is_private_text:
-                    for j in range(i + 1, len(shown)):
-                        if shown[j]:
-                            private_values.append(str(shown[j]))
-                        shown[j] = '******'
-            safe_err = str(err or '')
-            safe_err = self._URL_ARG.sub('******', safe_err)
-            for value in private_values:
-                safe_err = safe_err.replace(value, '******')
+            shown, private_values = self._safe_trace_args(args, hide_shell)
+            if self._has_opaque_shell_command(args, hide_shell) and (err or not ok):
+                safe_err = 'ADB shell komutu başarısız; içerik gizlendi.'
+            else:
+                safe_err = sanitize_log_text(err, private_values)
             try:
                 cb(shown, ok, ms, safe_err[:200], bool(probe))
             except TypeError:
@@ -380,7 +481,8 @@ class AdbEngine:
 
     # ------------------------------------------------------------------
     def run(self, args, timeout=30, binary=False, quiet_first=False,
-            preserve_output_whitespace=False, cancel_check=None):
+            preserve_output_whitespace=False, cancel_check=None,
+            hide_shell_from_trace=False):
         """quiet_first: exit!=0 'yoklama negatif sonucu' sayilir.
 
         trace_cb imzasi genisledi: (cmd, ok, ms, err, probe).
@@ -397,7 +499,8 @@ class AdbEngine:
                 r = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
             else:
                 if cancel_check():
-                    self._trace(args, False, 0, 'kullanıcı durdurdu')
+                    self._trace(args, False, 0, 'kullanıcı durdurdu',
+                                hide_shell=hide_shell_from_trace)
                     raise AdbError('ADB işlemi kullanıcı tarafından durduruldu')
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
@@ -422,7 +525,8 @@ class AdbEngine:
                             proc.communicate()
                         self._trace(args, False,
                                     int((_time.time() - t0) * 1000),
-                                    'kullanıcı durdurdu')
+                                    'kullanıcı durdurdu',
+                                    hide_shell=hide_shell_from_trace)
                         raise AdbError('ADB işlemi kullanıcı tarafından durduruldu')
                     remaining = deadline - _time.monotonic()
                     if remaining <= 0:
@@ -442,23 +546,21 @@ class AdbEngine:
                     except subprocess.TimeoutExpired:
                         continue
         except subprocess.TimeoutExpired:
-            self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman aşımı')
-            shown = list(args)
-            for i, arg in enumerate(shown):
-                value = str(arg).lower()
-                if self._URL_ARG.search(str(arg)):
-                    shown[i] = '******'
-                    continue
-                is_private_text = (value == 'text' and i > 0
-                                   and str(shown[i - 1]).lower() == 'input')
-                if value in self._MASK_ARGS or is_private_text:
-                    for j in range(i + 1, len(shown)):
-                        shown[j] = '******'
+            self._trace(args, False, int((_time.time() - t0) * 1000), 'zaman aşımı',
+                        hide_shell=hide_shell_from_trace)
+            shown, _ = self._safe_trace_args(args, hide_shell_from_trace)
+            safe_args = ' '.join(str(a) for a in shown)
             raise AdbError('ADB zaman aşımı ({} sn): adb {}'.format(
-                timeout, ' '.join(str(a) for a in shown)))
+                timeout, safe_args))
         except OSError as e:
-            self._trace(args, False, int((_time.time() - t0) * 1000), str(e)[:120])
-            raise AdbError('ADB calistirilamadi: {}'.format(e))
+            if self._has_opaque_shell_command(args, hide_shell_from_trace):
+                safe_error = 'ADB shell komutu başlatılamadı; içerik gizlendi.'
+            else:
+                safe_error = sanitize_log_text(
+                    str(e), self._safe_trace_args(args, hide_shell_from_trace)[1])
+            self._trace(args, False, int((_time.time() - t0) * 1000), safe_error,
+                        hide_shell=hide_shell_from_trace)
+            raise AdbError('ADB calistirilamadi: {}'.format(safe_error))
         out, err = r.stdout, r.stderr
         if not binary:
             out = out.decode('utf-8', 'replace')
@@ -468,11 +570,21 @@ class AdbEngine:
             out, err = out or b'', (err or b'').decode('utf-8', 'replace').strip()
         ms = int((_time.time() - t0) * 1000)
         ok = (r.returncode == 0)
+        private_values = self._safe_trace_args(args, hide_shell_from_trace)[1]
+        opaque_shell = self._has_opaque_shell_command(args, hide_shell_from_trace)
+        if not opaque_shell:
+            err = sanitize_log_text(err, private_values)
+        if not ok and not opaque_shell:
+            if isinstance(out, str):
+                out = sanitize_log_text(out, private_values)
         if quiet_first:
             # negatif sonuc: hata degil, sessiz probe
-            self._trace(args, True, ms, '', probe=True)
+            self._trace(args, True, ms, '', probe=True,
+                        hide_shell=hide_shell_from_trace)
         else:
-            self._trace(args, ok, ms, '' if ok else (err or out if isinstance(err, str) else '')[:200])
+            self._trace(args, ok, ms,
+                        '' if ok else (err or out if isinstance(err, str) else ''),
+                        hide_shell=hide_shell_from_trace)
         return AdbResult(r.returncode, out, err)
 
     # ------------------------------------------------------------------
@@ -491,10 +603,11 @@ class AdbEngine:
             device = next((item for item in self.devices()
                            if item['id'] == target), None)
             if device is None:
-                raise AdbError('Cihaz ADB listesinde bulunamadı: {}'.format(target))
+                raise AdbError('Cihaz ADB listesinde bulunamadı: {}'.format(
+                    sanitize_log_text(target, [target])))
             if device['state'] != 'device':
                 raise AdbError('Cihaz hazır değil ({}): {}'.format(
-                    device['state'], target))
+                    device['state'], sanitize_log_text(target, [target])))
             state = self.run(['-s', target, 'get-state'], timeout=timeout, cancel_check=cancel_check)
             if state.exit_code != 0 or state.output != 'device':
                 raise AdbError('Cihaz hazır değil: {} {}'.format(
@@ -513,7 +626,8 @@ class AdbEngine:
                     _time.sleep(bekleme)
                     continue
                 raise
-            text = '{} {}'.format(r.output, r.error)
+            text = sanitize_log_text(
+                '{} {}'.format(r.output, r.error), target_private_values(target))
             if r.exit_code != 0 or re.search(r'failed|refused|cannot|unreachable|unable|no route',
                                              text, re.I):
                 hata = AdbError('Bağlantı başarısız: {} (Cihaz uyku modunda olabilir; '
@@ -525,14 +639,17 @@ class AdbEngine:
                 raise hata
             st = self.run(['-s', target, 'get-state'], timeout=timeout, cancel_check=cancel_check)
             if st.output != 'device':
-                hata = AdbError('Cihaz hazır degil: {} {}'.format(st.output, st.error))
-                if i + 1 < deneme and is_transient_connect_error('{} {}'.format(st.output, st.error)):
+                state_error = sanitize_log_text(
+                    '{} {}'.format(st.output, st.error), target_private_values(target))
+                hata = AdbError('Cihaz hazır değil: {}'.format(state_error))
+                if i + 1 < deneme and is_transient_connect_error(state_error):
                     son_hata = hata
                     _time.sleep(bekleme)
                     continue
                 raise hata
             return target
-        raise son_hata or AdbError('Bağlantı kurulamadi: {}'.format(target))
+        raise son_hata or AdbError('Bağlantı kurulamadı: {}'.format(
+            sanitize_log_text(target, target_private_values(target))))
 
     @staticmethod
     def _is_network_target(target):
@@ -543,23 +660,86 @@ class AdbEngine:
                     and not any(ch.isspace() for ch in target))
 
     def disconnect(self, target):
+        if not self._is_network_target(target):
+            return
+
         try:
-            self.run(['disconnect', target], timeout=10)
-        except AdbError:
-            pass
+            result = self.run(['disconnect', target], timeout=10)
+        except AdbError as exc:
+            raise AdbError('ADB bağlantısı kesilemedi: {}'.format(
+                sanitize_log_text(exc, target_private_values(target))))
+        if result.exit_code != 0:
+            detail = (result.error or result.output or '').strip()
+            if not detail:
+                detail = 'ADB komutu {} çıkış koduyla tamamlandı.'.format(
+                    result.exit_code)
+            raise AdbError('ADB bağlantısı kesilemedi: {}'.format(
+                sanitize_log_text(detail, target_private_values(target))))
 
     def pair(self, host_port, code, timeout=15):
         """Android 11+ kablosuz eslestirme (adb pair host:port kod)."""
+        import ipaddress
+
+        if (not isinstance(host_port, str) or not host_port
+                or host_port.startswith('-')
+                or any(ch.isspace() or unicodedata.category(ch) == 'Cc'
+                       for ch in host_port)):
+            raise AdbError('Geçersiz eşleştirme adresi; host:port biçimini kullanın.')
+
+        if host_port.startswith('['):
+            closing = host_port.find(']')
+            if closing < 0 or host_port[closing + 1:closing + 2] != ':':
+                raise AdbError('Geçersiz eşleştirme adresi; host:port biçimini kullanın.')
+            host = host_port[1:closing]
+            port = host_port[closing + 2:]
+            try:
+                if '%' in host:
+                    raise ValueError
+                ipaddress.IPv6Address(host)
+            except ValueError:
+                raise AdbError('Geçersiz eşleştirme adresi; host:port biçimini kullanın.')
+        else:
+            host, separator, port = host_port.rpartition(':')
+            if not separator or not host or ':' in host:
+                raise AdbError('Geçersiz eşleştirme adresi; host:port biçimini kullanın.')
+            try:
+                ipaddress.IPv4Address(host)
+            except ValueError:
+                label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+                hostname = host[:-1] if host.endswith('.') else host
+                if (not hostname or len(hostname) > 253
+                        or re.fullmatch(r'[0-9]+(?:\.[0-9]+){3}', hostname)
+                        or not re.fullmatch(r'{}(?:\.{})*'.format(label, label), hostname)):
+                    raise AdbError('Geçersiz eşleştirme adresi; host:port biçimini kullanın.')
+
+        if (not re.fullmatch(r'[0-9]{1,5}', port)
+                or not 1 <= int(port) <= 65535):
+            raise AdbError('Geçersiz eşleştirme portu; 1–65535 arasında olmalıdır.')
+        if not isinstance(code, str) or not re.fullmatch(r'[0-9]{6}', code):
+            raise AdbError('Eşleştirme kodu 6 ASCII rakamından oluşmalıdır.')
+
         r = self.run(['pair', host_port, str(code)], timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
-        if str(code):
-            text = text.replace(str(code), '******')
-        if r.exit_code != 0 or re.search(r'failed|error|wrong|incorrect', text, re.I):
-            raise AdbError('Eşleştirme başarısız: {}'.format(text.strip()))
-        return text.strip()
+        safe_text = text
+        for endpoint_part in (host_port, host.strip('[]')):
+            if endpoint_part:
+                safe_text = re.sub(re.escape(endpoint_part), '******', safe_text,
+                                   flags=re.IGNORECASE)
+        safe_text = safe_text.replace(code, '******')
+        succeeded = re.search(
+            r'(?im)^[ \t]*Successfully paired to[ \t]+\S+', text)
+        if (r.exit_code != 0 or not succeeded
+                or re.search(r'failed|error|wrong|incorrect', safe_text, re.I)):
+            raise AdbError('Eşleştirme başarısız: {}'.format(
+                safe_text.strip() or 'ADB eşleştirmeyi doğrulamadı.'))
+        return safe_text.strip()
 
     def devices(self):
         r = self.run(['devices', '-l'], timeout=15)
+        if r.exit_code != 0:
+            output = '{} {}'.format(r.output, r.error).strip()
+            raise AdbError('ADB cihaz listesi alınamadı: {}'.format(
+                output or 'bilinmeyen hata'))
         devs = []
         states = {'device', 'offline', 'unauthorized', 'bootloader',
                   'recovery', 'sideload', 'rescue'}
@@ -593,13 +773,18 @@ class AdbEngine:
     QUIET_FIRST = {'pidof', 'pm', 'dumpsys', 'getprop', 'settings'}
 
     def shell(self, target, *cmd, timeout=30, quiet=False,
-              preserve_output_whitespace=False):
+              preserve_output_whitespace=False, hide_from_trace=False,
+              cancel_check=None):
         options = {
             'timeout': timeout,
             'quiet_first': quiet and bool(cmd) and str(cmd[0]) in self.QUIET_FIRST,
         }
         if preserve_output_whitespace:
             options['preserve_output_whitespace'] = True
+        if hide_from_trace:
+            options['hide_shell_from_trace'] = True
+        if cancel_check is not None:
+            options['cancel_check'] = cancel_check
         return self.run(['-s', target, 'shell'] + list(cmd), **options)
 
     def getprop(self, target, prop):
@@ -1664,11 +1849,17 @@ class AdbEngine:
     def wakeup(self, target):
         return self.keyevent(target, 224)
 
-    def trim_caches(self, target):
-        return self.shell(target, 'pm', 'trim-caches', '999G', timeout=30)
+    def trim_caches(self, target, timeout=30):
+        result = self.shell(target, 'pm', 'trim-caches', '999G', timeout=timeout)
+        if not result.ok:
+            error = '{} {}'.format(result.error or '', result.output or '').strip()
+            raise AdbError(error or 'Uygulama önbellekleri temizlenemedi.')
+        return result
 
     def logcat_clear(self, target, timeout=15):
-        self.shell(target, 'logcat', '-c', timeout=timeout)
+        result = self.shell(target, 'logcat', '-c', timeout=timeout)
+        if not result.ok:
+            raise AdbError(result.error or result.output or 'Cihaz günlüğü temizlenemedi.')
 
     def logcat_dump(self, target, lines=200, level=None, tag=None, timeout=30):
         """Son N satır logcat. level: V/D/I/W/E/F, tag: etiket filtresi."""
@@ -1686,17 +1877,18 @@ class AdbEngine:
             args += [tg]
         args += ['-t', str(n)]
         r = self.shell(target, *args, timeout=timeout)
+        if not r.ok:
+            raise AdbError(r.error or r.output or 'Cihaz günlüğü okunamadı.')
         return r.output or ''
 
     def logcat_crash(self, target, lines=120, timeout=30):
         """Son çökme izleri (AndroidRuntime + FATAL)."""
         args = ['logcat', '-d', '-v', 'brief', '-t', str(clamp_lines(lines, default=120)),
                 'AndroidRuntime:E', '*:F', '*:S']
-        try:
-            r = self.shell(target, *args, timeout=timeout)
-            return r.output or ''
-        except AdbError:
-            return ''
+        r = self.shell(target, *args, timeout=timeout)
+        if not r.ok:
+            raise AdbError(r.error or r.output or 'Çökme kayıtları okunamadı.')
+        return r.output or ''
 
     def _ls_symlink_name(self, target, directory, entry, timeout):
         """Resolve the filename/target boundary in an ambiguous ls symlink row.
@@ -1894,7 +2086,7 @@ class AdbEngine:
     # APK kurulum + HOME launcher + hizlandirma (v8: AppControl/tvboxtools)
     # ------------------------------------------------------------------
     def install_apk(self, target, local_path, reinstall=True, grant_perms=False,
-                    allow_downgrade=False, timeout=120):
+                    allow_downgrade=False, timeout=120, cancel_check=None):
         """Tek APK kur. Donus: AdbResult (Success kontrolu yapilir)."""
         import os as _os
         lp = str(local_path or '').strip()
@@ -1912,6 +2104,8 @@ class AdbEngine:
         if allow_downgrade:
             args.append('-d')
         args.append(lp)
+        if cancel_check:
+            cancel_check()
         r = self.run(['-s', target] + args, timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0 or not re.search(r'\bSuccess\b', text):
@@ -1964,17 +2158,273 @@ class AdbEngine:
         return [java, '-jar', jars[0]] if jars else None
 
     @staticmethod
-    def _run_bundletool(command, timeout, operation):
+    def _create_bundletool_job(process):
+        if os.name != 'nt':
+            return None
+        import ctypes
+        from ctypes import wintypes
+
+        class _JobLimits(ctypes.Structure):
+            _fields_ = [
+                ('per_process_user_time', ctypes.c_longlong),
+                ('per_job_user_time', ctypes.c_longlong),
+                ('limit_flags', wintypes.DWORD),
+                ('minimum_working_set', ctypes.c_size_t),
+                ('maximum_working_set', ctypes.c_size_t),
+                ('active_process_limit', wintypes.DWORD),
+                ('affinity', ctypes.c_size_t),
+                ('priority_class', wintypes.DWORD),
+                ('scheduling_class', wintypes.DWORD),
+            ]
+
+        class _JobAccounting(ctypes.Structure):
+            _fields_ = [
+                ('total_user_time', ctypes.c_longlong),
+                ('total_kernel_time', ctypes.c_longlong),
+                ('period_user_time', ctypes.c_longlong),
+                ('period_kernel_time', ctypes.c_longlong),
+                ('page_faults', wintypes.DWORD),
+                ('total_processes', wintypes.DWORD),
+                ('active_processes', wintypes.DWORD),
+                ('terminated_processes', wintypes.DWORD),
+            ]
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ('read_operations', ctypes.c_ulonglong),
+                ('write_operations', ctypes.c_ulonglong),
+                ('other_operations', ctypes.c_ulonglong),
+                ('read_transfer', ctypes.c_ulonglong),
+                ('write_transfer', ctypes.c_ulonglong),
+                ('other_transfer', ctypes.c_ulonglong),
+            ]
+
+        class _ExtendedJobLimits(ctypes.Structure):
+            _fields_ = [
+                ('basic', _JobLimits),
+                ('io', _IoCounters),
+                ('process_memory_limit', ctypes.c_size_t),
+                ('job_memory_limit', ctypes.c_size_t),
+                ('peak_process_memory_used', ctypes.c_size_t),
+                ('peak_job_memory_used', ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise OSError(ctypes.get_last_error(), 'Bundletool iş nesnesi oluşturulamadı.')
+        limits = _ExtendedJobLimits()
+        limits.basic.limit_flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise OSError(error, 'Bundletool iş nesnesi yapılandırılamadı.')
+        if not kernel32.AssignProcessToJobObject(
+                handle, wintypes.HANDLE(int(process._handle))):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(handle)
+            raise OSError(error, 'Bundletool süreci iş nesnesine atanamadı.')
+        return kernel32, handle, _JobAccounting
+
+    @staticmethod
+    def _resume_bundletool_process(process):
+        if os.name != 'nt':
+            return
+        import ctypes
+        from ctypes import wintypes
+
+        class _ThreadEntry(ctypes.Structure):
+            _fields_ = [
+                ('size', wintypes.DWORD),
+                ('usage', wintypes.DWORD),
+                ('thread_id', wintypes.DWORD),
+                ('owner_process_id', wintypes.DWORD),
+                ('base_priority', ctypes.c_long),
+                ('delta_priority', ctypes.c_long),
+                ('flags', wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)  # SNAPTHREAD
+        invalid_handle = ctypes.c_void_p(-1).value
+        if not snapshot or snapshot == invalid_handle:
+            raise OSError(ctypes.get_last_error(), 'Bundletool iş parçacığı bulunamadı.')
         try:
-            return subprocess.run(command, capture_output=True, text=True,
-                                  timeout=timeout, shell=False)
+            entry = _ThreadEntry()
+            entry.size = ctypes.sizeof(entry)
+            found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.owner_process_id == process.pid:
+                    thread = kernel32.OpenThread(0x0002, False, entry.thread_id)
+                    if thread:
+                        try:
+                            if kernel32.ResumeThread(thread) != 0xFFFFFFFF:
+                                return
+                        finally:
+                            kernel32.CloseHandle(thread)
+                found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        raise OSError('Bundletool başlatma iş parçacığı sürdürülemedi.')
+
+    @staticmethod
+    def _bundletool_job_process_count(job):
+        if not job:
+            return None
+        import ctypes
+        kernel32, handle, accounting_type = job
+        info = accounting_type()
+        if not kernel32.QueryInformationJobObject(
+                handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            raise OSError(ctypes.get_last_error(), 'Bundletool iş nesnesi okunamadı.')
+        return int(info.active_processes)
+
+    @staticmethod
+    def _close_bundletool_job(job):
+        if job:
+            job[0].CloseHandle(job[1])
+
+    @staticmethod
+    def _stop_bundletool_process_tree(process, job=None, force=False):
+        if os.name == 'nt':
+            if job:
+                try:
+                    if job[0].TerminateJobObject(job[1], 1):
+                        return
+                except OSError:
+                    pass
+            taskkill = (shutil.which('taskkill.exe') or shutil.which('taskkill') or
+                        os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                                     'System32', 'taskkill.exe'))
+            if os.path.isfile(taskkill):
+                try:
+                    subprocess.run(
+                        [taskkill, '/PID', str(process.pid), '/T', '/F'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=3, check=False, creationflags=CREATE_NO_WINDOW)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            except OSError:
+                pass
+        if process.poll() is None:
+            try:
+                process.kill() if force else process.terminate()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _run_bundletool(command, timeout, operation, cancel_check=None):
+        import tempfile as _tempfile
+        process = None
+        job = None
+        try:
+            if cancel_check:
+                cancel_check()
+            deadline = (None if timeout is None else
+                        time.monotonic() + max(0.0, float(timeout)))
+            with _tempfile.TemporaryFile() as stdout_file, \
+                    _tempfile.TemporaryFile() as stderr_file:
+                creation = {}
+                if os.name == 'nt':
+                    creation['creationflags'] = (
+                        CREATE_NO_WINDOW | getattr(subprocess, 'CREATE_SUSPENDED', 0x00000004))
+                else:
+                    creation['start_new_session'] = True
+                process = subprocess.Popen(
+                    command, stdout=stdout_file, stderr=stderr_file,
+                    shell=False, **creation)
+                try:
+                    if os.name == 'nt':
+                        job = AdbEngine._create_bundletool_job(process)
+                        AdbEngine._resume_bundletool_process(process)
+                    while True:
+                        if cancel_check:
+                            cancel_check()
+                        remaining = (None if deadline is None else
+                                     deadline - time.monotonic())
+                        if remaining is not None and remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        returncode = process.poll()
+                        active = AdbEngine._bundletool_job_process_count(job)
+                        if returncode is not None and (active is None or active == 0):
+                            break
+                        time.sleep(0.2 if remaining is None else min(0.2, remaining))
+                    process.wait()
+
+                    def read_output(stream, limit=131072):
+                        stream.seek(0, os.SEEK_END)
+                        size = stream.tell()
+                        stream.seek(max(0, size - limit))
+                        return stream.read(limit).decode('utf-8', 'replace')
+
+                    return subprocess.CompletedProcess(
+                        command, process.returncode,
+                        read_output(stdout_file), read_output(stderr_file))
+                except Exception:
+                    AdbEngine._stop_bundletool_process_tree(process, job)
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    AdbEngine._stop_bundletool_process_tree(process, job, force=True)
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise
         except subprocess.TimeoutExpired as exc:
             raise AdbError('Bundletool {} zaman aşımına uğradı.'.format(operation)) from exc
         except OSError as exc:
             raise AdbError('Bundletool {} çalıştırılamadı: {}'.format(operation, exc)) from exc
+        finally:
+            AdbEngine._close_bundletool_job(job)
+
+    @staticmethod
+    def _copy_archive_entry(source, destination, cancel_check=None):
+        while True:
+            if cancel_check:
+                cancel_check()
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                return
+            destination.write(chunk)
 
     def _install_apks_archive(self, target, archive_path, timeout, reinstall=True,
-                              grant_perms=False, allow_downgrade=False):
+                              grant_perms=False, allow_downgrade=False,
+                              cancel_check=None):
         """Install only the APKs bundletool selects for this exact device."""
         import tempfile as _tempfile
         prefix = self._bundletool_command()
@@ -1992,7 +2442,7 @@ class AdbEngine:
             result = self._run_bundletool(
                 prefix + ['get-device-spec', '--adb=' + adb_path,
                           '--device-id=' + serial, '--output=' + spec_path],
-                timeout, 'cihaz yapılandırmasını okuma')
+                timeout, 'cihaz yapılandırmasını okuma', cancel_check)
             if result.returncode != 0 or not os.path.isfile(spec_path):
                 detail = (result.stderr or result.stdout or 'cihaz yapılandırması alınamadı').strip()
                 raise AdbError('Bundletool hedef cihaz {} yapılandırmasını okuyamadı: {}'.format(
@@ -2001,7 +2451,7 @@ class AdbEngine:
             result = self._run_bundletool(
                 prefix + ['extract-apks', '--apks=' + archive_path,
                           '--device-spec=' + spec_path, '--output-dir=' + selected_dir],
-                timeout, 'cihaz APK varyantlarını seçme')
+                timeout, 'cihaz APK varyantlarını seçme', cancel_check)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or 'uyumlu APK seçilemedi').strip()
                 raise AdbError('Bundletool {} için uyumlu APK seçemedi: {}'.format(
@@ -2014,17 +2464,21 @@ class AdbEngine:
             selected.sort()
             if not selected:
                 raise AdbError('Bundletool {} için uyumlu APK bulamadı.'.format(serial))
+            if cancel_check:
+                cancel_check()
             if len(selected) == 1:
                 return self.install_apk(
                     target, selected[0], reinstall=reinstall,
                     grant_perms=grant_perms, allow_downgrade=allow_downgrade,
-                    timeout=timeout)
+                    timeout=timeout, cancel_check=cancel_check)
             return self.install_multiple(
                 target, selected, reinstall=reinstall, grant_perms=grant_perms,
-                allow_downgrade=allow_downgrade, timeout=timeout)
+                allow_downgrade=allow_downgrade, timeout=timeout,
+                cancel_check=cancel_check)
 
     def _install_universal_apks(self, target, archive_path, timeout, reinstall=True,
-                                grant_perms=False, allow_downgrade=False):
+                                grant_perms=False, allow_downgrade=False,
+                                cancel_check=None):
         """Use a single explicitly universal APK when bundletool is absent."""
         import zipfile
         import tempfile as _tempfile
@@ -2042,20 +2496,26 @@ class AdbEngine:
                 entry = members[0]
                 if entry.file_size <= 0 or entry.file_size > 2 * 1024 ** 3:
                     raise AdbError('Universal APK boyutu güvenli sınırların dışında.')
+                if cancel_check:
+                    cancel_check()
                 with _tempfile.TemporaryDirectory(prefix='mibox-apks-') as folder:
                     path = os.path.join(folder, 'universal.apk')
                     with archive.open(entry) as source, open(path, 'wb') as dest:
-                        shutil.copyfileobj(source, dest, length=1024 * 1024)
+                        self._copy_archive_entry(source, dest, cancel_check)
+                    if cancel_check:
+                        cancel_check()
                     return self.install_apk(
                         target, path, reinstall=reinstall, grant_perms=grant_perms,
-                        allow_downgrade=allow_downgrade, timeout=timeout)
+                        allow_downgrade=allow_downgrade, timeout=timeout,
+                        cancel_check=cancel_check)
         except AdbError:
             raise
         except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
             raise AdbError('.apks arşivi açılamadı: {}'.format(exc)) from exc
 
     def install_multiple(self, target, apk_path, reinstall=True,
-                         grant_perms=False, allow_downgrade=False, timeout=180):
+                         grant_perms=False, allow_downgrade=False, timeout=180,
+                         cancel_check=None):
         """Install a flat APK set (adb install-multiple) or .apkm/.xapk archive.
 
         apk_path tek tek dosya listesi, dizin (icindeki *.apk'lar) veya
@@ -2064,17 +2524,21 @@ class AdbEngine:
         """
         import glob as _glob
         import os as _os
+        if cancel_check:
+            cancel_check()
         if isinstance(apk_path, str) and apk_path.lower().endswith('.apks'):
             if not _os.path.isfile(apk_path):
                 raise AdbError('.apks arşivi bulunamadı: ' + apk_path)
             result = self._install_apks_archive(
                 target, apk_path, timeout, reinstall=reinstall,
-                grant_perms=grant_perms, allow_downgrade=allow_downgrade)
+                grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                cancel_check=cancel_check)
             if result is not None:
                 return result
             return self._install_universal_apks(
                 target, apk_path, timeout, reinstall=reinstall,
-                grant_perms=grant_perms, allow_downgrade=allow_downgrade)
+                grant_perms=grant_perms, allow_downgrade=allow_downgrade,
+                cancel_check=cancel_check)
         if isinstance(apk_path, str) and apk_path.lower().endswith(('.apkm', '.xapk')):
             import zipfile
             import tempfile
@@ -2090,14 +2554,18 @@ class AdbEngine:
                     with tempfile.TemporaryDirectory(prefix='mibox-apks-') as folder:
                         extracted = []
                         for index, entry in enumerate(members):
+                            if cancel_check:
+                                cancel_check()
                             # Use generated names; archive paths never control extraction paths.
                             path = _os.path.join(folder, 'split-{:04d}.apk'.format(index))
                             with archive.open(entry) as source, open(path, 'wb') as dest:
-                                shutil.copyfileobj(source, dest, length=1024 * 1024)
+                                self._copy_archive_entry(source, dest, cancel_check)
                             extracted.append(path)
+                        if cancel_check:
+                            cancel_check()
                         return self.install_multiple(target, extracted, reinstall=reinstall,
                                                     grant_perms=grant_perms, allow_downgrade=allow_downgrade,
-                                                    timeout=timeout)
+                                                    timeout=timeout, cancel_check=cancel_check)
             except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
                 raise AdbError('APK arşivi açılamadı: {}'.format(exc)) from exc
         if isinstance(apk_path, (list, tuple)):
@@ -2119,6 +2587,8 @@ class AdbEngine:
         files = clean
         if not files:
             raise AdbError('Kurulacak APK bulunamadı: ' + str(apk_path))
+        if cancel_check:
+            cancel_check()
         args = ['install-multiple']
         if reinstall:
             args.append('-r')
@@ -2287,22 +2757,70 @@ class AdbEngine:
             raise AdbError('Geçersiz animasyon olcegi: {!r}'.format(value))
         if val == '1.0':
             val = '1'
-        for key in ('window_animation_scale', 'transition_animation_scale',
-                    'animator_duration_scale'):
-            result = self.shell(target, 'settings', 'put', 'global', key, val,
-                                timeout=timeout)
-            text = '{} {}'.format(result.output or '', result.error or '').strip()
-            if result.exit_code != 0 or re.search(
-                    r'\b(error|failed|exception|denied|not allowed)\b', text, re.I):
-                raise AdbError('Animasyon ölçeği yazılamadı ({}): {}'.format(
-                    key, text or 'settings put başarısız'))
-        # dogrula
-        cur = self.animator_scales(target)
+        keys = ('window_animation_scale', 'transition_animation_scale',
+                'animator_duration_scale')
+        numeric = r'(?:\d+(?:\.\d*)?|\.\d+)'
+        previous = self.animator_scales(target, timeout=timeout)
+        unknown = [key for key in keys
+                   if not re.fullmatch(numeric, previous.get(key, ''))]
+        if unknown:
+            raise AdbError('Önceki animasyon ölçeği okunamadı: {}'.format(
+                ', '.join(unknown)))
+
         expected = float(val)
-        bad = [k for k, v in cur.items()
-               if v == '?' or float(v) != expected]
-        if bad:
-            raise AdbError('Doğrulama başarısız: {}'.format(', '.join(bad)))
+        attempted = []
+        try:
+            for key in keys:
+                # Include the key even when the command itself reports failure:
+                # a failed settings command may still have changed its value.
+                attempted.append(key)
+                result = self.shell(target, 'settings', 'put', 'global', key, val,
+                                    timeout=timeout)
+                text = '{} {}'.format(result.output or '', result.error or '').strip()
+                if result.exit_code != 0 or re.search(
+                        r'\b(error|failed|exception|denied|not allowed)\b', text, re.I):
+                    raise AdbError('Animasyon ölçeği yazılamadı ({}): {}'.format(
+                        key, text or 'settings put başarısız'))
+
+            # dogrula
+            cur = self.animator_scales(target)
+            bad = [key for key in keys
+                   if not re.fullmatch(numeric, cur.get(key, ''))
+                   or float(cur[key]) != expected]
+            if bad:
+                raise AdbError('Doğrulama başarısız: {}'.format(', '.join(bad)))
+        except Exception as original:
+            rollback_errors = []
+            for key in reversed(attempted):
+                try:
+                    result = self.shell(target, 'settings', 'put', 'global', key,
+                                        previous[key], timeout=timeout)
+                    text = '{} {}'.format(result.output or '', result.error or '').strip()
+                    if result.exit_code != 0 or re.search(
+                            r'\b(error|failed|exception|denied|not allowed)\b',
+                            text, re.I):
+                        rollback_errors.append('{}: {}'.format(
+                            key, text or 'settings put başarısız'))
+                except Exception as rollback_error:
+                    rollback_errors.append('{}: {}'.format(key, rollback_error))
+
+            if attempted:
+                try:
+                    restored = self.animator_scales(target)
+                    bad = [key for key in attempted
+                           if not re.fullmatch(numeric, restored.get(key, ''))
+                           or float(restored[key]) != float(previous[key])]
+                    if bad:
+                        rollback_errors.append(
+                            'geri alma doğrulaması başarısız: {}'.format(', '.join(bad)))
+                except Exception as verification_error:
+                    rollback_errors.append(
+                        'geri alma doğrulaması okunamadı: {}'.format(verification_error))
+
+            message = 'Animasyon ölçeği işlemi başarısız: {}'.format(original)
+            if rollback_errors:
+                message += '; geri alma hataları: {}'.format('; '.join(rollback_errors))
+            raise AdbError(message) from original
 
     def storage_top(self, target, limit=15, timeout=60):
         """En çok yer kaplayan dizinler (GB eşiği üstü du taraması)."""
@@ -2960,7 +3478,7 @@ class AdbEngine:
                     mode, expected_specifier, applied_mode, applied_specifier))
         return {'mode': applied_mode, 'specifier': applied_specifier}
 
-    def quick_boost(self, target, timeout=40):
+    def quick_boost(self, target, timeout=40, check_cancel=None):
         """Tek tikla kapsamli sistem hizlandirma:
         1. Onbellekleri temizle (pm trim-caches)
         2. Arka plan sureclerini sonlandir (am kill-all)
@@ -2968,38 +3486,378 @@ class AdbEngine:
         4. Bellek durumunu raporla
         """
         summary = []
-        health_before = self.health(target, timeout=15)
+        completed_steps = 0
+        failed_steps = 0
+        if check_cancel is not None:
+            check_cancel()
+        try:
+            health_before = self.health(target, timeout=15)
+            if not isinstance(health_before, dict):
+                health_before = {}
+        except Exception:
+            health_before = {}
 
+        if check_cancel is not None:
+            check_cancel()
         try:
             self.trim_caches(target, timeout=20)
             summary.append('Uygulama onbellekleri temizlendi.')
+            completed_steps += 1
         except Exception as e:
             summary.append('Onbellek temizleme: {}'.format(e))
+            failed_steps += 1
 
+        if check_cancel is not None:
+            check_cancel()
         try:
-            self.shell(target, 'am', 'kill-all', timeout=15)
+            result = self.shell(target, 'am', 'kill-all', timeout=15)
+            if not result.ok:
+                error = '{} {}'.format(result.error or '', result.output or '').strip()
+                raise AdbError(error or 'Arka plan süreçleri sonlandırılamadı.')
             summary.append('Arka plan bosta kalan surecler sonlandirildi.')
+            completed_steps += 1
         except Exception as e:
             summary.append('Surec sonlandirma: {}'.format(e))
+            failed_steps += 1
 
+        if check_cancel is not None:
+            check_cancel()
         try:
             self.set_animator_scales(target, '0.5', timeout=15)
             summary.append('Animasyon hizlari 0.5x (hizli) yapildi.')
+            completed_steps += 1
         except Exception as e:
             summary.append('Animasyon olcekleri: {}'.format(e))
+            failed_steps += 1
 
-        health_after = self.health(target, timeout=15)
-        before_avail = health_before.get('mem_avail_kb', 0)
-        after_avail = health_after.get('mem_avail_kb', 0)
-        diff_kb = after_avail - before_avail
-        freed_mb = round(diff_kb / 1024.0, 1) if diff_kb > 0 else 0.0
+        if check_cancel is not None:
+            check_cancel()
+        try:
+            health_after = self.health(target, timeout=15)
+            if not isinstance(health_after, dict):
+                health_after = {}
+        except Exception:
+            health_after = {}
+
+        if check_cancel is not None:
+            check_cancel()
+
+        def valid_mem_available(health):
+            total = health.get('mem_total_kb')
+            available = health.get('mem_avail_kb')
+            if (type(total) is int and total > 0
+                    and type(available) is int and 0 <= available <= total):
+                return available
+            return None
+
+        before_avail = valid_mem_available(health_before)
+        after_avail = valid_mem_available(health_after)
+        if before_avail is not None and after_avail is not None:
+            diff_kb = after_avail - before_avail
+            freed_mb = round(diff_kb / 1024.0, 1) if diff_kb > 0 else 0.0
+        else:
+            freed_mb = None
 
         return {
             'freed_mb': freed_mb,
             'summary': summary,
             'health_before': health_before,
             'health_after': health_after,
+            'completed_steps': completed_steps,
+            'failed_steps': failed_steps,
         }
+
+    @staticmethod
+    def _package_from_binary_manifest(data):
+        """Read only the package attribute on a binary XML root manifest tag."""
+        no_index = 0xFFFFFFFF
+        data_size = len(data)
+        max_manifest_size = 8 * 1024 * 1024
+        max_string_count = 100_000
+        if data_size > max_manifest_size:
+            raise ValueError('Android manifest exceeds the size limit')
+
+        def read_u16(offset, limit):
+            if offset < 0 or offset + 2 > limit:
+                raise ValueError('Truncated binary XML value')
+            return int.from_bytes(data[offset:offset + 2], 'little')
+
+        def read_u32(offset, limit):
+            if offset < 0 or offset + 4 > limit:
+                raise ValueError('Truncated binary XML value')
+            return int.from_bytes(data[offset:offset + 4], 'little')
+
+        def parse_string_pool(offset, chunk_size, header_size):
+            if header_size != 28:
+                raise ValueError('Unsupported binary XML string pool header')
+            chunk_end = offset + chunk_size
+            string_count = read_u32(offset + 8, chunk_end)
+            style_count = read_u32(offset + 12, chunk_end)
+            flags = read_u32(offset + 16, chunk_end)
+            strings_start = read_u32(offset + 20, chunk_end)
+            styles_start = read_u32(offset + 24, chunk_end)
+            if flags & ~0x101:
+                raise ValueError('Unsupported binary XML string pool flags')
+            if string_count > max_string_count or style_count > max_string_count:
+                raise ValueError('Binary XML string pool exceeds the entry limit')
+            offsets_start = offset + header_size
+            offsets_end = offsets_start + 4 * (string_count + style_count)
+            if offsets_end > chunk_end or strings_start < offsets_end - offset:
+                raise ValueError('Invalid binary XML string pool offsets')
+            if strings_start > chunk_size:
+                raise ValueError('Invalid binary XML string data offset')
+            if style_count and not styles_start:
+                raise ValueError('Missing binary XML style data')
+            if styles_start and (styles_start < strings_start or styles_start > chunk_size):
+                raise ValueError('Invalid binary XML style data offset')
+
+            strings_end = offset + (styles_start or chunk_size)
+            strings_base = offset + strings_start
+            utf8 = bool(flags & 0x100)
+
+            def read_length8(position):
+                first = read_u16(position, strings_end) & 0xFF
+                position += 1
+                if first & 0x80:
+                    second = read_u16(position, strings_end) & 0xFF
+                    position += 1
+                    return ((first & 0x7F) << 8) | second, position
+                return first, position
+
+            def read_length16(position):
+                first = read_u16(position, strings_end)
+                position += 2
+                if first & 0x8000:
+                    second = read_u16(position, strings_end)
+                    position += 2
+                    return ((first & 0x7FFF) << 16) | second, position
+                return first, position
+
+            strings = []
+            decoded_by_offset = {}
+            decoded_bytes = 0
+            for index in range(string_count):
+                relative = read_u32(offsets_start + index * 4, offsets_end)
+                if relative in decoded_by_offset:
+                    strings.append(decoded_by_offset[relative])
+                    continue
+                position = strings_base + relative
+                if position < strings_base or position >= strings_end:
+                    raise ValueError('Invalid binary XML string offset')
+                if utf8:
+                    utf16_length, position = read_length8(position)
+                    byte_length, position = read_length8(position)
+                    byte_end = position + byte_length
+                    if byte_end >= strings_end or data[byte_end] != 0:
+                        raise ValueError('Unterminated binary XML string')
+                    decoded_bytes += byte_length
+                    if decoded_bytes > max_manifest_size:
+                        raise ValueError('Decoded binary XML strings exceed the size limit')
+                    value = data[position:byte_end].decode('utf-8')
+                    if len(value.encode('utf-16le')) // 2 != utf16_length:
+                        raise ValueError('Invalid binary XML string length')
+                else:
+                    if position & 1:
+                        raise ValueError('Misaligned binary XML UTF-16 string')
+                    char_length, position = read_length16(position)
+                    byte_end = position + char_length * 2
+                    if byte_end + 2 > strings_end or data[byte_end:byte_end + 2] != b'\0\0':
+                        raise ValueError('Unterminated binary XML string')
+                    decoded_bytes += char_length * 2
+                    if decoded_bytes > max_manifest_size:
+                        raise ValueError('Decoded binary XML strings exceed the size limit')
+                    value = data[position:byte_end].decode('utf-16le')
+                if '\0' in value:
+                    raise ValueError('Invalid binary XML string content')
+                decoded_by_offset[relative] = value
+                strings.append(value)
+
+            if style_count:
+                styles_base = offset + styles_start
+                for index in range(style_count):
+                    relative = read_u32(offsets_start + 4 * (string_count + index), chunk_end)
+                    if relative != no_index and relative >= chunk_end - styles_base:
+                        raise ValueError('Invalid binary XML style offset')
+
+            return strings
+
+        if data_size < 8:
+            raise ValueError('Truncated binary XML document')
+        if read_u16(0, data_size) != 0x0003:
+            raise ValueError('Unsupported AndroidManifest.xml format')
+        document_header_size = read_u16(2, data_size)
+        document_size = read_u32(4, data_size)
+        if document_header_size != 8 or document_size != data_size:
+            raise ValueError('Invalid binary XML document bounds')
+
+        strings = None
+        resource_map_seen = False
+        node_seen = False
+        root_seen = False
+        root_closed = False
+        root_is_manifest = False
+        root_package = ''
+        root_package_count = 0
+        element_stack = []
+        namespace_stack = []
+        offset = document_header_size
+
+        def get_string(index, optional=False):
+            if index == no_index and optional:
+                return None
+            if strings is None or index >= len(strings):
+                raise ValueError('Invalid binary XML string reference')
+            return strings[index]
+
+        def check_node_header(chunk_offset, chunk_size, header_size):
+            if header_size != 16 or chunk_size < 16:
+                raise ValueError('Unsupported binary XML node header')
+            get_string(read_u32(chunk_offset + 12, chunk_offset + chunk_size), optional=True)
+
+        def check_namespace(uri):
+            if uri is not None and uri not in (entry[1] for entry in namespace_stack):
+                if uri != 'http://www.w3.org/XML/1998/namespace':
+                    raise ValueError('Undeclared binary XML namespace')
+
+        while offset < data_size:
+            if offset + 8 > data_size:
+                raise ValueError('Truncated binary XML chunk')
+            chunk_type = read_u16(offset, data_size)
+            header_size = read_u16(offset + 2, data_size)
+            chunk_size = read_u32(offset + 4, data_size)
+            if header_size < 8 or chunk_size < header_size or offset + chunk_size > data_size:
+                raise ValueError('Invalid binary XML chunk bounds')
+            chunk_end = offset + chunk_size
+
+            if chunk_type == 0x0001:  # RES_STRING_POOL_TYPE
+                if strings is not None or offset != document_header_size:
+                    raise ValueError('Unexpected binary XML string pool')
+                strings = parse_string_pool(offset, chunk_size, header_size)
+            elif strings is None:
+                raise ValueError('Binary XML string pool must be first')
+            elif chunk_type == 0x0180:  # RES_XML_RESOURCE_MAP_TYPE
+                if node_seen or resource_map_seen or header_size != 8 or (chunk_size - 8) % 4:
+                    raise ValueError('Invalid binary XML resource map')
+                resource_map_seen = True
+            elif chunk_type in (0x0100, 0x0101):  # namespace start/end
+                if root_closed and chunk_type == 0x0100:
+                    raise ValueError('Namespace starts after the root element')
+                node_seen = True
+                if chunk_size != 24:
+                    raise ValueError('Invalid binary XML namespace chunk')
+                check_node_header(offset, chunk_size, header_size)
+                prefix = get_string(read_u32(offset + 16, chunk_end), optional=True)
+                uri = get_string(read_u32(offset + 20, chunk_end))
+                if chunk_type == 0x0100:
+                    if len(namespace_stack) >= 256:
+                        raise ValueError('Binary XML namespace nesting is too deep')
+                    namespace_stack.append((prefix, uri, len(element_stack)))
+                elif (not namespace_stack or namespace_stack[-1] !=
+                      (prefix, uri, len(element_stack))):
+                    raise ValueError('Unbalanced binary XML namespace')
+                else:
+                    namespace_stack.pop()
+            elif chunk_type == 0x0102:  # RES_XML_START_ELEMENT_TYPE
+                node_seen = True
+                if root_closed:
+                    raise ValueError('Multiple binary XML root elements')
+                check_node_header(offset, chunk_size, header_size)
+                if chunk_size < 36:
+                    raise ValueError('Truncated binary XML start element')
+                namespace = get_string(read_u32(offset + 16, chunk_end), optional=True)
+                name = get_string(read_u32(offset + 20, chunk_end))
+                check_namespace(namespace)
+                attribute_start = read_u16(offset + 24, chunk_end)
+                attribute_size = read_u16(offset + 26, chunk_end)
+                attribute_count = read_u16(offset + 28, chunk_end)
+                id_index = read_u16(offset + 30, chunk_end)
+                class_index = read_u16(offset + 32, chunk_end)
+                style_index = read_u16(offset + 34, chunk_end)
+                if (attribute_start < 20 or attribute_size < 20 or
+                        attribute_start + attribute_count * attribute_size != chunk_size - 16 or
+                        any(value > attribute_count for value in (id_index, class_index, style_index))):
+                    raise ValueError('Invalid binary XML attributes')
+                if not element_stack:
+                    if root_seen:
+                        raise ValueError('Multiple binary XML root elements')
+                    root_seen = True
+                    root_is_manifest = namespace is None and name == 'manifest'
+                if len(element_stack) >= 256:
+                    raise ValueError('Binary XML element nesting is too deep')
+                package_candidates = []
+                seen_attributes = set()
+                attributes_offset = offset + 16 + attribute_start
+                for index in range(attribute_count):
+                    attribute_offset = attributes_offset + index * attribute_size
+                    attribute_end = attribute_offset + attribute_size
+                    attr_namespace = get_string(read_u32(attribute_offset, attribute_end), optional=True)
+                    attr_name = get_string(read_u32(attribute_offset + 4, attribute_end))
+                    attribute_key = (attr_namespace, attr_name)
+                    if not attr_name or attribute_key in seen_attributes:
+                        raise ValueError('Invalid or duplicate binary XML attribute')
+                    seen_attributes.add(attribute_key)
+                    raw_value = read_u32(attribute_offset + 8, attribute_end)
+                    raw_string = get_string(raw_value, optional=True)
+                    value_size = read_u16(attribute_offset + 12, attribute_end)
+                    reserved = data[attribute_offset + 14]
+                    value_type = data[attribute_offset + 15]
+                    value_data = read_u32(attribute_offset + 16, attribute_end)
+                    if value_size != 8 or reserved != 0 or value_type > 0x1F:
+                        raise ValueError('Invalid binary XML attribute value')
+                    if value_type == 0x03:
+                        get_string(value_data)
+                    check_namespace(attr_namespace)
+                    if not element_stack and root_is_manifest and attr_namespace is None and attr_name == 'package':
+                        root_package_count += 1
+                        if value_type != 0x03:
+                            raise ValueError('Manifest package attribute is not a string')
+                        typed_string = get_string(value_data)
+                        if raw_string is not None and raw_string != typed_string:
+                            raise ValueError('Conflicting manifest package attribute values')
+                        package_candidates.append(raw_string if raw_string is not None else typed_string)
+                if not element_stack and root_is_manifest:
+                    if root_package_count == 1 and len(package_candidates) == 1:
+                        root_package = package_candidates[0]
+                    else:
+                        root_package = ''
+                element_stack.append((namespace, name))
+            elif chunk_type == 0x0103:  # RES_XML_END_ELEMENT_TYPE
+                node_seen = True
+                check_node_header(offset, chunk_size, header_size)
+                if chunk_size != 24 or not element_stack:
+                    raise ValueError('Invalid binary XML end element')
+                namespace = get_string(read_u32(offset + 16, chunk_end), optional=True)
+                name = get_string(read_u32(offset + 20, chunk_end))
+                check_namespace(namespace)
+                if element_stack.pop() != (namespace, name):
+                    raise ValueError('Mismatched binary XML element')
+                if not element_stack:
+                    root_closed = True
+            elif chunk_type == 0x0104:  # RES_XML_CDATA_TYPE
+                node_seen = True
+                check_node_header(offset, chunk_size, header_size)
+                if chunk_size != 28 or root_closed or not element_stack:
+                    raise ValueError('Invalid binary XML text node')
+                get_string(read_u32(offset + 16, chunk_end))
+                value_size = read_u16(offset + 20, chunk_end)
+                reserved = data[offset + 22]
+                value_type = data[offset + 23]
+                value_data = read_u32(offset + 24, chunk_end)
+                if value_size != 8 or reserved != 0 or value_type > 0x1F:
+                    raise ValueError('Invalid binary XML text value')
+                if value_type == 0x03:
+                    get_string(value_data)
+            else:
+                raise ValueError('Unsupported binary XML chunk type')
+
+            offset = chunk_end
+
+        if (strings is None or not root_seen or not root_closed or element_stack or
+                namespace_stack or not root_is_manifest or root_package_count != 1):
+            return ''
+        if not root_package or not PKG_RE.fullmatch(root_package):
+            return ''
+        return root_package
 
     @staticmethod
     def read_apk_metadata(local_path):
@@ -3023,29 +3881,33 @@ class AdbEngine:
             pass
 
         try:
+            with zipfile.ZipFile(local_path, 'r') as zf:
+                manifests = [entry for entry in zf.infolist()
+                             if entry.filename == 'AndroidManifest.xml']
+                if len(manifests) != 1 or not 0 < manifests[0].file_size <= 8 * 1024 * 1024:
+                    return info
+                with zf.open(manifests[0], 'r') as manifest_file:
+                    data = manifest_file.read(8 * 1024 * 1024 + 1)
+                if len(data) != manifests[0].file_size or len(data) > 8 * 1024 * 1024:
+                    return info
+                info['package'] = AdbEngine._package_from_binary_manifest(data)
+        except Exception:
+            return info
+        if not info['package']:
+            return info
+
+        try:
             from androguard.core.apk import APK
             apk = APK(local_path)
-            info['package'] = apk.get_package() or ''
+            parsed_package = apk.get_package() or ''
+            if parsed_package and parsed_package != info['package']:
+                info['package'] = ''
+                return info
             info['version_name'] = str(apk.get_androidversion_name() or '')
             info['version_code'] = str(apk.get_androidversion_code() or '')
             info['app_name'] = apk.get_app_name() or ''
             info['min_sdk'] = str(apk.get_min_sdk_version() or '')
             info['target_sdk'] = str(apk.get_target_sdk_version() or '')
-            if info['package']:
-                return info
-        except Exception:
-            pass
-
-        try:
-            with zipfile.ZipFile(local_path, 'r') as zf:
-                if 'AndroidManifest.xml' in zf.namelist():
-                    data = zf.read('AndroidManifest.xml')
-                    found = re.findall(b'([a-zA-Z0-9_]+(?:\\.[a-zA-Z0-9_]+)+)', data)
-                    for item in found:
-                        s = item.decode('latin1', 'ignore')
-                        if PKG_RE.match(s) and not s.startswith('android.') and not s.startswith('schemas.'):
-                            info['package'] = s
-                            break
         except Exception:
             pass
         return info
@@ -3156,6 +4018,8 @@ class AdbEngine:
         """Cihazdaki dosya veya klasorun adini degistirir / tasir."""
         old_safe = safe_remote_path(old_path)
         new_safe = safe_remote_path(new_path)
+        if self._is_protected_file_path(old_safe) or self._is_protected_file_path(new_safe):
+            raise AdbError('Kok veya baglama dizinleri yeniden adlandirilamaz.')
         if old_safe == new_safe:
             raise AdbError('Kaynak ve hedef aynı; yeniden adlandırma yapılmadı.')
 
@@ -3194,29 +4058,43 @@ class AdbEngine:
         url = str(url).strip()
         try:
             parsed = urlsplit(url)
-        except ValueError as exc:
-            raise AdbError('Geçersiz bağlantı adresi: {}'.format(exc))
+        except ValueError:
+            raise AdbError('Geçersiz bağlantı adresi.')
         if (parsed.scheme.lower() not in {'http', 'https', 'rtsp', 'magnet'}
                 or any(ord(ch) < 32 or ord(ch) == 127 for ch in url)
                 or (parsed.scheme.lower() != 'magnet' and not parsed.hostname)):
             raise AdbError('Desteklenmeyen veya geçersiz bağlantı adresi.')
+        _scheme, separator, remainder = url.partition(':')
+        normalized_url = parsed.scheme.lower() + separator + remainder
         res = self.shell(
             target, 'am', 'start', '-a', 'android.intent.action.VIEW',
-            '-d', shlex.quote(url), timeout=timeout,
+            '-d', shlex.quote(normalized_url), timeout=timeout,
         )
-        if res.exit_code != 0:
+        explicit_error = re.search(
+            r'(?im)^\s*(?:Error:|Error\s+type\s+\d+\b|Exception|java\.[^\s:]*Exception)',
+            '{}\n{}'.format(res.output or '', res.error or ''),
+        )
+        if res.exit_code != 0 or explicit_error:
             raise AdbError('Link TV\'de açılamadı. Bağlantı adresi günlük kaydına yazılmadı.')
         return res
 
     def start_screensaver(self, target, timeout=10):
         """TV ekran koruyucusunu (Ambient / Backdrop) başlatır."""
         res = self.shell(target, 'cmd', 'dreams', 'start-dreaming', timeout=timeout)
-        if res.exit_code != 0:
+        explicit_error = re.search(
+            r'(?im)^\s*(?:Error:|Error\s+type\s+\d+\b|Exception|java\.[^\s:]*Exception)',
+            '{}\n{}'.format(res.output or '', res.error or ''),
+        )
+        if res.exit_code != 0 or explicit_error:
             res = self.shell(
                 target, 'am', 'start', '-n',
                 'com.google.android.backdrop/.Backdrop', timeout=timeout,
             )
-        if res.exit_code != 0:
+        explicit_error = re.search(
+            r'(?im)^\s*(?:Error:|Error\s+type\s+\d+\b|Exception|java\.[^\s:]*Exception)',
+            '{}\n{}'.format(res.output or '', res.error or ''),
+        )
+        if res.exit_code != 0 or explicit_error:
             raise AdbError('Ekran koruyucu başlatılamadı: {}'.format(
                 (res.error or res.output or 'cihaz bu özelliği desteklemiyor').strip()))
         return res

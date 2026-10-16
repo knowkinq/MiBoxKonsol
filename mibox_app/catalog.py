@@ -6,8 +6,10 @@ zorunda kalmadan; SmartTube, Stremio, Projectivy, Kodi, VLC gibi TV için optimi
 edilmiş en iyi uygulamaları tek tıkla indirip TV'ye kurmasını sağlar.
 """
 import os
+import struct
 import tempfile
 import urllib.request
+import zipfile
 from urllib.parse import urlsplit
 
 from .config import DOWNLOADS_DIR
@@ -231,7 +233,12 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
+    if check_cancel:
+        check_cancel()
+
     with urllib.request.urlopen(req, timeout=35) as resp:
+        if check_cancel:
+            check_cancel()
         total_len = int(resp.headers.get('content-length', 0))
         final_url = urlsplit(resp.geturl())
         if final_url.scheme != 'https' or not final_url.hostname:
@@ -267,14 +274,22 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
             if check_cancel:
                 check_cancel()
 
-            # Tamamlanıp doğrulanmadan .apk yoluna yayımlama.
-            with open(temp_path, 'rb') as f:
-                head = f.read(4)
-            if head != b'PK\x03\x04':
-                raise ValueError('İndirilen dosya geçerli bir APK paketi değil.')
+            # Sadece ZIP merkez dizinini ve APK manifest kaydını doğrula;
+            # içerik çıkarılmaz ve tüm girdilerin CRC'si hesaplanmaz.
+            try:
+                with zipfile.ZipFile(temp_path, 'r') as apk_zip:
+                    manifest = apk_zip.getinfo('AndroidManifest.xml')
+                    if manifest.is_dir() or manifest.file_size <= 0:
+                        raise ValueError('İndirilen APK içinde boş bir AndroidManifest.xml var.')
+            except KeyError as exc:
+                raise ValueError('İndirilen APK içinde AndroidManifest.xml bulunamadı.') from exc
+            except (zipfile.BadZipFile, EOFError, UnicodeDecodeError, struct.error) as exc:
+                raise ValueError('İndirilen dosya geçerli bir APK ZIP arşivi değil.') from exc
 
             # Her çağrı kendine ait APK yolu döndürür; başka bir indirme,
             # kurulum sürerken ADB'nin okuduğu dosyayı değiştiremez.
+            if check_cancel:
+                check_cancel()
             os.replace(temp_path, target_path)
             return target_path
         finally:

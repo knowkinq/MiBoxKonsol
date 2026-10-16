@@ -16,6 +16,7 @@ from ..config import APK_DIR
 from ..workers import AppScanWorker, PackageActionWorker, ApkBackupWorker, Worker
 from . import kit
 from .flowlayout import FlowLayout
+from .actions_dialog import search_key
 
 COL_CHECK = 0
 COL_NAME = 1
@@ -52,6 +53,10 @@ class AppsTab(QWidget):
         self._in_item_changed = False  # ozyineleme kilidi (stack overflow korumasi)
         self._busy = False
         self._scan_generation = 0
+        self._connection_generation = 0
+        self._scan_worker = None
+        self._operation_worker = None
+        self._device_workers = set()
         # Son tarama sistem paketlerini kapsadi mi? ('Sistem' filtresi icin)
         self._scanned_with_system = bool(getattr(core.config, 'include_system', False))
         self._filter_timer = QTimer(self)
@@ -62,7 +67,13 @@ class AppsTab(QWidget):
         self.core.connection_changed.connect(self._connection_changed)
 
     def _connection_changed(self, connected, _target):
+        self._connection_generation += 1
         if not connected:
+            for worker in tuple(self._device_workers):
+                try:
+                    worker.cancel()
+                except (AttributeError, RuntimeError):
+                    pass
             self._scan_generation += 1
             self._apps = []
             self._presence.clear()
@@ -75,6 +86,32 @@ class AppsTab(QWidget):
                 pass
             self.lbl_summary.setText('Bağlı cihaz yok. Cihaza bağlanıp listeyi yenileyin.')
 
+    def _track_device_worker(self, worker):
+        self._device_workers.add(worker)
+        worker.finished.connect(lambda w=worker: self._device_workers.discard(w))
+
+    def _device_context(self):
+        if (getattr(self.window, '_connection_busy', False)
+                or not getattr(self.core, 'connected', False)
+                or not getattr(self.core, 'target', None)):
+            return None
+        try:
+            return self.core.engine, self.core.target, self._connection_generation
+        except Exception:
+            return None
+
+    def _device_context_current(self, context):
+        if context is None:
+            return False
+        engine, target, generation = context
+        try:
+            return (not getattr(self.window, '_connection_busy', False)
+                    and self.core.connected and self.core.target == target
+                    and self.core.engine is engine
+                    and self._connection_generation == generation)
+        except Exception:
+            return False
+
     def _build(self):
         root = kit.page(self)
 
@@ -84,6 +121,8 @@ class AppsTab(QWidget):
         self.txt_search = QLineEdit()
         self.txt_search.setPlaceholderText('Ara: ad veya paket...')
         self.txt_search.setMinimumWidth(200)
+        self.txt_search.setClearButtonEnabled(True)
+        self.txt_search.setAccessibleName('Uygulama adı veya paket ara')
         self.txt_search.textChanged.connect(lambda: self._filter_timer.start())
         # Uygulama durumu ve süreç filtresi.
         self.cmb_status = QComboBox()
@@ -112,12 +151,21 @@ class AppsTab(QWidget):
         self.btn_export = QPushButton('CSV')
         self.btn_export.setToolTip('Listeyi CSV olarak aktar')
         self.btn_export.clicked.connect(self._export_csv)
+        self.btn_reset_filters = QPushButton('Filtreleri sıfırla')
+        self.btn_reset_filters.clicked.connect(self._reset_filters)
         toolbar.addWidget(self.txt_search, 1)
         toolbar.addWidget(self.cmb_status)
         toolbar.addWidget(self.btn_system)
         toolbar.addWidget(self.btn_refresh)
         toolbar.addWidget(self.btn_export)
         root.addLayout(toolbar)
+        filter_row = QHBoxLayout()
+        filter_hint = QLabel('Ad veya paketle arayın. İşlem yapmak için kutucukları işaretleyin ya da satır seçin.')
+        filter_hint.setWordWrap(True)
+        filter_hint.setProperty('role', 'quiet')
+        filter_row.addWidget(filter_hint, 1)
+        filter_row.addWidget(self.btn_reset_filters)
+        root.addLayout(filter_row)
 
         # --- Tablo (esnek, pencereyle buyur/kucuk) ---
         self.grid = kit.make_table(4, ['Seç', 'Uygulama', 'Paket', 'Durum'])
@@ -126,6 +174,8 @@ class AppsTab(QWidget):
         hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_CHECK, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_STATE, QHeaderView.ResizeToContents)
+        for column in (COL_NAME, COL_PKG, COL_STATE):
+            self.grid.horizontalHeaderItem(column).setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hdr.setSortIndicatorShown(True)
         hdr.sortIndicatorChanged.connect(self._sort_by)
         self.grid.setSortingEnabled(False)
@@ -161,7 +211,8 @@ class AppsTab(QWidget):
         self.btn_disable.clicked.connect(lambda: self._pkg_action('disable'))
         self.btn_enable = QPushButton('Aktif et')
         self.btn_enable.clicked.connect(lambda: self._pkg_action('enable'))
-        self.btn_uninstall = QPushButton('Kaldır (user)')
+        self.btn_uninstall = QPushButton('Kaldır')
+        self.btn_uninstall.setToolTip('Uygulamayı seçili Android kullanıcısı için kaldırır; işlem öncesinde onay istenir.')
         self.btn_uninstall.setProperty('danger', True)
         self.btn_uninstall.clicked.connect(lambda: self._pkg_action('uninstall'))
         self.btn_restore = QPushButton('Geri Yükle')
@@ -172,26 +223,57 @@ class AppsTab(QWidget):
         self.btn_open_apk_dir.setToolTip('Yedeklenen APK dosyalarının bulunduğu klasörü açar')
         self.btn_open_apk_dir.clicked.connect(self._open_apk_dir)
 
-        actions.addWidget(self.btn_select_all)
-        actions.addWidget(self.chk_inv)
-        actions.addWidget(self.lbl_sel)
+        selection_bar = FlowLayout(hspacing=4, vspacing=4)
+        selection_bar.addWidget(self.btn_select_all)
+        selection_bar.addWidget(self.chk_inv)
+        selection_bar.addWidget(self.lbl_sel)
         actions.addWidget(self.btn_launch)
         actions.addWidget(self.btn_stop)
         actions.addWidget(self.btn_apk)
         actions.addWidget(self.btn_open_apk_dir)
-        actions.addWidget(self.btn_disable)
-        actions.addWidget(self.btn_enable)
-        actions.addWidget(self.btn_clear)
-        actions.addWidget(self.btn_uninstall)
-        actions.addWidget(self.btn_restore)
+        self.btn_more = QPushButton('Diğer işlemler')
+        more_menu = QMenu(self.btn_more)
+        self._more_actions = []
+        for button in (self.btn_disable, self.btn_enable, self.btn_restore,
+                       self.btn_clear, self.btn_uninstall):
+            button.setParent(self)
+            button.hide()
+            action = more_menu.addAction(button.text(), button.click)
+            action.setToolTip(button.toolTip())
+            self._more_actions.append((action, button))
+        more_menu.aboutToShow.connect(self._sync_more_actions)
+        self.btn_more.setMenu(more_menu)
+        actions.addWidget(self.btn_more)
+        self.btn_clear_selection = QPushButton('Seçimi temizle')
+        self.btn_clear_selection.clicked.connect(self._clear_selection)
+        selection_bar.addWidget(self.btn_clear_selection)
+        root.addLayout(selection_bar)
         root.addLayout(actions)
 
         # --- Özet ve başlangıç durumu ---
         self.lbl_summary = kit.status_label('Liste boş. "Yenile" ile başlayın.')
         root.addWidget(self.lbl_summary)
-        kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
-                        'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
+        kit.empty_state(self.grid, 'TV bağlantısı bekleniyor',
+                        'Üstteki bağlantı alanından TV’ye bağlanın, ardından Yenile’yi seçin.')
         self._update_system_btn()
+        self._update_sel_count()
+
+    def _sync_more_actions(self):
+        for action, button in self._more_actions:
+            action.setEnabled(button.isEnabled())
+
+    def _clear_selection(self):
+        self.grid.clearSelection()
+        self._toggle_all(False)
+
+    def _reset_filters(self):
+        self._filter_timer.stop()
+        self.txt_search.clear()
+        self.cmb_status.setCurrentIndex(self.cmb_status.findData(STATUS_ALL))
+        # Show the packages already scanned; resetting filters does not scan a device.
+        self.btn_system.setChecked(True)
+        self._filter_timer.stop()
+        self._apply_filter_now()
 
     def _remote_tab(self):
         inner = getattr(self.window, 'tab_remote_inner', None)
@@ -244,27 +326,28 @@ class AppsTab(QWidget):
     # ------------------------------------------------------------------
     def refresh(self, on_done=None, on_fail=None):
         if getattr(self, '_busy', False):
-            self.lbl_summary.setText('Tarama zaten suruyor; bitmesini bekleyin.')
+            self.lbl_summary.setText('Devam eden işlem var; bitmesini bekleyin.')
             return False
         if not getattr(self.core, 'connected', False) or not getattr(self.core, 'target', None):
             self.lbl_summary.setText("Bağlı cihaz yok. Uygulamaları listelemek için önce TV'ye bağlanın.")
             if on_fail:
                 on_fail('cihaz bağlı değil')
             return False
-        try:
-            engine = self.core.engine
-        except Exception as e:
-            self.lbl_summary.setText('Tarama başarısız: ' + str(e))
+        context = self._device_context()
+        if context is None:
+            self.lbl_summary.setText('Tarama başarısız: cihaz bağlantısı değişti.')
             if on_fail:
-                on_fail(str(e))
+                on_fail('cihaz bağlantısı değişti')
             return False
+        engine, target, _connection_generation = context
         self.lbl_summary.setText('Taraniyor...')
         # Tarama kapsami: 'Sistem' filtresi icin bu bayrak kullanilir.
         self._scanned_with_system = True
         self._scan_generation += 1
-        generation, target = self._scan_generation, self.core.target
-        w = AppScanWorker(engine, self.core.target, True)
-        current = lambda: generation == self._scan_generation and target == self.core.target
+        generation = self._scan_generation
+        w = AppScanWorker(engine, target, True)
+        current = lambda: (generation == self._scan_generation
+                           and self._device_context_current(context))
         w.progress.connect(lambda *args: self._on_progress(*args) if current() else None)
 
         def scan_done(apps):
@@ -276,7 +359,6 @@ class AppsTab(QWidget):
 
         def scan_failed(error):
             if not current():
-                self._set_busy(False)
                 return
             self._on_scan_fail(error)
             if on_fail:
@@ -285,24 +367,47 @@ class AppsTab(QWidget):
         w.finished_ok.connect(scan_done)
         w.failed.connect(scan_failed)
         w.presence.connect(lambda pkgs: self._on_presence(pkgs) if current() else None)
-        self.window._run(w, on_ok=lambda _: self._set_busy(False),
-                           desc='Uygulamalar Yenile: {} taraniyor'.format(self.core.target))
+        def release_scan():
+            if self._scan_worker is w:
+                self._scan_worker = None
+                self._set_busy(False)
+
+        w.finished.connect(release_scan)
+        self._track_device_worker(w)
+        self._scan_worker = w
         self._set_busy(True)
+        try:
+            self.window._run(w, desc='Uygulamalar Yenile: {} taraniyor'.format(target))
+        except Exception as error:
+            release_scan()
+            self.lbl_summary.setText('Tarama başarısız: ' + str(error))
+            if on_fail:
+                on_fail(str(error))
+            return False
         return True
 
     def _set_busy(self, busy):
         # Ayni anda ikinci worker baslatma: tik/crash ve eski veri yarisi biter.
-        self._busy = bool(busy)
+        busy = bool(busy or self._scan_worker is not None
+                    or self._operation_worker is not None)
+        self._busy = busy
         kit.set_busy((self.btn_refresh, self.btn_stop, self.btn_clear, self.btn_disable,
                       self.btn_enable, self.btn_uninstall, self.btn_restore,
                       self.btn_launch, self.btn_apk), busy)
         kit.set_busy((self.chk_inv,), busy)
         if not busy:
             self.grid.setEnabled(True)
+        self._update_sel_count()
+        if busy and not self.grid.rowCount():
+            kit.empty_state(self.grid, 'Uygulamalar taranıyor',
+                            'Cihazdan uygulama listesi ve durum bilgileri alınıyor.')
 
     def _on_scan_fail(self, err):
         self._set_busy(False)
         self.lbl_summary.setText('Tarama başarısız: ' + str(err))
+        if not self.grid.rowCount():
+            kit.empty_state(self.grid, 'Uygulama listesi alınamadı',
+                            'Bağlantıyı kontrol edin ve Yenile ile tekrar deneyin.')
 
     def _on_presence(self, pkgs):
         if isinstance(pkgs, dict):
@@ -344,7 +449,7 @@ class AppsTab(QWidget):
             self.window.tab_debloat.set_present(info)
         except Exception:
             pass
-        self._apply_filter_now()
+        self._apply_filter_now(preserve_checks=False)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -489,8 +594,14 @@ class AppsTab(QWidget):
         except Exception:
             pass
 
-    def _apply_filter_now(self):
-        q = self.txt_search.text().strip().lower()
+    def _apply_filter_now(self, preserve_checks=True):
+        q = search_key(self.txt_search.text()).strip()
+        checked_packages = {
+            self.grid.item(row, COL_CHECK).data(Qt.UserRole)
+            for row in range(self.grid.rowCount())
+            if self.grid.item(row, COL_CHECK) is not None
+            and self.grid.item(row, COL_CHECK).checkState() == Qt.Checked
+        } if preserve_checks else set()
         sf = self.cmb_status.currentData()      # etiket degil, VERI
         # Durum + süreç + sistem filtreleri tek listede.
         only_removed = (sf == STATUS_REMOVED)
@@ -511,7 +622,7 @@ class AppsTab(QWidget):
             elif only_removed:
                 # 'Kaldırılmış' filtresi: kurulu olanlar gösterilmez.
                 continue
-            hay = (a['name'] + ' ' + a['package']).lower()
+            hay = search_key(a['name'] + ' ' + a['package'])
             if q and q not in hay:
                 continue
             enabled = bool(a.get('enabled', True))
@@ -529,7 +640,8 @@ class AppsTab(QWidget):
             self.grid.insertRow(r)
             chk = QTableWidgetItem()
             chk.setFlags(self._check_flags(a['package'], self.core.config.protected))
-            chk.setCheckState(Qt.Unchecked)
+            chk.setCheckState(Qt.Checked if a['package'] in checked_packages
+                              and chk.flags() & Qt.ItemIsUserCheckable else Qt.Unchecked)
             chk.setData(Qt.UserRole, a['package'])
             name = QTableWidgetItem(a['name'])
             name.setData(Qt.UserRole, a['package'])
@@ -542,7 +654,7 @@ class AppsTab(QWidget):
             else:
                 state = QTableWidgetItem('Devre dışı' if not enabled else 'Etkin')
             if removed_u0:
-                state.setToolTip('user 0 için kaldırılmış; sağ tık > Geri Yükle ile döndürülebilir')
+                state.setToolTip('Ana Android kullanıcısı için kaldırılmış; sağ tık > Geri Yükle ile geri yüklenebilir.')
                 state_color = pal['accent']
             elif not enabled:
                 state_color = pal['warning']
@@ -583,7 +695,7 @@ class AppsTab(QWidget):
             if only_run:
                 eligible = [a for a in self._apps
                             if a.get('enabled', True) and a.get('installed_user0', True)
-                            and (not q or q in (a['name'] + ' ' + a['package']).lower())
+                            and (not q or q in search_key(a['name'] + ' ' + a['package']))
                             and (include_system or not a.get('system'))]
                 if not eligible:
                     title = 'Eşleşen uygulama yok'
@@ -607,8 +719,12 @@ class AppsTab(QWidget):
                 kit.empty_state(self.grid, 'Eşleşen uygulama yok',
                                 'Arama metnini veya durum filtresini değiştirin.')
         else:
-            kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
-                            'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
+            if not getattr(self.core, 'connected', False):
+                kit.empty_state(self.grid, 'TV bağlantısı bekleniyor',
+                                'Üstteki bağlantı alanından TV’ye bağlanın, ardından Yenile’yi seçin.')
+            else:
+                kit.empty_state(self.grid, 'Henüz uygulama listesi yok',
+                                'Cihazdaki uygulamaları görmek için Yenile’yi seçin.')
         self._update_sel_count()
 
     def _on_item_changed(self, item):
@@ -719,27 +835,94 @@ class AppsTab(QWidget):
             rows = checked or selected
             self.lbl_sel.setText('Seçili: {}/{}{}'.format(
                 len(rows), self.grid.rowCount(),
-                ' (satir)' if selected and not checked else ''))
+                ' (satır)' if selected and not checked else ''))
+            can_act = bool(rows) and not self._busy and self._device_context() is not None
+            for button in (self.btn_launch, self.btn_stop, self.btn_apk,
+                           self.btn_disable, self.btn_enable, self.btn_restore,
+                           self.btn_clear, self.btn_uninstall, self.btn_more):
+                button.setEnabled(can_act)
+            self.btn_clear_selection.setEnabled(bool(checked or self.grid.selectedIndexes()) and not self._busy)
+            self.btn_select_all.setEnabled(bool(self.grid.rowCount()) and not self._busy)
+            self.chk_inv.setEnabled(bool(self.grid.rowCount()) and not self._busy)
+            self._sync_more_actions()
         except RuntimeError:
             pass
 
     # ------------------------------------------------------------------
-    def _pkg_action(self, action):
+    def _start_package_operation(self, worker, context, on_ok, refresh_after=False):
+        """Keep this page locked until the worker has actually finished."""
+        if (self._busy or not self._device_context_current(context)
+                or getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)):
+            self.lbl_summary.setText('İşlem başlatılamadı; bağlantıyı ve devam eden işlemleri kontrol edin.')
+            return False
+        result, errors = [], []
+        worker.finished_ok.connect(result.append)
+        worker.failed.connect(errors.append)
+        worker.progress.connect(
+            lambda cur, total: self.lbl_summary.setText('{}/{} paket işleniyor…'.format(cur, total))
+            if self._device_context_current(context) else None)
+        self._track_device_worker(worker)
+        self._operation_worker = worker
+        self._set_busy(True)
+
+        def release():
+            if self._operation_worker is not worker:
+                return
+            self._operation_worker = None
+            self._set_busy(False)
+            if (not self._device_context_current(context)
+                    or getattr(self.window, '_closing', False)
+                    or getattr(self.window, '_close_pending', False)):
+                return
+            if not result:
+                self.lbl_summary.setText('İşlem başarısız: ' + str(errors[-1])
+                                         if errors else 'İşlem tamamlanamadı.')
+                return
+            if refresh_after:
+                self.refresh()
+            on_ok(result[0])
+
+        worker.finished.connect(release)
+        try:
+            self.window._run(worker)
+        except Exception as error:
+            self._device_workers.discard(worker)
+            result.clear()
+            release()
+            self.lbl_summary.setText('İşlem başlatılamadı: ' + str(error))
+            return False
+        return True
+
+    def _pkg_action(self, action, packages=None):
         from .dialogs import confirm_action
-        pkgs = self._selected_packages()
+        if self._busy:
+            self.lbl_summary.setText('Devam eden işlem bitmeden yeni paket işlemi başlatılamaz.')
+            return
+        pkgs = self._selected_packages() if packages is None else list(packages)
         if not pkgs:
             QMessageBox.information(self, 'Seçim', 'Önce uygulama seçin.')
             return
         prot = [p for p in pkgs if self.core.config.is_protected(p)]
-        if prot and len(prot) == len(pkgs):
+        if action != 'stop' and prot and len(prot) == len(pkgs):
             names = '\n'.join(u'• {}'.format(self.core.config.friendly_name(p)) for p in prot[:10])
             QMessageBox.warning(
                 self, 'Koruma',
                 u'Seçilenlerin TAMAMI koruma listesinde; işlem yapılmadı:\n\n{}'.format(names))
             return
+        context = self._device_context()
+        if context is None:
+            QMessageBox.information(self, 'Bağlantı Yok', 'Önce cihaza bağlanın.')
+            return
         if action in ('uninstall', 'clear', 'disable', 'stop'):
             if not confirm_action(self, action, pkgs,
-                                  self.core.config.friendly_name):
+                                  self.core.config.friendly_name,
+                                  extra='Cihaz: {} · Android kullanıcısı: 0'.format(context[1])):
+                return
+            if self._busy or not self._device_context_current(context):
+                QMessageBox.warning(
+                    self, 'Paket işlemi',
+                    'Cihaz bağlantısı değişti. İşlem başlatılmadı; yeniden deneyin.')
                 return
         from .dialogs import ACTION_TR
         try:
@@ -749,11 +932,10 @@ class AppsTab(QWidget):
                     ', '.join(pkgs[:3]) + ('…' if len(pkgs) > 3 else '')))
         except Exception:
             pass
-        w = PackageActionWorker(self.core.engine, self.core.target, pkgs,
+        engine, target, _generation = context
+        w = PackageActionWorker(engine, target, pkgs,
                                 action, self.core.config.protected)
-        w.progress.connect(self._on_progress)
-        w.finished_ok.connect(self._on_pkg_done)
-        self.window._run(w, on_ok=lambda _: self.refresh())
+        self._start_package_operation(w, context, self._on_pkg_done, refresh_after=True)
 
     def _on_pkg_done(self, res):
         from ..workers import format_action_result
@@ -763,20 +945,24 @@ class AppsTab(QWidget):
         self._backup_packages(self._selected_packages())
 
     def _backup_packages(self, pkgs):
+        if self._busy:
+            self.lbl_summary.setText('Devam eden işlem bitmeden APK yedeklemesi başlatılamaz.')
+            return
         if not pkgs:
             QMessageBox.information(self, 'Seçim', 'Önce APK yedeklenecek uygulamaları seçin.')
             return
-        import os
-        os.makedirs(APK_DIR, exist_ok=True)
-        w = ApkBackupWorker(self.core.engine, self.core.target, pkgs, APK_DIR)
-        w.progress.connect(self._on_progress)
-        w.finished_ok.connect(self._on_backup_done)
-        self.window._run(w)
+        context = self._device_context()
+        if context is None:
+            QMessageBox.information(self, 'Bağlantı Yok', 'Önce cihaza bağlanın.')
+            return
+        engine, target, _generation = context
+        w = ApkBackupWorker(engine, target, list(pkgs), APK_DIR)
+        self._start_package_operation(w, context, self._on_backup_done)
 
     def _open_apk_dir(self):
         import os, subprocess, sys
-        os.makedirs(APK_DIR, exist_ok=True)
         try:
+            os.makedirs(APK_DIR, exist_ok=True)
             if sys.platform == 'win32':
                 os.startfile(APK_DIR)
             else:
@@ -785,10 +971,31 @@ class AppsTab(QWidget):
             QMessageBox.warning(self, 'Hata', f'Klasör açılamadı: {e}')
 
     def _on_backup_done(self, res):
-        ok = res.get('ok', 0)
-        fail = res.get('fail', 0)
-        msg = f'{ok} APK yedeklendi' + (f', {fail} başarısız.' if fail else '.') + f'\n\nKonum: {APK_DIR}\n\nYedekleme klasörü açılsın mı?'
-        if QMessageBox.question(self, 'Yedekleme Tamamlandı', msg, QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+        ok = int(res.get('ok', 0))
+        fail = int(res.get('fail', 0))
+        cancelled = int(res.get('cancelled', 0))
+        errors = max(0, fail - cancelled)
+        lines = ['{} uygulamanın APK yedeği alındı.'.format(ok)]
+        if errors:
+            lines.append('{} uygulama yedeklenemedi.'.format(errors))
+        if cancelled:
+            lines.append('{} uygulamanın yedeklemesi durduruldu.'.format(cancelled))
+        for pkg, passed, message in res.get('details', []):
+            if not passed and len(lines) < 15:
+                lines.append('• {}: {}'.format(pkg, message))
+        lines.append('\nKonum: ' + APK_DIR)
+        box = QMessageBox(self)
+        box.setWindowTitle('Yedekleme sonucu')
+        box.setText('\n'.join(lines))
+        box.setIcon(QMessageBox.Warning if fail else QMessageBox.Information)
+        if res.get('details'):
+            box.setDetailedText('\n'.join(
+                '{} — {}: {}'.format(pkg, 'Tamam' if passed else 'Yedeklenmedi', message)
+                for pkg, passed, message in res['details']))
+        open_button = box.addButton('Klasörü aç', QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        if box.clickedButton() == open_button:
             self._open_apk_dir()
 
     def _export_csv(self):
@@ -817,6 +1024,11 @@ class AppsTab(QWidget):
             self._show_detail(pkg_item.text())
 
     def _show_detail(self, pkg):
+        context = self._device_context()
+        if context is None:
+            QMessageBox.information(self, 'Bağlantı Yok', 'Önce cihaza bağlanın.')
+            return
+        engine, target, _generation = context
         dlg = QDialog(self)
         dlg.setWindowTitle('Uygulama Detayi - ' + pkg)
         dlg.resize(560, 420)
@@ -830,17 +1042,21 @@ class AppsTab(QWidget):
         lay.addWidget(btns)
 
         def do():
-            eng = self.core.engine
-            t = self.core.target
-            eng.connect(t)
-            d = eng.app_detail(t, pkg)
+            if not self._device_context_current(context):
+                from ..workers import CancelledError
+                raise CancelledError('bağlantı değişti')
+            engine.connect(target)
+            d = engine.app_detail(target, pkg)
             try:
-                size_kb = eng.app_size(t, pkg)
+                size_kb = engine.app_size(target, pkg)
             except Exception:
                 size_kb = None
             return d, size_kb
 
         def done(res):
+            if not self._device_context_current(context):
+                txt.setPlainText('Cihaz bağlantısı değişti; ayrıntılar gösterilmedi.')
+                return
             d, size_kb = res
             size_txt = ('{:.1f} MB'.format(size_kb / 1024) if size_kb else 'olcumulemedi')
             txt.setPlainText(
@@ -855,7 +1071,10 @@ class AppsTab(QWidget):
 
         w = Worker(do)
         w.finished_ok.connect(done)
-        w.failed.connect(lambda e: txt.setPlainText('Hata: ' + str(e)))
+        w.failed.connect(lambda e: txt.setPlainText('Hata: ' + str(e))
+                         if self._device_context_current(context) else
+                         txt.setPlainText('Cihaz bağlantısı değişti; ayrıntılar gösterilmedi.'))
+        self._track_device_worker(w)
         self.window._run(w)
         dlg.exec()
 
@@ -875,6 +1094,14 @@ class AppsTab(QWidget):
             return
         except Exception:
             return
+        context = self._device_context()
+
+        def device_action(callback):
+            if self._busy or not self._device_context_current(context):
+                self.lbl_summary.setText('Bağlantı veya işlem durumu değişti; menüyü yeniden açın.')
+                return
+            callback()
+
         menu = QMenu(self)
         # kaldirilmis mi? (user 0 listesinde yoksa)
         removed = False
@@ -886,27 +1113,19 @@ class AppsTab(QWidget):
             f = act.font()
             f.setBold(True)
             act.setFont(f)
-            act.triggered.connect(lambda: self._pkg_action_single('restore', p))
+            act.triggered.connect(lambda: device_action(lambda: self._pkg_action_single('restore', p)))
         menu.addAction('📋 Paket Adını Kopyala', lambda: QApplication.clipboard().setText(p))
         menu.addSeparator()
-        menu.addAction('Detay', lambda: self._show_detail(p))
-        menu.addAction('Aç', lambda: self._pkg_action_single('launch', p))
-        menu.addAction('Zorla durdur', lambda: self._pkg_action_single('stop', p))
-        menu.addAction('Veriyi Sil', lambda: self._pkg_action_single('clear', p))
-        menu.addAction('Devre dışı bırak', lambda: self._pkg_action_single('disable', p))
-        menu.addAction('Aktif et', lambda: self._pkg_action_single('enable', p))
-        menu.addAction('Kaldır (user)', lambda: self._pkg_action_single('uninstall', p))
-        menu.addAction('Geri Yükle', lambda: self._pkg_action_single('restore', p))
-        menu.addAction('APK Yedekle', lambda: self._backup_packages([p]))
+        menu.addAction('Detay', lambda: device_action(lambda: self._show_detail(p)))
+        menu.addAction('Aç', lambda: device_action(lambda: self._pkg_action_single('launch', p)))
+        menu.addAction('Zorla durdur', lambda: device_action(lambda: self._pkg_action_single('stop', p)))
+        menu.addAction('Veriyi Sil', lambda: device_action(lambda: self._pkg_action_single('clear', p)))
+        menu.addAction('Devre dışı bırak', lambda: device_action(lambda: self._pkg_action_single('disable', p)))
+        menu.addAction('Aktif et', lambda: device_action(lambda: self._pkg_action_single('enable', p)))
+        menu.addAction('Kaldır', lambda: device_action(lambda: self._pkg_action_single('uninstall', p)))
+        menu.addAction('Geri Yükle', lambda: device_action(lambda: self._pkg_action_single('restore', p)))
+        menu.addAction('APK Yedekle', lambda: device_action(lambda: self._backup_packages([p])))
         menu.exec(self.grid.viewport().mapToGlobal(pos))
 
     def _pkg_action_single(self, action, pkg):
-        from .dialogs import confirm_action
-        if action in ('uninstall', 'clear', 'disable', 'stop'):
-            if not confirm_action(self, action, [pkg],
-                                  self.core.config.friendly_name):
-                return
-        w = PackageActionWorker(self.core.engine, self.core.target, [pkg],
-                                action, self.core.config.protected)
-        w.finished_ok.connect(self._on_pkg_done)
-        self.window._run(w, on_ok=lambda _: self.refresh())
+        self._pkg_action(action, packages=[pkg])

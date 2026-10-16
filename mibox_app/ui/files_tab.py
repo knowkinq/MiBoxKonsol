@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Dosya sekmesi: sdcard gözat, push/pull, klasör aç, sil."""
+"""Dosya sekmesi: sdcard gözat, push/pull, klasör oluştur, sil."""
 import os
 import posixpath
 import tempfile
@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QTableWidgetItem,
     QPushButton, QLabel, QHeaderView, QMessageBox,
-    QLineEdit, QFileDialog, QInputDialog, QMenu, QApplication
+    QLineEdit, QFileDialog, QInputDialog, QMenu, QApplication, QProgressBar
 )
 
 from . import kit
@@ -48,7 +48,10 @@ class FilesTab(QWidget):
         self._empty_context = ('Dosyalar henüz yüklenmedi', 'Cihaza bağlanın ve Yenile ile klasör içeriğini alın.')
         self._hist = []
         self._request_generation = 0
+        self._status_request_floor = 0
+        self._connection_generation = 0
         self._operation_busy = False
+        self._operation_worker = None
         self.core.connection_changed.connect(self._on_connection_changed)
         self._build()
 
@@ -92,6 +95,7 @@ class FilesTab(QWidget):
         nv.addLayout(row)
 
         self.lbl_breadcrumb = QLabel(' /  sdcard')
+        self.lbl_breadcrumb.setTextFormat(Qt.PlainText)
         self.lbl_breadcrumb.setProperty('role', 'secondary')
         self.lbl_breadcrumb.setTextInteractionFlags(Qt.TextSelectableByMouse)
         nv.addWidget(self.lbl_breadcrumb)
@@ -118,6 +122,11 @@ class FilesTab(QWidget):
         self.txt_filter.textChanged.connect(self._apply_filter)
         root.addWidget(self.txt_filter)
 
+        self.lbl_list_summary = QLabel('Dosya listesi henüz yüklenmedi.')
+        self.lbl_list_summary.setProperty('role', 'quiet')
+        self.lbl_list_summary.setTextFormat(Qt.PlainText)
+        root.addWidget(self.lbl_list_summary)
+
         self.grid = kit.single_table(3, ['Ad', 'Boyut', 'Değişiklik'])
         kit.empty_state(self.grid, 'Dosyalar henüz yüklenmedi',
                         'Cihaza bağlanın ve Yenile ile klasör içeriğini alın.')
@@ -125,6 +134,13 @@ class FilesTab(QWidget):
         hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
         hdr.setSectionResizeMode(COL_SIZE, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(COL_MTIME, QHeaderView.ResizeToContents)
+        for column, alignment in (
+                (COL_NAME, Qt.AlignLeft),
+                (COL_SIZE, Qt.AlignRight),
+                (COL_MTIME, Qt.AlignLeft)):
+            self.grid.horizontalHeaderItem(column).setTextAlignment(
+                alignment | Qt.AlignVCenter)
+        self.grid.setMinimumHeight(240)
         self.grid.doubleClicked.connect(self._on_double)
         self.grid.itemSelectionChanged.connect(self._update_action_buttons)
         self.grid.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -140,6 +156,11 @@ class FilesTab(QWidget):
         transfer_hint.setWordWrap(True)
         transfer_hint.setProperty('role', 'quiet')
         tv.addWidget(transfer_hint)
+        self.lbl_transfer_context = QLabel()
+        self.lbl_transfer_context.setProperty('role', 'quiet')
+        self.lbl_transfer_context.setTextFormat(Qt.PlainText)
+        self.lbl_transfer_context.setWordWrap(True)
+        tv.addWidget(self.lbl_transfer_context)
         flow_row = kit.action_bar()
         self.btn_push = QPushButton('Cihaza Yükle')
         self.btn_push.setProperty('accent', True)
@@ -153,10 +174,20 @@ class FilesTab(QWidget):
         flow_row.addWidget(self.btn_pull)
         flow_row.addWidget(self.btn_install_remote)
         tv.addLayout(flow_row)
+        self.progress_transfer = QProgressBar()
+        self.progress_transfer.setAccessibleName('Dosya işlemi ilerlemesi')
+        self.progress_transfer.hide()
+        tv.addWidget(self.progress_transfer)
+        self.btn_stop_transfer = QPushButton('Aktarımı durdur')
+        self.btn_stop_transfer.setProperty('role', 'quiet')
+        self.btn_stop_transfer.setToolTip('Devam eden aktarım için durdurma ister; TV’de kısmi dosya kalabilir.')
+        self.btn_stop_transfer.clicked.connect(self._stop_transfer)
+        self.btn_stop_transfer.hide()
+        tv.addWidget(self.btn_stop_transfer)
         root.addWidget(transfer)
 
         management, mv = card('Klasör ve dosya işlemleri')
-        self.btn_mkdir = QPushButton('Klasör Aç')
+        self.btn_mkdir = QPushButton('Yeni klasör')
         self.btn_mkdir.clicked.connect(self._mkdir)
         self.btn_rename = QPushButton('Yeniden Adlandır')
         self.btn_rename.clicked.connect(self._rename)
@@ -170,12 +201,15 @@ class FilesTab(QWidget):
         mv.addLayout(manage_row)
 
         self.lbl_status = kit.status_label('Hazır. Yenile ile listele.')
+        self.lbl_status.setTextFormat(Qt.PlainText)
         mv.addWidget(self.lbl_status)
         root.addWidget(management)
         self._update_action_buttons()
 
     # ------------------------------------------------------------------
     def _go(self, path):
+        if self._operation_busy:
+            return
         path = posixpath.normpath(path or '/sdcard')
         if not path.startswith('/'):
             path = '/' + path
@@ -194,6 +228,8 @@ class FilesTab(QWidget):
         self._go(self.txt_path.text().strip() or '/sdcard')
 
     def _back(self):
+        if self._operation_busy:
+            return
         if self._hist:
             self._set_path(self._hist.pop())
 
@@ -224,10 +260,17 @@ class FilesTab(QWidget):
         return True
 
     def _update_action_buttons(self, *_args):
-        self.btn_back.setEnabled(bool(self._hist))
-        self.btn_up.setEnabled(self._cwd != '/')
+        navigating = not self._operation_busy
+        self.btn_back.setEnabled(navigating and bool(self._hist))
+        self.btn_up.setEnabled(navigating and self._cwd != '/')
+        self.btn_go.setEnabled(navigating)
+        self.txt_path.setEnabled(navigating)
+        for index in range(self.roots_row.count()):
+            button = self.roots_row.itemAt(index).widget()
+            if button is not None:
+                button.setEnabled(navigating)
         connected = not self._connection_problem()
-        self.btn_refresh.setEnabled(connected)
+        self.btn_refresh.setEnabled(connected and navigating)
         can_mutate = connected and not self._operation_busy
         self.btn_push.setEnabled(can_mutate)
         self.btn_mkdir.setEnabled(can_mutate)
@@ -240,6 +283,21 @@ class FilesTab(QWidget):
         self.btn_pull.setEnabled(can_mutate and is_file)
         is_apk = is_file and str(entry.get('name', '')).lower().endswith('.apk')
         self.btn_install_remote.setEnabled(can_mutate and is_apk)
+        self._update_transfer_context()
+
+    def _update_transfer_context(self):
+        if not hasattr(self, 'lbl_transfer_context'):
+            return
+        entry = self._selected()
+        if entry is None:
+            selection = 'Seçim: yok'
+        elif entry.get('dir'):
+            selection = 'Seçili klasör: {}'.format(entry.get('name', ''))
+        else:
+            selection = 'Seçili dosya: {} ({})'.format(
+                entry.get('name', ''), _fmt_size(entry.get('size')))
+        self.lbl_transfer_context.setText(
+            '{}\nCihaza yükleme hedefi: {}'.format(selection, self._cwd))
 
     def _clear_view(self, title, description):
         self._loaded = False
@@ -247,18 +305,29 @@ class FilesTab(QWidget):
         self._entries = []
         self.grid.setRowCount(0)
         kit.empty_state(self.grid, title, description)
+        self._update_list_summary([])
         self._update_action_buttons()
 
     def refresh(self):
+        if self._operation_busy:
+            return
         self._request_generation += 1
         request_id = self._request_generation
         target = (getattr(self.core, 'target', '') or '').strip()
         cwd = self._cwd
         problem = self._connection_problem()
         if problem:
+            if not self.core.connected:
+                self._clear_view(
+                    'Cihaz bağlı değil',
+                    'Dosyaları görmek için cihaza bağlanın, ardından Yenile’ye basın.')
+            elif not self._loaded:
+                self._clear_view('Dosya listesi bekliyor', problem)
             self.lbl_status.setText(problem)
             self._update_action_buttons()
             return
+        if not self._loaded:
+            self._clear_view('Klasör yükleniyor', 'İçerik cihazdan okunuyor…')
         self.lbl_status.setText('{}: okunuyor…'.format(cwd))
         self._check_usb_storages(target)
 
@@ -281,6 +350,8 @@ class FilesTab(QWidget):
         request_id, target, cwd, entries = result
         if self._request_is_current(request_id, target, cwd):
             self._show(entries)
+            if not self._operation_busy and request_id >= self._status_request_floor:
+                self.lbl_status.setText('Klasör içeriği güncellendi.')
 
     def _show_list_error(self, error):
         worker = self.sender()
@@ -289,9 +360,15 @@ class FilesTab(QWidget):
             return
         request_id, target, cwd = context
         if self._request_is_current(request_id, target, cwd):
-            self.lbl_status.setText('Hata: {}'.format(error))
+            if not self._loaded:
+                self._clear_view(
+                    'Klasör okunamadı',
+                    'Bağlantıyı ve klasör yolunu kontrol edin; Yenile ile tekrar deneyin.')
+            if not self._operation_busy and request_id >= self._status_request_floor:
+                self.lbl_status.setText('Dosya listesi yüklenemedi: {}'.format(error))
 
     def _on_connection_changed(self, connected, target):
+        self._connection_generation += 1
         self._request_generation += 1
         self._clear_view(
             'Dosyalar henüz yüklenmedi',
@@ -307,15 +384,23 @@ class FilesTab(QWidget):
     def _check_usb_storages(self, target):
         if not target or self._connection_problem():
             return
+        generation = self._connection_generation
         def do():
             try:
-                return self.core.engine.usb_storages(target)
+                storages = self.core.engine.usb_storages(target)
             except Exception:
-                return []
+                storages = []
+            return target, generation, storages
         w = Worker(do)
         w.job_name = 'USB kontrolü'
-        w.finished_ok.connect(self._update_usb_buttons)
+        w.finished_ok.connect(self._show_usb_storages)
         self.window._run(w, desc='USB sürücü kontrolü')
+
+    def _show_usb_storages(self, result):
+        target, generation, storages = result
+        if (generation == self._connection_generation
+                and self.core.connected and self.core.target == target):
+            self._update_usb_buttons(storages)
 
     def _update_usb_buttons(self, storages):
         for b in list(self._usb_buttons):
@@ -333,6 +418,7 @@ class FilesTab(QWidget):
             btn.clicked.connect(lambda _=False, p=path: self._go(p))
             self.roots_row.addWidget(btn)
             self._usb_buttons.append(btn)
+        self._update_action_buttons()
 
     def eventFilter(self, watched, event):
         if watched in (self.grid, self.grid.viewport()):
@@ -386,6 +472,9 @@ class FilesTab(QWidget):
             ni.setData(Qt.UserRole, e)
             si = QTableWidgetItem('' if e['dir'] else _fmt_size(e['size']))
             mi = QTableWidgetItem(e['mtime'])
+            ni.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            si.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            mi.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             for it in (ni, si, mi):
                 it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self.grid.setItem(r, COL_NAME, ni)
@@ -401,12 +490,36 @@ class FilesTab(QWidget):
                             'Dosya adı filtresini değiştirin veya temizleyin.')
         else:
             kit.empty_state(self.grid, '', '')
-        if query:
-            self.lbl_status.setText('{}: {} / {} öğe'.format(
-                self._cwd, len(visible), len(self._entries)))
-        else:
-            self.lbl_status.setText('{}: {} öğe'.format(self._cwd, len(self._entries)))
+        self._update_list_summary(visible)
         self._update_action_buttons()
+
+    def _update_list_summary(self, visible=None):
+        if not hasattr(self, 'lbl_list_summary'):
+            return
+        if not self._loaded:
+            self.lbl_list_summary.setText('Dosya listesi henüz yüklenmedi.')
+            return
+        if visible is None:
+            query = self.txt_filter.text().strip().casefold()
+            visible = [e for e in self._entries
+                       if not query or query in str(e.get('name', '')).casefold()]
+        files = [entry for entry in visible if not entry.get('dir', False)]
+        known_sizes = []
+        unknown_sizes = 0
+        for entry in files:
+            try:
+                size = int(entry.get('size'))
+                if size < 0:
+                    raise ValueError
+                known_sizes.append(size)
+            except (TypeError, ValueError):
+                unknown_sizes += 1
+        size_summary = _fmt_size(sum(known_sizes))
+        if unknown_sizes:
+            size_summary += ' · {} dosyanın boyutu bilinmiyor'.format(unknown_sizes)
+        self.lbl_list_summary.setText(
+            'Yüklenen listede {} öğe · gösterilen {} öğe ({} dosya, {})'.format(
+                len(self._entries), len(visible), len(files), size_summary))
 
     def _selected(self):
         row = self.grid.currentRow()
@@ -424,39 +537,110 @@ class FilesTab(QWidget):
         return (cwd.rstrip('/') + '/' + str(name)) if cwd != '/' else '/' + str(name)
 
     def _start_mutation(self, worker, desc, on_ok, on_fail=None):
+        if (getattr(self.window, '_closing', False)
+                or getattr(self.window, '_close_pending', False)
+                or not self._can_mutate()):
+            worker.deleteLater()
+            return
+        target = self.core.target
+        generation = self._connection_generation
+        engine = self.core.engine
+        original_func = worker._func
+        original_args, original_kwargs = worker._args, worker._kwargs
+
+        def is_current():
+            return (generation == self._connection_generation
+                    and self.core.connected and self.core.target == target
+                    and self.core.engine is engine
+                    and not getattr(self.window, '_connection_busy', False))
+
+        def guarded():
+            worker.check_cancel()
+            if not is_current():
+                from ..workers import CancelledError
+                raise CancelledError('bağlantı değişti')
+            return original_func(*original_args, **original_kwargs)
+
+        worker._func = guarded
+        worker._args, worker._kwargs = (), {}
         self._operation_busy = True
+        self._status_request_floor = self._request_generation + 1
+        self._operation_worker = worker
+        self.progress_transfer.setRange(0, 0)
+        self.progress_transfer.show()
+        self.btn_stop_transfer.setVisible(bool(getattr(worker, '_files_transfer', False)))
+        self.btn_stop_transfer.setEnabled(True)
+        self.lbl_status.setText(desc)
         self._update_action_buttons()
+        results, errors = [], []
+        worker.finished_ok.connect(results.append)
+        worker.failed.connect(errors.append)
 
-        def finished(result):
-            self._operation_busy = False
-            self._update_action_buttons()
-            on_ok(result)
+        def progress(current, total):
+            if self._operation_worker is worker and is_current() and total > 0:
+                self.progress_transfer.setRange(0, total)
+                self.progress_transfer.setValue(current)
+                self.progress_transfer.setFormat('%v / %m dosya')
 
-        def failed(error):
+        def finished():
+            if self._operation_worker is not worker:
+                return
+            self._operation_worker = None
             self._operation_busy = False
+            self.progress_transfer.hide()
+            self.btn_stop_transfer.hide()
             self._update_action_buttons()
-            if on_fail:
-                on_fail(str(error))
+            if (not is_current() or getattr(self.window, '_closing', False)
+                    or getattr(self.window, '_close_pending', False)):
+                return
+            if results:
+                on_ok(results[0])
             else:
-                self.lbl_status.setText('Hata: {}'.format(error))
+                error = str(errors[-1] if errors else 'İşlem tamamlanamadı.')
+                if on_fail:
+                    on_fail(error)
+                else:
+                    self.lbl_status.setText('Hata: ' + error)
 
-        self.window._run(worker, on_ok=finished, on_fail=failed, desc=desc)
+        worker.progress.connect(progress)
+        worker.finished.connect(finished)
+        try:
+            self.window._run(worker, desc=desc)
+        except Exception as error:
+            errors.append(str(error))
+            finished()
+
+    def _stop_transfer(self):
+        worker = self._operation_worker
+        if worker is None or not getattr(worker, '_files_transfer', False):
+            return
+        worker.cancel()
+        self.btn_stop_transfer.setEnabled(False)
+        self.lbl_status.setText('Aktarım durduruluyor; tamamlanmasını bekleyin.')
 
     def _push(self):
         if not self._can_mutate():
             return
+        target, cwd, generation = self.core.target, self._cwd, self._connection_generation
         paths, _ = QFileDialog.getOpenFileNames(self, 'Cihaza Yükle', '', 'Tümü (*.*)')
         if paths:
+            if (generation != self._connection_generation or cwd != self._cwd
+                    or not self._can_mutate(target)):
+                self.lbl_status.setText('Bağlantı veya klasör değişti; dosyaları yeniden seçin.')
+                return
             self._push_paths(paths)
 
     def _push_paths(self, paths):
         if not self._can_mutate():
             return
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         paths = [os.path.abspath(p) for p in paths if os.path.exists(p)]
         if not paths:
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
         names = {}
         for path in paths:
@@ -474,13 +658,16 @@ class FilesTab(QWidget):
             return
         destinations = [(p, self._remote_child(cwd, os.path.basename(p))) for p in paths]
 
+        engine = self.core.engine
+
         def do():
             for index, (path, remote) in enumerate(destinations, 1):
                 w.check_cancel()
-                if not self.core.connected:
-                    raise RuntimeError('Bağlantı kesildi; kalan dosyalar yüklenmedi.')
+                if (not self.core.connected or self.core.target != target
+                        or generation != self._connection_generation):
+                    raise RuntimeError('Hedef veya bağlantı değişti; kalan dosyalar yüklenmedi.')
                 try:
-                    self.core.engine.push(
+                    engine.push(
                         target, path, remote,
                         cancel_check=w.isInterruptionRequested)
                 except Exception:
@@ -493,13 +680,15 @@ class FilesTab(QWidget):
             return len(destinations)
         w = Worker(do)
         w.job_name = 'Dosya yukleme'
+        w._files_transfer = True
         self._start_mutation(
             w, 'Dosyalar: {} dosya yukleniyor -> {}'.format(len(paths), cwd),
             lambda n: (self.lbl_status.setText('{} dosya yüklendi.'.format(n)),
                        self.refresh()),
             on_fail=lambda error: self.lbl_status.setText(
-                'Aktarım durduruldu.' if 'kullanıcı durdurdu' in error.casefold()
-                else 'Hata: {}'.format(error)))
+                'Yükleme durduruldu; TV’de tamamlanmış veya kısmi dosyalar kalmış olabilir.'
+                if 'kullanıcı durdurdu' in error.casefold()
+                else 'Yükleme tamamlanamadı: {}. Bazı dosyalar aktarılmış olabilir.'.format(error)))
 
     def _pull(self):
         if not self._can_mutate():
@@ -509,12 +698,18 @@ class FilesTab(QWidget):
             QMessageBox.information(self, 'Seçim', 'Önce bir dosya seçin (klasör değil).')
             return
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         remote = self._remote_child(cwd, e['name'])
         dest, _ = QFileDialog.getSaveFileName(self, 'Farklı Kaydet', e['name'], 'Tümü (*.*)')
         if not dest:
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
+
+        engine = self.core.engine
+        expected_size = e.get('size')
 
         def do():
             parent = os.path.dirname(os.path.abspath(dest)) or os.getcwd()
@@ -522,12 +717,17 @@ class FilesTab(QWidget):
                 prefix='.mibox-download-', suffix='.part', dir=parent)
             os.close(fd)
             try:
-                self.core.engine.pull(
+                engine.pull(
                     target, remote, staged,
                     cancel_check=w.isInterruptionRequested)
                 w.check_cancel()
                 if not os.path.isfile(staged):
                     raise OSError('İndirilen geçici dosya oluşturulamadı.')
+                if (type(expected_size) is int and expected_size >= 0
+                        and os.path.getsize(staged) != expected_size):
+                    raise OSError('İndirilen dosyanın boyutu listeyle eşleşmiyor. '
+                                  'TV’de dosya değişmiş veya aktarım eksik kalmış olabilir; '
+                                  'listeyi yenileyip tekrar deneyin. Mevcut yerel dosya korundu.')
                 w.check_cancel()
                 os.replace(staged, dest)
             except Exception:
@@ -544,6 +744,7 @@ class FilesTab(QWidget):
             return dest
         w = Worker(do)
         w.job_name = 'Dosya indirme'
+        w._files_transfer = True
         self._start_mutation(
             w, 'Dosyalar: indiriliyor: ' + e['name'],
             lambda d: self.lbl_status.setText('İndirildi: ' + d),
@@ -555,16 +756,25 @@ class FilesTab(QWidget):
         if not self._can_mutate():
             return
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         name, ok = QInputDialog.getText(self, 'Klasör', 'Ad:')
         if not ok or not name.strip():
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
         name = name.strip()
+        if (name in ('.', '..') or '/' in name or '\\' in name
+                or any(unicodedata.category(ch) == 'Cc' for ch in name)):
+            QMessageBox.warning(self, 'Klasör', 'Klasör adı tek bir geçerli ad olmalıdır.')
+            return
         remote = self._remote_child(cwd, name)
 
+        engine = self.core.engine
+
         def do():
-            self.core.engine.file_mkdir(target, remote)
+            engine.file_mkdir(target, remote)
             return name
         w = Worker(do)
         w.job_name = 'Klasör olusturma'
@@ -581,6 +791,7 @@ class FilesTab(QWidget):
             QMessageBox.information(self, 'Seçim', 'Önce öğe seçin.')
             return
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         full = self._remote_child(cwd, e['name'])
         if QMessageBox.question(self, u'Onay — Kalıcı Sil',
                                 u'Silinsin mi? (Geri alınamaz!)\n\n• {}{}'.format(
@@ -588,11 +799,15 @@ class FilesTab(QWidget):
                                 QMessageBox.Yes | QMessageBox.No,
                                 QMessageBox.No) != QMessageBox.Yes:
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
 
+        engine = self.core.engine
+
         def do():
-            self.core.engine.file_remove(target, full)
+            engine.file_remove(target, full)
             return full
         w = Worker(do)
         w.job_name = 'Dosya silme'
@@ -609,6 +824,7 @@ class FilesTab(QWidget):
             return
         old_name = e.get('name', '')
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         old_path = self._remote_child(cwd, old_name)
 
         new_name, ok = QInputDialog.getText(
@@ -617,14 +833,23 @@ class FilesTab(QWidget):
         )
         if not ok or not new_name.strip() or new_name.strip() == old_name:
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
 
         new_name = new_name.strip()
+        if (new_name in ('.', '..') or '/' in new_name or '\\' in new_name
+                or any(unicodedata.category(ch) == 'Cc' for ch in new_name)):
+            QMessageBox.warning(self, 'Yeniden Adlandır',
+                                'Yeni ad tek bir geçerli dosya veya klasör adı olmalıdır.')
+            return
         new_path = self._remote_child(cwd, new_name)
 
+        engine = self.core.engine
+
         def do():
-            self.core.engine.rename_file(target, old_path, new_path)
+            engine.rename_file(target, old_path, new_path)
             return new_name
 
         w = Worker(do)
@@ -646,6 +871,19 @@ class FilesTab(QWidget):
             self.grid.setCurrentCell(-1, -1)
         menu = QMenu(self)
         entry = self._selected()
+        generation, cwd = self._connection_generation, self._cwd
+        selected_name = entry.get('name') if entry else None
+
+        def invoke(callback):
+            selected = self._selected()
+            name_now = selected.get('name') if selected else None
+            if (generation != self._connection_generation or cwd != self._cwd
+                    or name_now != selected_name or self._operation_busy
+                    or self._connection_problem()):
+                self.lbl_status.setText('Bağlantı, klasör veya seçim değişti; menüyü yeniden açın.')
+                return
+            callback()
+
         can_mutate = not self._connection_problem() and not self._operation_busy
 
         if entry:
@@ -655,39 +893,39 @@ class FilesTab(QWidget):
 
             if is_dir:
                 a_open = menu.addAction('📂 {} Klasörünü Aç'.format(name))
-                a_open.triggered.connect(lambda: self._go(self._remote_child(self._cwd, name)))
+                a_open.triggered.connect(lambda: invoke(lambda: self._go(self._remote_child(cwd, name))))
             else:
                 a_pull = menu.addAction('📥 Bilgisayara İndir (Pull)')
                 a_pull.setEnabled(can_mutate)
-                a_pull.triggered.connect(self._pull)
+                a_pull.triggered.connect(lambda: invoke(self._pull))
                 if is_apk:
                     a_install = menu.addAction('🚀 TV\'de Kur (APK)')
                     a_install.setEnabled(can_mutate)
-                    a_install.triggered.connect(self._install_remote_apk)
+                    a_install.triggered.connect(lambda: invoke(self._install_remote_apk))
 
             menu.addSeparator()
             a_copy = menu.addAction('📋 Tam Yolu Kopyala')
-            a_copy.triggered.connect(lambda: QApplication.clipboard().setText(self._remote_child(self._cwd, name)))
+            a_copy.triggered.connect(lambda: QApplication.clipboard().setText(self._remote_child(cwd, name)))
 
             a_rename = menu.addAction('✏️ Yeniden Adlandır')
             a_rename.setEnabled(can_mutate)
-            a_rename.triggered.connect(self._rename)
+            a_rename.triggered.connect(lambda: invoke(self._rename))
 
             a_del = menu.addAction('🗑 Kalıcı Olarak Sil')
             a_del.setEnabled(can_mutate)
-            a_del.triggered.connect(self._delete)
+            a_del.triggered.connect(lambda: invoke(self._delete))
         else:
             a_mkdir = menu.addAction('📁 Yeni Klasör Oluştur')
             a_mkdir.setEnabled(can_mutate)
-            a_mkdir.triggered.connect(self._mkdir)
+            a_mkdir.triggered.connect(lambda: invoke(self._mkdir))
 
             a_push = menu.addAction('📤 Bilgisayardan Dosya Yükle (Push)')
             a_push.setEnabled(can_mutate)
-            a_push.triggered.connect(self._push)
+            a_push.triggered.connect(lambda: invoke(self._push))
 
             menu.addSeparator()
             a_refresh = menu.addAction('🔄 Yenile')
-            a_refresh.triggered.connect(self.refresh)
+            a_refresh.triggered.connect(lambda: invoke(self.refresh))
 
         menu.exec(self.grid.viewport().mapToGlobal(pos))
 
@@ -699,19 +937,24 @@ class FilesTab(QWidget):
             QMessageBox.information(self, 'Seçim', 'Kurulacak bir APK dosyası seçin.')
             return
         target, cwd = self.core.target, self._cwd
+        generation = self._connection_generation
         remote = self._remote_child(cwd, e['name'])
         if QMessageBox.question(
                 self, 'Onay — Cihazda Kur',
                 'Bu APK doğrudan TV üzerinde kurulsun mu?\n\n• {}'.format(remote),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        if not self._can_mutate(target):
+        if (generation != self._connection_generation
+                or not self._can_mutate(target)):
+            self.lbl_status.setText('Bağlantı değişti veya işlem sürüyor; yeniden deneyin.')
             return
 
         grant = getattr(self.core.config, 'install_grant_perms', True)
 
+        engine = self.core.engine
+
         def do():
-            return self.core.engine.install_remote_apk(target, remote, grant_perms=grant)
+            return engine.install_remote_apk(target, remote, grant_perms=grant)
 
         w = Worker(do)
         w.job_name = 'Cihazda APK kurma'

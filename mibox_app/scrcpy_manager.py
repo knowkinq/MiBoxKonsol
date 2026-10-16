@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from urllib.parse import urlsplit
@@ -88,6 +89,20 @@ def find_scrcpy(base_dir: Optional[str] = None) -> Optional[str]:
     """
     root = os.path.abspath(base_dir or BASE_DIR)
 
+    # A repaired installation takes precedence over an older valid executable
+    # whose neighboring libraries may be missing. Store only a relative name.
+    try:
+        with open(os.path.join(root, '.scrcpy-preferred'), encoding='utf-8') as marker:
+            preferred = marker.read(256).strip()
+        if re.fullmatch(r'scrcpy-[A-Za-z0-9._-]+', preferred):
+            folder = os.path.realpath(os.path.join(root, preferred))
+            if os.path.dirname(folder) == os.path.realpath(root):
+                candidate = os.path.join(folder, 'scrcpy.exe')
+                if os.path.isfile(candidate) and _verify_scrcpy_executable(candidate):
+                    return candidate
+    except (OSError, UnicodeError):
+        pass
+
     # 1. <base_dir>/scrcpy/scrcpy.exe (Uygulama klasöründeki standart scrcpy dizini)
     primary = os.path.join(root, 'scrcpy', 'scrcpy.exe')
     if os.path.isfile(primary) and _verify_scrcpy_executable(primary):
@@ -118,6 +133,23 @@ def find_scrcpy(base_dir: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def _remember_scrcpy_install(target_dir: str) -> None:
+    """Atomically select a verified installation directly inside BASE_DIR."""
+    root = os.path.realpath(BASE_DIR)
+    folder = os.path.realpath(target_dir)
+    name = os.path.basename(folder)
+    if os.path.dirname(folder) != root or not re.fullmatch(r'scrcpy-[A-Za-z0-9._-]+', name):
+        raise RuntimeError('Tercih edilen Scrcpy kurulum yolu doğrulanamadı.')
+    descriptor, temporary = tempfile.mkstemp(prefix='.scrcpy-preferred-', suffix='.tmp', dir=root)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as marker:
+            marker.write(name + '\n')
+        os.replace(temporary, os.path.join(root, '.scrcpy-preferred'))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
 def get_scrcpy_download_info() -> Dict[str, Any]:
     """Pinned scrcpy release details and upstream-published SHA-256 checksum."""
     prefix = get_scrcpy_arch_prefix()
@@ -145,9 +177,10 @@ class ScrcpyDownloader(BaseWorker):
 
     job_name = 'Scrcpy İndirici'
 
-    def __init__(self, target_dir: Optional[str] = None):
+    def __init__(self, target_dir: Optional[str] = None, force_download: bool = False):
         super().__init__()
         self.target_dir = target_dir
+        self.force_download = force_download
 
     def _work(self):
         self.check_cancel()
@@ -172,9 +205,11 @@ class ScrcpyDownloader(BaseWorker):
             self.target_dir or os.path.join(BASE_DIR, 'scrcpy-' + safe_version)
         )
         cached_exe = os.path.join(base_target, 'scrcpy.exe')
-        if os.path.isfile(cached_exe) and _verify_scrcpy_executable(cached_exe):
+        if (not self.force_download and os.path.isfile(cached_exe)
+                and _verify_scrcpy_executable(cached_exe)):
             result = {'scrcpy_path': os.path.join(base_target, 'scrcpy.exe'),
                       'version': version, 'target_dir': base_target}
+            self.check_cancel()
             self.finished_ok.emit(result)
             return result
         target_dir = base_target
@@ -204,7 +239,10 @@ class ScrcpyDownloader(BaseWorker):
                     'objects.githubusercontent.com',
                 }:
                     raise RuntimeError('Scrcpy indirme kaynağı doğrulanamadı.')
-                total_size = int(resp.headers.get('Content-Length') or expected_size or 0)
+                content_length = resp.headers.get('Content-Length')
+                if content_length is not None:
+                    content_length = int(content_length)
+                total_size = content_length if content_length is not None else expected_size
                 if not 0 < total_size <= 64 * 1024 * 1024:
                     raise RuntimeError('Scrcpy indirme boyutu geçersiz veya çok büyük.')
                 downloaded = 0
@@ -233,6 +271,11 @@ class ScrcpyDownloader(BaseWorker):
                 if downloaded != total_size:
                     raise RuntimeError('Scrcpy indirmesi eksik veya bozuk (beklenen {} bayt, alınan {}).'.format(
                         total_size, downloaded))
+                if downloaded != expected_size:
+                    raise RuntimeError(
+                        'Scrcpy indirme boyutu sabitlenmiş beklentiyle eşleşmiyor '
+                        '(beklenen {} bayt, alınan {}).'.format(expected_size, downloaded)
+                    )
                 if digest.hexdigest().lower() != expected_sha256:
                     raise RuntimeError('Scrcpy SHA-256 doğrulaması başarısız; dosya çalıştırılmadı.')
 
@@ -281,14 +324,21 @@ class ScrcpyDownloader(BaseWorker):
             scrcpy_exe = os.path.join(payload_dir, 'scrcpy.exe')
             if not os.path.isfile(scrcpy_exe):
                 raise RuntimeError('Scrcpy arşivinden scrcpy.exe çıkmadı.')
+            if not _verify_scrcpy_executable(scrcpy_exe):
+                raise RuntimeError('Scrcpy dosyası resmî sürüm SHA-256 doğrulamasını geçemedi.')
+            self.check_cancel()
             os.replace(payload_dir, target_dir)
+            if self.target_dir is None:
+                _remember_scrcpy_install(target_dir)
 
-            self.log.emit(f"Scrcpy başarıyla kuruldu: {scrcpy_exe}")
+            target_exe = os.path.join(target_dir, 'scrcpy.exe')
+            self.log.emit(f"Scrcpy başarıyla kuruldu: {target_exe}")
             res = {
-                'scrcpy_path': os.path.join(target_dir, 'scrcpy.exe'),
+                'scrcpy_path': target_exe,
                 'version': version,
                 'target_dir': target_dir,
             }
+            self.check_cancel()
             self.finished_ok.emit(res)
             return res
 
@@ -305,6 +355,30 @@ class ScrcpyDownloader(BaseWorker):
                         os.remove(path)
                 except OSError:
                     pass
+
+
+def _log_scrcpy_output(output, log_path, private_values):
+    """Persist Scrcpy output after removing device identifiers and local paths."""
+    from .adb_engine import sanitize_log_text
+
+    try:
+        with open(log_path, 'a', encoding='utf-8', errors='replace',
+                  buffering=1) as log_handle:
+            for line in output:
+                log_handle.write(sanitize_log_text(line, private_values))
+    except OSError:
+        # Keep draining the pipe if logging becomes unavailable so Scrcpy
+        # cannot block on a full stdout buffer.
+        try:
+            for _line in output:
+                pass
+        except (OSError, ValueError):
+            pass
+    finally:
+        try:
+            output.close()
+        except (OSError, ValueError):
+            pass
 
 
 def launch_scrcpy(
@@ -350,26 +424,48 @@ def launch_scrcpy(
     if os.name == 'nt':
         creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 
-    # Scrcpy konsol loglarını logs/scrcpy.log dosyasına yönlendir (hata anında incelenebilmesi için)
-    os.makedirs(LOG_DIR, exist_ok=True)
-    scrcpy_log_file = os.path.join(LOG_DIR, 'scrcpy.log')
-    log_handle = None
+    # Scrcpy loglarını cihaz adresi/seri no ve yerel yollar maskelenerek sakla.
+    scrcpy_log_file = os.path.join(
+        LOG_DIR, 'scrcpy-{}.log'.format(time.strftime('%Y%m%d')))
+    log_enabled = False
+    from .adb_engine import sanitize_log_text, target_private_values
+    private_values = target_private_values(target)
     try:
-        log_handle = open(scrcpy_log_file, 'a', encoding='utf-8', errors='replace')
-        log_handle.write(f"\n--- Scrcpy Başlatıldı: {time.strftime('%Y-%m-%d %H:%M:%S')} ({' '.join(cmd)}) ---\n")
-        log_handle.flush()
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(scrcpy_log_file, 'a', encoding='utf-8', errors='replace') as log_handle:
+            log_enabled = True
+            safe_command = sanitize_log_text(' '.join(cmd), private_values)
+            log_handle.write(
+                f"\n--- Scrcpy Başlatıldı: {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"({safe_command}) ---\n")
     except Exception:
-        log_handle = None
+        log_enabled = False
 
-    try:
-        return subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdout=log_handle if log_handle is not None else subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            creationflags=creation_flags
-        )
-    finally:
-        if log_handle is not None:
-            log_handle.close()
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE if log_enabled else subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        text=True if log_enabled else None,
+        encoding='utf-8' if log_enabled else None,
+        errors='replace' if log_enabled else None,
+        bufsize=1 if log_enabled else -1,
+        creationflags=creation_flags
+    )
+    if log_enabled and process.stdout is not None:
+        output_thread = threading.Thread(
+            target=_log_scrcpy_output,
+            args=(process.stdout, scrcpy_log_file, private_values),
+            name='mibox-scrcpy-log',
+            daemon=True)
+        try:
+            output_thread.start()
+        except RuntimeError:
+            process.stdout.close()
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            raise
+    return process

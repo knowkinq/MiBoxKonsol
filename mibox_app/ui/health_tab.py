@@ -2,11 +2,11 @@
 """Sağlık sekmesi: cihaz ölçümleri, bakım ve gelişmiş taramalar."""
 import re
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QProgressBar, QMessageBox, QLineEdit,
-    QHeaderView, QTabWidget, QScrollArea,
+    QHeaderView, QTabWidget, QScrollArea, QBoxLayout,
 )
 
 from ..workers import Worker, CancelledError
@@ -42,8 +42,18 @@ class HealthTab(QWidget):
         self.window = window
         self._generation = 0
         self._read_workers = {}
+        self._section_groups = {}
+        self._health_measurements = {}
+        self._summary_worker = None
         self._build()
         core.connection_changed.connect(self._connection_changed)
+        if getattr(window, '_connection_busy', False):
+            initial_state = 'connecting'
+        else:
+            initial_state = 'unmeasured' if core.connected else 'offline'
+        self._update_measurement_summary(initial_state)
+        self._sync_refresh_button()
+        self.performance.busy_changed.connect(lambda _busy: self._sync_refresh_button())
 
     def _build(self):
         root = kit.page(self)
@@ -56,6 +66,7 @@ class HealthTab(QWidget):
         navigation.setExpanding(True)
         navigation.setDrawBase(False)
         navigation.setElideMode(Qt.ElideNone)
+        navigation.setUsesScrollButtons(True)
         self.sections.setStyleSheet('''
             QTabWidget#healthSections::pane { border: none; }
             QTabBar#healthNavigation::tab {
@@ -105,15 +116,24 @@ class HealthTab(QWidget):
         def section_links(layout, page, entries):
             links = QHBoxLayout()
             links.setSpacing(10)
+            group = []
             for text, target in entries:
                 button = QPushButton(text)
                 button.setMinimumHeight(36)
                 button.setProperty('role', 'secondary')
+                button.setCheckable(True)
+                button.setAccessibleName(text)
                 button.clicked.connect(
                     lambda _checked=False, page=page, target=target:
                     self._open_section(page, target)
                 )
                 links.addWidget(button, 1)
+                group.append((button, target))
+            self._section_groups[page] = group
+            for index, (button, target) in enumerate(group):
+                button.setChecked(index == 0)
+                if index:
+                    target.hide()
             layout.insertLayout(0, links)
 
         section_links(devices_root, self.scroll_devices, (
@@ -146,7 +166,8 @@ class HealthTab(QWidget):
         intro.setWordWrap(True)
         root.addWidget(intro)
 
-        metrics = QHBoxLayout()
+        metrics = QBoxLayout(QBoxLayout.LeftToRight)
+        self._overview_metrics = metrics
         metrics.setSpacing(kit.SPACING)
         self.lbl_disk = QLabel('—')
         self.lbl_disk_detail = QLabel('Henüz ölçüm alınmadı')
@@ -173,6 +194,8 @@ class HealthTab(QWidget):
             metric_label.setObjectName('metricLabel')
             metric_label.setProperty('role', 'quiet')
             value.setObjectName('metricValue')
+            value.setWordWrap(True)
+            value.setTextFormat(Qt.PlainText)
             value.setProperty('role', 'primary')
             detail.setWordWrap(True)
             detail.setProperty('role', 'quiet')
@@ -185,7 +208,8 @@ class HealthTab(QWidget):
             metrics.addWidget(card, 1)
         root.addLayout(metrics)
 
-        hardware_metrics = QHBoxLayout()
+        hardware_metrics = QBoxLayout(QBoxLayout.LeftToRight)
+        self._hardware_metrics = hardware_metrics
         hardware_metrics.setSpacing(kit.SPACING)
         self.lbl_display = QLabel('—')
         self.lbl_display_detail = QLabel('Henüz ölçüm alınmadı')
@@ -205,19 +229,42 @@ class HealthTab(QWidget):
             metric_label.setObjectName('metricLabel')
             metric_label.setProperty('role', 'quiet')
             value.setObjectName('metricValue')
+            value.setWordWrap(True)
+            value.setTextFormat(Qt.PlainText)
             value.setProperty('role', 'primary')
             detail.setWordWrap(True)
+            detail.setTextFormat(Qt.PlainText)
             detail.setProperty('role', 'quiet')
             card_layout.addWidget(metric_label)
             card_layout.addWidget(value)
             card_layout.addWidget(detail)
             hardware_metrics.addWidget(card, 1)
         root.addLayout(hardware_metrics)
-        root.addWidget(kit.hint_label('Yenile ile anlık ölçümleri alın. Bakım ve analiz sekmesinde '
-                                     'performans adımlarını ve uygulama taramalarını, Cihaz ayarları '
-                                     'sekmesinde görüntü ayarları ile arka plan izinlerini yönetebilirsiniz.'))
-        self.lbl_overview = kit.status_label('Henüz ölçüm alınmadı.')
+        summary_card = QFrame()
+        summary_card.setObjectName('contentCard')
+        summary_card.setProperty('role', 'secondary')
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(12, 10, 12, 10)
+        summary_layout.setSpacing(5)
+        summary_header = QHBoxLayout()
+        summary_title = QLabel('Ölçüm özeti')
+        summary_title.setObjectName('cardTitle')
+        summary_title.setProperty('role', 'primary')
+        summary_header.addWidget(summary_title, 1)
+        self.lbl_measurement_state = QLabel()
+        self.lbl_measurement_state.setProperty('role', 'badge')
+        summary_header.addWidget(self.lbl_measurement_state, 0, Qt.AlignRight)
+        summary_layout.addLayout(summary_header)
+        self.lbl_measurement_summary = QLabel()
+        self.lbl_measurement_summary.setWordWrap(True)
+        self.lbl_measurement_summary.setTextFormat(Qt.PlainText)
+        self.lbl_measurement_summary.setProperty('role', 'secondary')
+        summary_layout.addWidget(self.lbl_measurement_summary)
+        root.addWidget(summary_card)
+
+        self.lbl_overview = kit.status_label('')
         self.lbl_overview.setTextFormat(Qt.PlainText)
+        self.lbl_overview.hide()
         root.addWidget(self.lbl_overview)
         overview_tools = FlowLayout()
         for text, page, target in (
@@ -248,32 +295,30 @@ class HealthTab(QWidget):
             layout.addWidget(heading)
             return card, layout
 
-        advanced, av = section_card('Gelişmiş analiz ve izinler')
-        advanced_hint = QLabel('Ek taramalar ve uygulama düzeyindeki bilgileri burada inceleyin.')
+        advanced, av = section_card('Depolama analizi')
+        advanced_hint = QLabel('Depolamada en çok yer kaplayan klasörleri boyutlarıyla listeleyin.')
         advanced_hint.setProperty('role', 'quiet')
         advanced_hint.setWordWrap(True)
         av.addWidget(advanced_hint)
-        top_heading = QLabel('En çok yer kaplayanlar')
-        top_heading.setObjectName('metricLabel')
-        top_heading.setProperty('role', 'secondary')
-        av.addWidget(top_heading)
-        self.btn_top = QPushButton('Top-15 Tara')
+        self.btn_top = QPushButton('En büyük 15 klasörü tara')
         self.btn_top.clicked.connect(self._storage_top)
         top_row = QHBoxLayout()
         top_row.addWidget(self.btn_top)
         top_row.addStretch()
         av.addLayout(top_row)
         self.grid_top = kit.make_table(2, ['Klasör', 'Boyut'])
-        kit.empty_state(self.grid_top, 'Henüz tarama yok', 'Top-15 taramasını çalıştırın.')
+        kit.empty_state(self.grid_top, 'Henüz tarama yok', 'Klasör boyutlarını görmek için taramayı başlatın.')
         self.grid_top.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.grid_top.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._size_result_table(self.grid_top, 0, 190)
         av.addWidget(self.grid_top)
+        self._analysis_cards = QBoxLayout(QBoxLayout.LeftToRight)
+        self._analysis_cards.setSpacing(kit.SPACING)
+        self._analysis_cards.addWidget(advanced, 1)
+        root.addLayout(self._analysis_cards)
 
-        perm_heading = QLabel('Uygulama izinleri')
-        perm_heading.setObjectName('metricLabel')
-        perm_heading.setProperty('role', 'secondary')
-        av.addWidget(perm_heading)
+        permissions, av = section_card('Uygulama izinleri')
+        av.addWidget(kit.hint_label('Paket adını girerek verilen izinleri ve hassas izinleri inceleyin.'))
         prow = QHBoxLayout()
         self.txt_perm_pkg = QLineEdit()
         self.txt_perm_pkg.setPlaceholderText('paket adı (örn: ar.tvplayer.tv)...')
@@ -285,13 +330,13 @@ class HealthTab(QWidget):
         self.lbl_perms = QLabel('')
         self.lbl_perms.hide()
         self.lbl_perms.setWordWrap(True)
+        self.lbl_perms.setTextFormat(Qt.PlainText)
         self.lbl_perms.setTextInteractionFlags(Qt.TextSelectableByMouse)
         av.addWidget(self.lbl_perms)
+        av.addStretch(1)
+        self._analysis_cards.addWidget(permissions, 1)
 
-        auto_heading = QLabel('Otomatik başlayan uygulamalar')
-        auto_heading.setObjectName('metricLabel')
-        auto_heading.setProperty('role', 'secondary')
-        av.addWidget(auto_heading)
+        autorun, av = section_card('Başlangıç uygulamaları')
         auto_hint = QLabel('Açılış yayınlarını dinleyen paketleri tarayın; kısıtlama için ayrı onay istenir.')
         auto_hint.setProperty('role', 'quiet')
         auto_hint.setWordWrap(True)
@@ -332,20 +377,30 @@ class HealthTab(QWidget):
         flow6.addWidget(self.btn_autorun_restrict)
         flow6.addWidget(self.lbl_auto_sel)
         av.addLayout(flow6)
-        root.addWidget(advanced)
+        root.addWidget(autorun)
         root.addStretch()
         maintenance_root.addWidget(self.performance)
         maintenance_root.addWidget(advanced_page)
         maintenance_root.addStretch()
+        devices_root.addStretch()
 
     def _open_section(self, page, target):
         self.sections.setCurrentWidget(page)
-        QTimer.singleShot(
-            0,
-            lambda: page.verticalScrollBar().setValue(
-                target.mapTo(page.widget(), QPoint()).y())
-            if self.sections.currentWidget() is page else None,
-        )
+        for button, section in self._section_groups.get(page, ()):
+            active = section is target
+            button.setChecked(active)
+            section.setVisible(active)
+        QTimer.singleShot(0, lambda: page.verticalScrollBar().setValue(0)
+                          if self.sections.currentWidget() is page else None)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        direction = (QBoxLayout.TopToBottom if self.width() < 620
+                     else QBoxLayout.LeftToRight)
+        self._overview_metrics.setDirection(direction)
+        self._hardware_metrics.setDirection(direction)
+        self._analysis_cards.setDirection(
+            QBoxLayout.TopToBottom if self.width() < 900 else QBoxLayout.LeftToRight)
 
     def apply_theme(self):
         """Tema degisince: bilgi/seçim etiketleri yeni palete gecer."""
@@ -360,29 +415,55 @@ class HealthTab(QWidget):
         self._refresh_hardware()
         current_page = self.sections.currentWidget()
         if current_page is self.scroll_devices:
-            if self.core.connected and self.core.target:
+            if not self.display_panel.isHidden() and self.core.connected and self.core.target:
                 self.display_panel.read_display()
-            self.background.refresh()
-        elif current_page in (self.scroll_performance, self.scroll_overview):
-            self.performance.refresh()
+            elif not self.background.isHidden():
+                self.background.refresh()
+        elif (current_page is self.scroll_overview
+              or (current_page is self.scroll_performance and not self.performance.isHidden())):
+            if getattr(self.window, '_connection_busy', False):
+                self._update_measurement_summary('connecting')
+            elif not self.core.connected or not self.core.target:
+                self._update_measurement_summary('offline')
+            elif self.performance._busy:
+                worker = self.performance._worker
+                if worker is not None and getattr(worker, 'job_name', '') == 'Cihaz analizi':
+                    self._update_measurement_summary('loading')
+                    self._watch_measurement_worker(worker)
+            else:
+                self._update_measurement_summary('loading')
+                self._set_operation_status('')
+                self.performance.refresh()
+                worker = self.performance._worker
+                if worker is not None and getattr(worker, 'job_name', '') == 'Cihaz analizi':
+                    self._watch_measurement_worker(worker)
+                elif not self.performance._busy:
+                    self._update_measurement_summary('failure')
+        self._sync_refresh_button()
 
     def _connection_changed(self, connected, _target):
         self._generation += 1
         for worker in list(self._read_workers.values()):
             worker.cancel()
-        self._show({})
+        self._read_workers.clear()
+        self._health_measurements = {}
+        self._show({}, state='unmeasured' if connected else 'offline')
         self.lbl_display.setText('—')
         self.lbl_display_detail.setText('Henüz ölçüm alınmadı')
         self.lbl_cpu.setText('—')
         self.lbl_cpu_detail.setText('Henüz ölçüm alınmadı')
         self.grid_top.setRowCount(0)
         self.grid_auto.setRowCount(0)
+        kit.empty_state(self.grid_top, 'Henüz tarama yok', 'Mevcut cihazda depolama taraması çalıştırın.')
+        kit.empty_state(self.grid_auto, 'Henüz tarama yok', 'Mevcut cihazda başlangıç uygulamalarını tarayın.')
         self.lbl_perms.clear()
+        self.lbl_perms.hide()
         self.lbl_auto_found.clear()
         self.lbl_auto_sel.clear()
-        self.lbl_overview.setText('Bağlantı değişti. Mevcut cihazı yeniden ölçün.')
+        self._set_operation_status('')
         if connected:
             self._refresh_hardware()
+        self._sync_refresh_button()
 
     def _refresh_hardware(self):
         if not self.core.connected or not self.core.target:
@@ -398,10 +479,11 @@ class HealthTab(QWidget):
         if disp and (disp.get('width') or disp.get('sink_name')):
             w = disp.get('width', '?')
             h = disp.get('height', '?')
-            fps = disp.get('fps', 60)
+            fps = measurement(disp.get('fps'))
+            fps_text = ('{:g}'.format(fps) if fps is not None else '?')
             sink = disp.get('sink_name') or 'Android TV'
             dpi = disp.get('density') or '?'
-            self.lbl_display.setText('{}×{} @ {}Hz'.format(w, h, int(fps) if int(fps) == fps else fps))
+            self.lbl_display.setText('{}×{} @ {}Hz'.format(w, h, fps_text))
             self.lbl_display_detail.setText('{} dpi · HDMI: {}'.format(dpi, sink))
         else:
             self.lbl_display.setText('—')
@@ -427,28 +509,68 @@ class HealthTab(QWidget):
     def _read(self, name, func, on_ok):
         if name in self._read_workers:
             return
-        if not self.core.connected or not self.core.target or getattr(self.window, '_connection_busy', False):
-            self.lbl_overview.setText('Önce cihaza bağlanın.')
+
+        def closing():
+            return bool(getattr(self.window, '_closing', False)
+                        or getattr(self.window, '_close_pending', False))
+
+        if closing():
             return
-        engine, target, generation = self.core.engine, self.core.target, self._generation
+        if (not self.core.connected or not self.core.target
+                or getattr(self.window, '_connection_busy', False)):
+            self._set_operation_status('Önce cihaza bağlanın.')
+            return
+        target, generation = self.core.target, self._generation
+        try:
+            engine = self.core.engine
+        except Exception as error:
+            self._set_operation_status('Cihaz motoru hazır değil: ' + str(error))
+            return
+
+        def current():
+            return (not closing() and self.core.connected and engine is not None
+                    and self.core.engine is engine and self.core.target == target
+                    and self._generation == generation
+                    and not getattr(self.window, '_connection_busy', False))
+
+        if closing():
+            return
+        if not current():
+            self._set_operation_status('Önce cihaza bağlanın.')
+            return
+        if any(getattr(existing, 'job_name', None) == name and not existing.isFinished()
+               for existing in getattr(self.window, '_workers', ())):
+            return
+
         def do():
             worker.check_cancel()
-            if not self.core.connected or self.core.target != target or self._generation != generation:
+            if not current():
                 raise CancelledError('Bağlantı değişti.')
             return func(engine, target)
+
         worker = Worker(do)
         worker.job_name = name
         self._read_workers[name] = worker
-        current = lambda: self.core.connected and self.core.target == target and self._generation == generation
         worker.finished_ok.connect(lambda result: on_ok(result) if current() else None)
-        worker.finished.connect(lambda: self._read_workers.pop(name, None))
+
+        def cleanup():
+            if self._read_workers.get(name) is worker:
+                self._read_workers.pop(name, None)
+            if not closing():
+                self._sync_refresh_button()
+
+        worker.failed.connect(lambda error: self._set_operation_status('{}: {}'.format(name, error))
+                              if current() else None)
+        worker.finished.connect(cleanup)
         try:
             self.window._run(worker, desc=name)
-        except Exception:
-            self._read_workers.pop(name, None)
-            raise
+            self._sync_refresh_button()
+        except Exception as error:
+            cleanup()
+            if current():
+                self._set_operation_status('{} başlatılamadı: {}'.format(name, error))
 
-    def _show(self, h):
+    def _show(self, h, state=None):
         h = dict(h)
         for key in ('disk_pct', 'mem_pct'):
             value = measurement(h.get(key))
@@ -456,7 +578,16 @@ class HealthTab(QWidget):
                 h.pop(key, None)
             else:
                 h[key] = int(value)
-        self.lbl_overview.setText('Son ölçümler güncellendi.' if h else 'Cihaz ölçümleri henüz okunamadı.')
+        measurement_keys = (
+            'disk_pct', 'disk_total_kb', 'disk_avail_kb',
+            'mem_pct', 'mem_total_kb', 'mem_avail_kb',
+        )
+        self._health_measurements = {key: h[key] for key in measurement_keys if key in h}
+        measured = ('disk_pct' in h, 'mem_pct' in h)
+        if state is None:
+            state = ('measured' if all(measured) else 'partial' if any(measured) else 'failure')
+        self._update_measurement_summary(state)
+        self._set_operation_status('')
         if 'disk_pct' in h:
             self.bar_disk.setValue(h['disk_pct'])
             total = h.get('disk_total_kb')
@@ -490,6 +621,105 @@ class HealthTab(QWidget):
             self.lbl_pkg.setText('—')
             self.lbl_pkg_detail.setText('Paket verisi okunamadı')
 
+    def _update_measurement_summary(self, state):
+        states = {
+            'offline': ('Cihaz bağlı değil', 'badge'),
+            'connecting': ('Bağlantı kuruluyor…', 'badge-accent'),
+            'unmeasured': ('Ölçüm alınmadı', 'badge'),
+            'loading': ('Ölçüm alınıyor…', 'badge-accent'),
+            'failure': ('Ölçüm alınamadı', 'badge-accent'),
+            'partial': ('Kısmi ölçüm', 'badge-accent'),
+            'measured': ('Ölçüm güncellendi', 'badge-success'),
+        }
+        if state not in states:
+            state = 'failure'
+        label, role = states[state]
+        self.lbl_measurement_state.setText(label)
+        self.lbl_measurement_state.setProperty('role', role)
+        self.lbl_measurement_state.style().unpolish(self.lbl_measurement_state)
+        self.lbl_measurement_state.style().polish(self.lbl_measurement_state)
+
+        data = self._health_measurements
+        disk_pct = data.get('disk_pct')
+        mem_pct = data.get('mem_pct')
+        lines = []
+        if disk_pct is not None:
+            if disk_pct >= 95:
+                lines.append('Depolama %{} dolu. Büyük klasörleri inceleyip yer açmayı değerlendirin.'
+                             .format(disk_pct))
+            elif disk_pct >= 85:
+                lines.append('Depolama %{} dolu. Alan kullanımını gözden geçirin.'.format(disk_pct))
+            else:
+                lines.append('Depolama doluluğu: %{}.'.format(disk_pct))
+        elif state == 'partial':
+            lines.append('Depolama ölçümü okunamadı.')
+
+        if mem_pct is not None:
+            memory = 'Bellek: %{} kullanım ölçüldü'.format(mem_pct)
+            mem_avail = measurement(data.get('mem_avail_kb'))
+            if mem_avail is not None:
+                memory += ' · {} kullanılabilir'.format(_fmt_kb(mem_avail))
+            lines.append(memory + '.')
+        elif state == 'partial':
+            lines.append('Bellek ölçümü okunamadı.')
+
+        if state == 'offline':
+            text = 'Ölçüm için bir cihaza bağlanın.'
+        elif state == 'connecting':
+            text = 'Cihaz bağlantısı tamamlandığında ölçüm alınabilir.'
+        elif state == 'unmeasured':
+            text = 'Henüz ölçüm alınmadı. Yenile ile depolama ve bellek değerlerini okuyun.'
+        elif state == 'loading':
+            text = ('Depolama ve bellek verileri okunuyor.' if not lines else
+                    'Yeni ölçüm alınıyor; son ölçülen değerler: ' + ' '.join(lines))
+        elif state == 'failure':
+            text = ('Depolama ve bellek değerleri alınamadı; yeniden deneyin.' if not lines else
+                    'Yenileme başarısız; son başarılı ölçüm: ' + ' '.join(lines))
+        elif state == 'partial':
+            text = ' '.join(lines)
+        elif not lines:
+            self.lbl_measurement_state.setText(states['failure'][0])
+            self.lbl_measurement_state.setProperty('role', states['failure'][1])
+            text = 'Depolama ve bellek değerleri alınamadı; yeniden deneyin.'
+        else:
+            text = ' '.join(lines)
+        self.lbl_measurement_summary.setText(text)
+
+    def _set_operation_status(self, text):
+        self.lbl_overview.setText(text)
+        self.lbl_overview.setVisible(bool(text))
+
+    def _watch_measurement_worker(self, worker):
+        if self._summary_worker is worker:
+            return
+        self._summary_worker = worker
+        target, generation = self.core.target, self._generation
+
+        def failed(error):
+            if (self._summary_worker is worker and self.core.connected
+                    and self.core.target == target and self._generation == generation):
+                self._update_measurement_summary('failure')
+                self._set_operation_status('Cihaz analizi: {}'.format(error))
+
+        worker.failed.connect(failed)
+        worker.finished.connect(lambda: self._measurement_worker_finished(worker))
+
+    def _measurement_worker_finished(self, worker):
+        if self._summary_worker is worker:
+            self._summary_worker = None
+        QTimer.singleShot(0, self._sync_refresh_button)
+
+    def _sync_refresh_button(self):
+        if not hasattr(self, 'btn_refresh'):
+            return
+        hardware_worker = self._read_workers.get('Donanım bilgisi')
+        busy = bool(getattr(self.performance, '_busy', False))
+        busy = busy or bool(hardware_worker is not None and not hardware_worker.isFinished())
+        busy = busy or bool(getattr(self.window, '_connection_busy', False))
+        connected = bool(self.core.connected and self.core.target)
+        self.btn_refresh.setText('Bekleyin…' if busy else 'Yenile')
+        self.btn_refresh.setEnabled(connected and not busy)
+
     def _storage_top(self):
         self._read('Depolama taraması', lambda engine, target: engine.storage_top(target), self._show_top)
 
@@ -518,8 +748,8 @@ class HealthTab(QWidget):
 
     def _show_perms(self):
         pkg = self.txt_perm_pkg.text().strip()
-        if not pkg:
-            QMessageBox.information(self, 'İzinler', 'Önce paket adı yazın.')
+        if not _PACKAGE_ID_RE.fullmatch(pkg):
+            QMessageBox.information(self, 'İzinler', 'Geçerli bir paket adı yazın (ör. org.videolan.vlc).')
             return
 
         self._read('İzin okuma', lambda engine, target: engine.app_permissions(target, pkg),
@@ -642,7 +872,33 @@ class HealthTab(QWidget):
     def _autorun_restrict(self):
         from ..workers import BulkActionWorker
         from PySide6.QtCore import Qt as _Qt4
-        if not self.core.connected or getattr(self.window, '_connection_busy', False) or getattr(self.window, '_workers', []):
+
+        def closing():
+            return bool(getattr(self.window, '_closing', False)
+                        or getattr(self.window, '_close_pending', False))
+
+        if closing():
+            return
+        if (not self.core.connected or not self.core.target
+                or getattr(self.window, '_connection_busy', False)):
+            self._set_operation_status('Önce cihaza bağlanın.')
+            return
+        target, generation = self.core.target, self._generation
+        try:
+            engine = self.core.engine
+        except Exception as error:
+            self._set_operation_status('Cihaz motoru hazır değil: ' + str(error))
+            return
+
+        def current():
+            return (not closing() and self.core.connected and engine is not None
+                    and self.core.engine is engine and self.core.target == target
+                    and self._generation == generation
+                    and not getattr(self.window, '_connection_busy', False))
+
+        if closing():
+            return
+        if not current() or getattr(self.window, '_workers', []):
             self.lbl_auto_found.setText('Bağlantının kurulmasını ve diğer işlemlerin bitmesini bekleyin.')
             return
         pkgs = []
@@ -655,25 +911,77 @@ class HealthTab(QWidget):
             QMessageBox.information(self, 'Seçim', 'Önce Kısıtla sütununda işaretleyin.')
             return
         from .dialogs import confirm_action
-        target, generation = self.core.target, self._generation
         if not confirm_action(self, 'restrict', pkgs,
                               self.core.config.friendly_name):
             return
-        if not self.core.connected or self.core.target != target or self._generation != generation or getattr(self.window, '_connection_busy', False) or getattr(self.window, '_workers', []):
+        if closing():
+            return
+        if not current() or getattr(self.window, '_workers', []):
             self.lbl_auto_found.setText('Bağlantı veya işlem durumu değişti. Yeniden deneyin.')
             return
-        w = BulkActionWorker(self.core.engine, target, tuple(pkgs), True,
+        w = BulkActionWorker(engine, target, tuple(pkgs), True,
                              set(self.core.config.protected), validate_packages=True)
-        self._read_workers['Otomatik başlama kısıtlaması'] = w
-        w.finished.connect(lambda: self._read_workers.pop('Otomatik başlama kısıtlaması', None))
-        w.finished_ok.connect(lambda res: QMessageBox.information(
-            self, 'Tamam', '{} başarılı, {} atlandı.'.format(res.get('ok', 0), res.get('skip', 0)))
-            if self.core.connected and self.core.target == target and self._generation == generation else None)
+        name = 'Otomatik başlama kısıtlaması'
+        result = {'value': None, 'error': None}
+        self._read_workers[name] = w
+
+        def collect_result(value):
+            result['value'] = value
+
+        def collect_error(error):
+            result['error'] = str(error)
+
+        def report_completion():
+            if closing() or not current():
+                return
+            error = result['error']
+            if error is not None:
+                self.lbl_auto_found.setText('Kısıtlama başarısız: {}'.format(error))
+                return
+            value = result['value']
+            if not isinstance(value, dict):
+                self.lbl_auto_found.setText('Kısıtlama sonucu alınamadı.')
+                return
+            summary = '{} başarılı, {} atlandı.'.format(
+                value.get('ok', 0), value.get('skip', 0))
+            self.lbl_auto_found.setText(summary)
+            details = []
+            for item in value.get('details', ()) or ():
+                try:
+                    package, succeeded, description = item
+                except (TypeError, ValueError):
+                    continue
+                status = 'başarılı' if succeeded else 'atlandı'
+                detail = str(description).strip()
+                details.append('{}: {}{}'.format(
+                    package, status, ' ({})'.format(detail) if detail else ''))
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Information)
+            dialog.setWindowTitle('Tamam')
+            dialog.setText(summary)
+            if details:
+                dialog.setDetailedText('\n'.join(details))
+            dialog.exec()
+
+        def cleanup():
+            if self._read_workers.get(name) is w:
+                self._read_workers.pop(name, None)
+            if not closing():
+                self._sync_refresh_button()
+                QTimer.singleShot(0, report_completion)
+
+        w.finished_ok.connect(collect_result)
+        w.failed.connect(collect_error)
+        w.finished.connect(cleanup)
         try:
             self.window._run(w, desc='Sağlık: {} paket kısıtlanıyor'.format(len(pkgs)))
-        except Exception:
-            self._read_workers.pop('Otomatik başlama kısıtlaması', None)
-            raise
+        except Exception as error:
+            if self._read_workers.get(name) is w:
+                self._read_workers.pop(name, None)
+            if not closing():
+                self._sync_refresh_button()
+                if current():
+                    self.lbl_auto_found.setText('Kısıtlama başlatılamadı: {}'.format(error))
 
     def _render_perms(self, pkg, res):
         self.lbl_perms.show()

@@ -15,11 +15,11 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox, QTabWidget,
     QPlainTextEdit, QMessageBox, QStatusBar,
     QSplitter, QScrollArea, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy,
-    QSystemTrayIcon, QMenu,
+    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
 )
 
 from .. import APP_NAME, __version__
-from ..adb_engine import watchdog_interval
+from ..adb_engine import sanitize_log_text, target_private_values, watchdog_interval
 from ..config import LOG_DIR
 from ..workers import Worker
 from . import kit
@@ -32,12 +32,13 @@ from .history_tab import HistoryTab
 from .install_tab import InstallTab
 from .logcat_tab import LogcatTab
 from .network_tab import NetworkTab
+from .overview_tab import OverviewTab
 from .remote_tab import RemoteTab
 from .settings_tab import SettingsTab
 from .terminal_tab import TerminalTab
 from .theme import qss_for, level_colors_for, colors_for, conn_style
 from .icons import line_icon
-from .actions_dialog import ActionsDialog
+from .actions_dialog import ActionsDialog, search_key
 
 HOST_RE = re.compile(
     r'^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
@@ -185,8 +186,10 @@ class MainWindow(QMainWindow):
         self._level_colors = level_colors_for(dark)
         self._palette = colors_for(dark)
         if hasattr(self, '_page_details'):
-            for index, (_, _, icon_name) in enumerate(self._page_details):
-                self.navigation.item(index).setIcon(line_icon(icon_name, self._palette['muted']))
+            for row in range(self.navigation.count()):
+                item = self.navigation.item(row)
+                icon_name = self._page_details[item.data(Qt.UserRole)][2]
+                item.setIcon(line_icon(icon_name, self._palette['muted']))
         # baglanti gostergelerini yeni palete gecir (durumu koru)
         try:
             self._set_link(self.core.connected)
@@ -239,7 +242,7 @@ class MainWindow(QMainWindow):
         self.navigation.setIconSize(QSize(19, 19))
         self.navigation.setSpacing(4)
         side.addWidget(self.navigation, 1)
-        self.btn_log_toggle = QPushButton('Log')
+        self.btn_log_toggle = QPushButton('İşlem günlüğü')
         self.btn_log_toggle.setObjectName('sidebarLogToggle')
         self.btn_log_toggle.setMinimumHeight(36)
         self.btn_log_toggle.setToolTip('İşlem günlüğünü aç / kapat')
@@ -275,6 +278,13 @@ class MainWindow(QMainWindow):
         self.btn_quick.setProperty('role', 'quiet')
         self.btn_quick.clicked.connect(self.open_quick_actions)
         heading.addWidget(self.btn_quick)
+        self.btn_connection_help = QPushButton('?')
+        self.btn_connection_help.setFixedWidth(32)
+        self.btn_connection_help.setProperty('role', 'quiet')
+        self.btn_connection_help.setAccessibleName('Bağlantı yardımı')
+        self.btn_connection_help.setToolTip('Bağlantı kurma ve sorun giderme')
+        self.btn_connection_help.clicked.connect(self.open_connection_help)
+        heading.addWidget(self.btn_connection_help)
         page_header_layout.addLayout(heading)
         page_header_layout.addWidget(self.page_subtitle)
         root.addWidget(page_header)
@@ -282,7 +292,7 @@ class MainWindow(QMainWindow):
         # --- Baglanti cubugu (tek satir: hedef + baglan + durum) ---
         conn = QWidget()
         conn.setObjectName('connectionCard')
-        connection_root = QHBoxLayout(conn)
+        connection_root = QVBoxLayout(conn)
         connection_root.setContentsMargins(12, 10, 12, 10)
         connection_root.setSpacing(10)
         conn_controls = QWidget()
@@ -333,6 +343,7 @@ class MainWindow(QMainWindow):
         self.btn_disconnect.setProperty('role', 'quiet')
         self.btn_disconnect.setEnabled(False)
         self.lbl_status = QLabel('Bağlı değil')
+        self.lbl_status.setTextFormat(Qt.PlainText)
         self.lbl_status.setObjectName('connectionStatus')
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setMinimumWidth(112)
@@ -354,6 +365,7 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.btn_disconnect)
         conn_layout.addWidget(self.lbl_status)
         self.lbl_device_badge = QLabel('')
+        self.lbl_device_badge.setTextFormat(Qt.PlainText)
         self.lbl_device_badge.setObjectName('connectedDeviceBadge')
         self.lbl_device_badge.setProperty('role', 'badge-accent')
         self.lbl_device_badge.hide()
@@ -373,7 +385,10 @@ class MainWindow(QMainWindow):
         self.device_options = QWidget()
         self.device_options.setObjectName('deviceOptionsPanel')
         self.device_options.setMaximumWidth(470)
-        options_layout = QHBoxLayout(self.device_options)
+        options_root = QVBoxLayout(self.device_options)
+        options_root.setContentsMargins(0, 0, 0, 0)
+        options_root.setSpacing(5)
+        options_layout = QHBoxLayout()
         options_layout.setContentsMargins(0, 0, 0, 0)
         options_layout.setSpacing(8)
         for title, combo in (('Bağlı cihazlar', self.cmb_devices),
@@ -388,11 +403,15 @@ class MainWindow(QMainWindow):
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             group_layout.addWidget(combo)
             options_layout.addWidget(group, 1)
+        options_root.addLayout(options_layout)
+        self.lbl_device_hint = kit.hint_label('Cihaz seçimi adresi hazırlar. Bağlantı için Bağlan düğmesine basın.')
+        self.lbl_device_hint.setTextFormat(Qt.PlainText)
+        options_root.addWidget(self.lbl_device_hint)
         self.device_options.hide()
         self.btn_device_options.toggled.connect(self.device_options.setVisible)
         self.btn_device_options.toggled.connect(
             lambda visible: self.refresh_device_combo() if visible else None)
-        connection_root.addWidget(self.device_options, 0, Qt.AlignVCenter)
+        connection_root.addWidget(self.device_options)
         root.addWidget(conn)
 
         # --- Sekmeler + log (splitter: log paneli kapatilabilir) ---
@@ -417,6 +436,9 @@ class MainWindow(QMainWindow):
         self.tab_install = self._scroll_wrap(InstallTab(self.core, self))
         self.tab_install_inner = self.tab_install.widget()
         self.tab_terminal = TerminalTab(self.core, self)
+        self.tab_overview = self._scroll_wrap(OverviewTab(self.core, self))
+        self.tab_overview_inner = self.tab_overview.widget()
+        self.tabs.addTab(self.tab_overview, 'Başlangıç')
         self.tabs.addTab(self.tab_apps, u'▦ Uygulamalar')
         self.tabs.addTab(self.tab_remote, u'▣ Kumanda')
         self.tabs.addTab(self.tab_debloat_page, 'Debloat')
@@ -430,9 +452,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_settings, u'⚙ Ayarlar')
         self.tabs.tabBar().hide()
         self._page_details = [
+            ('Başlangıç', 'TV’niz için kontrol, uygulamalar ve bakım bir arada.', 'home'),
             ('Uygulamalar', 'TV uygulamalarınızı tek yerden yönetin.', 'apps'),
             ('Kumanda', 'Gezinme, ses, oynatma ve canlı ekran.', 'remote'),
-            ('Debloat', 'Gereksiz paketleri inceleyin, güvenlik düzeyine göre karar verin.', 'cleanup'),
+            ('Paket temizliği', 'Gereksiz paketleri inceleyin, güvenlik düzeyine göre karar verin.', 'cleanup'),
             ('Sağlık', 'Cihaz durumu, performans ve arka plan yönetimi.', 'health'),
             ('Terminal', 'Doğrudan ADB Shell komut satırı ve sistem teşhisleri.', 'terminal'),
             ('Geçmiş', 'İşlem kayıtları ve geri dönüş noktaları.', 'history'),
@@ -442,14 +465,24 @@ class MainWindow(QMainWindow):
             ('Ağ', 'Cihaz keşfi, LAN taraması ve bağlantı araçları.', 'network'),
             ('Ayarlar', 'Görünüm, korumalar ve tercihler.', 'settings'),
         ]
-        for index, (title, subtitle, icon) in enumerate(self._page_details):
+        # Keep daily tools together, followed by maintenance and advanced tools.
+        self._navigation_order = tuple(self.tabs.indexOf(page) for page in (
+            self.tab_overview, self.tab_remote, self.tab_apps, self.tab_install,
+            self.tab_files, self.tab_health, self.tab_network, self.tab_debloat_page,
+            self.tab_history, self.tab_logcat, self.tab_terminal, self.tab_settings,
+        ))
+        for index in self._navigation_order:
+            title, subtitle, icon = self._page_details[index]
             item = QListWidgetItem(line_icon(icon, self._palette['muted']), title)
             item.setSizeHint(QSize(148, 38))
-            item.setToolTip(subtitle)
+            key = ('Ctrl+Home' if index == 0 else
+                   'Ctrl+{}'.format(index % 10) if index <= 10 else 'Ctrl+,')
+            item.setToolTip('{} · {}'.format(subtitle, key))
+            item.setData(Qt.UserRole, index)
             self.navigation.addItem(item)
-            shortcut = QShortcut(QKeySequence('Ctrl+{}'.format((index + 1) % 10)), self)
+            shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda i=index: self.tabs.setCurrentIndex(i))
-        self.navigation.currentRowChanged.connect(self.tabs.setCurrentIndex)
+        self.navigation.currentRowChanged.connect(self._navigate_row)
         self.tabs.currentChanged.connect(self._page_changed)
         self.navigation.setCurrentRow(0)
         self._page_changed(0)
@@ -472,10 +505,13 @@ class MainWindow(QMainWindow):
         self.lbl_log_title.setStyleSheet('font-weight: bold;')
         self.txt_log = QPlainTextEdit()
         self.txt_log.setReadOnly(True)
+        self.txt_log.setAccessibleName('İşlem günlüğü kayıtları')
+        self.txt_log.setPlaceholderText('Günlük kayıtları burada görünür. Sonuç yoksa aramayı ve kayıt düzeylerini kontrol edin.')
         self.txt_log.setMaximumBlockCount(LOG_CAPACITY)
         self.txt_log.setMinimumHeight(60)
         self.txt_log.setMaximumHeight(160)
         self.btn_clear_log = QPushButton('Temizle')
+        self.btn_clear_log.setToolTip('Oturum tamponunu temizler; diske yazılmış günlük dosyalarını silmez.')
         self.btn_clear_log.setProperty('flat', True)
         self.btn_clear_log.setMaximumWidth(90)
         self.btn_save_log = QPushButton('Kaydet')
@@ -518,6 +554,27 @@ class MainWindow(QMainWindow):
         log_top.addWidget(self.btn_save_log)
         log_top.addWidget(self.btn_clear_log)
         log_v.addLayout(log_top)
+        log_tools = QHBoxLayout()
+        self.txt_log_search = QLineEdit()
+        self.txt_log_search.setPlaceholderText('Günlükte ara: hata, paket veya işlem…')
+        self.txt_log_search.setAccessibleName('İşlem günlüğünde ara')
+        self.txt_log_search.setClearButtonEnabled(True)
+        self._log_search_timer = QTimer(self)
+        self._log_search_timer.setSingleShot(True)
+        self._log_search_timer.setInterval(150)
+        self._log_search_timer.timeout.connect(self._rebuild_log_view)
+        self.txt_log_search.textChanged.connect(lambda: self._log_search_timer.start())
+        self.chk_log_follow = kit.CheckBox('Son kaydı izle')
+        self.chk_log_follow.setChecked(True)
+        self.chk_log_follow.setToolTip('Kapalıyken canlı görünüm sabit kalır; kayıtlar birikir. Açınca güncel kayıtlar gösterilir.')
+        self.chk_log_follow.toggled.connect(self._log_follow_changed)
+        self.btn_copy_log = QPushButton('Görüneni kopyala')
+        self.btn_copy_log.setToolTip('Yalnızca arama ve düzey filtreleriyle görünen kayıtları kopyalar.')
+        self.btn_copy_log.clicked.connect(self._copy_visible_log)
+        log_tools.addWidget(self.txt_log_search, 1)
+        log_tools.addWidget(self.chk_log_follow)
+        log_tools.addWidget(self.btn_copy_log)
+        log_v.addLayout(log_tools)
         log_v.addWidget(self.txt_log)
         self.log_box = log_box
         self.splitter.addWidget(log_box)
@@ -546,6 +603,9 @@ class MainWindow(QMainWindow):
         details = QPushButton('Günlüğü aç')
         details.clicked.connect(lambda: self._toggle_log_panel(True))
         error_layout.addWidget(details)
+        support = QPushButton('Destek özeti')
+        support.clicked.connect(self.open_support_summary)
+        error_layout.addWidget(support)
         dismiss = QPushButton('Kapat')
         dismiss.clicked.connect(self.error_box.hide)
         error_layout.addWidget(dismiss)
@@ -566,6 +626,7 @@ class MainWindow(QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.lbl_last_action = QLabel('Hazır')
+        self.lbl_last_action.setTextFormat(Qt.PlainText)
         self.lbl_last_action.setToolTip('Kullanicinin yaptigi son işlem')
         self.status.addWidget(self.lbl_last_action, 1)
 
@@ -592,6 +653,7 @@ class MainWindow(QMainWindow):
         self.lbl_adb = QLabel('ADB hazır' if self.core.adb_path else 'ADB bulunamadı')
         self.lbl_adb.setToolTip(self.core.adb_path or '')
         self.lbl_target = QLabel('Hedef: ' + (self.core.target or '-'))
+        self.lbl_target.setTextFormat(Qt.PlainText)
         self.lbl_link = QLabel(u'● Çevrimdışı')
         self.lbl_link.setStyleSheet(conn_style(self.core.config.dark_mode, False))
         self.status.addPermanentWidget(self.lbl_adb)
@@ -630,23 +692,7 @@ class MainWindow(QMainWindow):
     def _startup_device_check(self):
         if self._closing or not self.core.adb_path:
             return
-        def do():
-            try:
-                return self.core.engine.devices()
-            except Exception:
-                return []
-        def done(devs):
-            if self._closing:
-                return
-            self._fill_device_combo(devs)
-            target = (self.core.target or '').strip()
-            if not target and len(devs) == 1 and devs[0].get('state') == 'device':
-                cand = devs[0].get('id')
-                if cand:
-                    self._set_target_fields(cand)
-                    self._sync_target()
-                    self.append_log('Tek bağlı cihaz algılandı: ' + cand, 'INFO')
-        self._run(Worker(do), on_ok=done)
+        self.refresh_device_combo(auto_select=True)
 
     @staticmethod
     def _scroll_wrap(widget):
@@ -679,8 +725,14 @@ class MainWindow(QMainWindow):
         title, subtitle, _ = self._page_details[index]
         self.page_title.setText(title)
         self.page_subtitle.setText(subtitle)
-        if self.navigation.currentRow() != index:
-            self.navigation.setCurrentRow(index)
+        row = self._navigation_order.index(index)
+        if self.navigation.currentRow() != row:
+            self.navigation.setCurrentRow(row)
+
+    def _navigate_row(self, row):
+        item = self.navigation.item(row)
+        if item is not None:
+            self.tabs.setCurrentIndex(item.data(Qt.UserRole))
 
     def focus_target(self):
         if self.txt_target.isEnabled():
@@ -702,7 +754,7 @@ class MainWindow(QMainWindow):
         if callback is None:
             self.status.showMessage('Bu sayfada yenilenecek liste yok.', 4000)
             return
-        if self.tabs.currentIndex() in (0, 3, 6) and not self.core.connected:
+        if self.tabs.currentWidget() in (self.tab_apps, self.tab_health, self.tab_logcat) and not self.core.connected:
             self.status.showMessage('Yenilemek için önce cihaza bağlanın.', 4000)
             self.focus_target()
             return
@@ -714,24 +766,92 @@ class MainWindow(QMainWindow):
 
     def open_quick_actions(self):
         actions = []
-        for index, (title, subtitle, _) in enumerate(self._page_details):
+        for index in self._navigation_order:
+            title, subtitle, _ = self._page_details[index]
             actions.append((title, subtitle,
                             lambda i=index: self.tabs.setCurrentIndex(i), lambda: True))
         actions.extend([
+            ('Popüler TV uygulamaları', 'Ayrıntılı uygulama kataloğunu açın',
+             self.open_catalog, lambda: True),
+            ('Yerel APK kurulumu', 'Bilgisayarınızdaki APK ve çoklu paketleri kurun',
+             self.open_local_install, lambda: True),
             ('Performans ve bakım', 'Sağlık içindeki bakım araçları · Ctrl+Shift+O',
              self.open_performance, lambda: True),
             ('Sayfayı yenile', 'Geçerli sayfanın listesini yenile · F5',
              self.refresh_current_page, lambda: self._refresh_action() is not None),
             ('Cihaz adresine git', 'Bağlanılacak adresi düzenle · Ctrl+L',
              self.focus_target, lambda: self.txt_target.isEnabled()),
+            ('Bağlantı yardımı', 'Cihaz hazırlığı, ağ ve bağlantı sorunları',
+             self.open_connection_help, lambda: True),
             ('Ağdaki TV\'leri ara', 'Açık portlu Android TV\'leri otomatik tara · Ctrl+Shift+N',
              self._jump_to_network_scan, lambda: True),
             ('İşlem günlüğü', 'Son işlemleri ve hataları görüntüle',
              lambda: self._toggle_log_panel(True), lambda: True),
+            ('Destek özeti', 'Dosya yolları ve cihaz bilgisi içermeyen sürüm özeti',
+             self.open_support_summary, lambda: True),
         ])
         dialog = ActionsDialog(self, actions)
         dialog.setStyleSheet(self.styleSheet())
         dialog.exec()
+
+    def open_catalog(self):
+        self.tab_install_inner.subtabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.tab_install)
+
+    def open_support_summary(self):
+        self.tab_settings_inner._show_support_summary()
+
+    def open_connection_help(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('TV’ye bağlanma')
+        dialog.resize(540, 420)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        heading = QLabel('Bağlantıyı üç adımda hazırlayın')
+        heading.setObjectName('cardTitle')
+        layout.addWidget(heading)
+        for title, description in (
+            ('1 · TV’yi hazırlayın',
+             'TV’nin geliştirici seçeneklerinden ADB hata ayıklamayı etkinleştirin. '
+             'İlk bağlantıda TV ekranında çıkan bilgisayar iznini onaylayın.'),
+            ('2 · Doğru adresi seçin',
+             'Bilgisayar ile TV aynı yerel ağda olmalı. TV’nin ağ ayarlarında görünen '
+             'adresi ve ADB portunu girin. Port cihazda farklı gösterilmiyorsa 5555 kullanılır.'),
+            ('3 · Bağlanın',
+             'Bağlan düğmesine basın. Adresi bilmiyorsanız Ağ bölümünden cihaz arayın. '
+             'Eşleştirme kodu isteyen cihazlarda Ağ bölümündeki Eşleştir seçeneğini kullanın.'),
+        ):
+            label = QLabel(title)
+            label.setProperty('role', 'primary')
+            layout.addWidget(label)
+            detail = QLabel(description)
+            detail.setWordWrap(True)
+            detail.setProperty('role', 'secondary')
+            layout.addWidget(detail)
+        hint = QLabel('Bağlanamıyorsanız TV’nin açık olduğunu, adresin değişmediğini ve '
+                      'TV’deki izin penceresinin onaylandığını kontrol edin. '
+                      'USB bağlantısında Cihaz seç listesini kullanın.')
+        hint.setWordWrap(True)
+        hint.setProperty('role', 'quiet')
+        layout.addWidget(hint)
+        actions = QDialogButtonBox(QDialogButtonBox.Close)
+        actions.button(QDialogButtonBox.Close).setText('Kapat')
+        address_button = actions.addButton('Adres alanına git', QDialogButtonBox.ActionRole)
+        network_button = actions.addButton('Ağ araçlarını aç', QDialogButtonBox.ActionRole)
+        actions.rejected.connect(dialog.reject)
+        address_button.clicked.connect(lambda: dialog.done(10))
+        network_button.clicked.connect(lambda: dialog.done(11))
+        layout.addWidget(actions)
+        result = dialog.exec()
+        if result == 10:
+            self.focus_target()
+        elif result == 11:
+            self.tabs.setCurrentWidget(self.tab_network)
+
+    def open_local_install(self):
+        self.tab_install_inner.subtabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self.tab_install)
 
     def open_performance(self):
         self.tabs.setCurrentWidget(self.tab_health)
@@ -806,6 +926,21 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             pass
 
+    def _log_follow_changed(self, enabled):
+        if enabled:
+            self._rebuild_log_view()
+
+    def _copy_visible_log(self):
+        QGuiApplication.clipboard().setText(self.txt_log.toPlainText())
+        self.status.showMessage('Görünen günlük kayıtları kopyalandı.', 4000)
+
+    def _log_matches(self, ts, msg, level):
+        if level not in self._log_filter:
+            return False
+        terms = search_key(self.txt_log_search.text()).split()
+        text = search_key('{} {} {}'.format(ts, level, msg))
+        return all(term in text for term in terms)
+
     # ------------------------------------------------------------------
     def _daily_log_path(self):
         """Gunluk log yolu (gun bazli onbellekli).
@@ -838,11 +973,19 @@ class MainWindow(QMainWindow):
             return
         try:
             ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            safe_msg = self._safe_persisted_log_message(msg)
             with self._log_file_lock:
                 with open(path, 'a', encoding='utf-8') as f:
-                    f.write('[{}] [{}] {}\n'.format(ts, level, msg))
+                    f.write('[{}] [{}] {}\n'.format(ts, level, safe_msg))
         except OSError:
             pass
+
+    def _safe_persisted_log_message(self, msg):
+        try:
+            target = str(getattr(self.core, 'target', '') or '').strip()
+        except Exception:
+            target = ''
+        return sanitize_log_text(msg, target_private_values(target))
 
     def _tick_clock(self):
         try:
@@ -854,6 +997,7 @@ class MainWindow(QMainWindow):
         """Kullanicinin yaptigi son islemi durum cubugunda goster + logla."""
         try:
             self.lbl_last_action.setText(u'• {}'.format(text))
+            self.tab_overview_inner.record_action(text)
         except RuntimeError:
             pass
         try:
@@ -881,12 +1025,14 @@ class MainWindow(QMainWindow):
                     else:
                         msg, level = rec
                         rec_ts = ts
-                    f.write('[{}] [{}] {}\n'.format(rec_ts, level, msg))
+                    f.write('[{}] [{}] {}\n'.format(
+                        rec_ts, level, self._safe_persisted_log_message(msg)))
         except OSError as e:
             QMessageBox.critical(self, 'Log', str(e))
             return
         self.status.showMessage('Log kaydedildi: ' + path, 8000)
-        self.append_log('Log dosyaya kaydedildi: {} ({} kayıt)'.format(path, len(records)), 'INFO')
+        self.append_log('Log dosyaya kaydedildi: {} ({} kayıt)'.format(
+            os.path.basename(path), len(records)), 'INFO')
 
     def _connect_signals(self):
         self.btn_connect.clicked.connect(self.on_connect)
@@ -1122,7 +1268,7 @@ class MainWindow(QMainWindow):
                     and DEVICE_SERIAL_RE.fullmatch(target))
 
     def on_connect(self):
-        if self._connection_busy:
+        if (self._closing or self._close_pending or self._connection_busy):
             return
         t = self._target_from_fields()
         if not (self._valid_target(t)
@@ -1132,24 +1278,32 @@ class MainWindow(QMainWindow):
                 'Bir IP/host:PORT adresi veya USB/emülatör cihaz kimliği girin.\n'
                 'Örnek: 192.0.2.1:5555, tv.local:5555 ya da emulator-5554')
             return
-        if t != self.core.target and self._workers:
-            self._show_error('Cihaz değiştirilemedi', 'Çalışan işlemlerin bitmesini bekleyin veya Durdur düğmesini kullanın.')
+        if self._device_workers_running():
+            self._show_error('Bağlantı başlatılamadı', 'Çalışan işlemlerin bitmesini bekleyin veya Durdur düğmesini kullanın.')
             return
-        if t != self.core.target:
-            self._reconnect_target = None
+        self._watchdog_generation += 1
+        self._reconnect_target = None
         self.core.set_target(t)
         self.core.config.push_history(t)
         self.refresh_history_combo()
         self._connection_busy = True
+        self.btn_connect.setText('Bağlanıyor…')
+        self.tab_overview_inner.refresh()
+        self.tab_network_inner._sync_device_controls()
+        self.lbl_status.setText('TV yanıtı bekleniyor…')
         self.btn_connect.setEnabled(False)
         self.btn_disconnect.setEnabled(False)
         self.txt_target.setEnabled(False)
         self.txt_port.setEnabled(False)
         self.cmb_devices.setEnabled(False)
         self.cmb_history.setEnabled(False)
-        self.append_log('Bağlantı deneniyor: ' + t, 'INFO')
-        self._run(Worker(lambda: self.core.connect(t)),
-                   on_ok=self._after_connect, on_fail=self._after_connect_fail)
+        self.append_log('Bağlantı deneniyor', 'INFO')
+        try:
+            self._run(Worker(lambda: self.core.connect(t)),
+                      on_ok=self._after_connect, on_fail=self._after_connect_fail)
+        except Exception as error:
+            self._after_connect_fail(str(error))
+            self._show_error('Bağlantı başlatılamadı', str(error))
 
     def _auto_refresh_after_connect(self, why='baglanti kuruldu'):
         """Baglanti sonrasi Uygulamalar sekmesini otomatik yenile (tek nokta)."""
@@ -1170,12 +1324,16 @@ class MainWindow(QMainWindow):
             self.append_log('Otomatik yenileme baslatilamadi: {}'.format(e), 'WARN')
 
     def _after_connect(self, _):
+        if self._closing or self._close_pending:
+            return
+        self._watch_fail = 0
+        self._watch.setInterval(WATCHDOG_BASE_MS)
         self._finish_connection_request()
         self._reconnect_target = self.core.target
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(True)
         self.refresh_device_combo()
-        self.append_log('Baglandi: ' + self.core.target, 'INFO')
+        self.append_log('Baglanti kuruldu', 'INFO')
         # Baglanti sonrasi Uygulamalar sekmesini otomatik yenile
         self._auto_refresh_after_connect('baglanti kuruldu')
 
@@ -1184,22 +1342,38 @@ class MainWindow(QMainWindow):
         self.btn_connect.setEnabled(True)
 
     def on_disconnect(self):
-        if self._connection_busy:
+        if self._closing or self._close_pending or self._connection_busy:
             return
+        try:
+            self.tab_remote_inner.prepare_recording_disconnect()
+        except Exception as exc:
+            try:
+                self.append_log(
+                    'Ekran kaydı durdurulurken hata: {}'.format(str(exc)[:160]),
+                    'WARN')
+            except Exception:
+                pass
         self._reconnect_target = None
         self._watchdog_generation += 1
         self._disconnect_pending = True
         self._disconnect_in_progress = True
         self._connection_busy = True
+        self.btn_disconnect.setText('Kesiliyor…')
+        self.tab_overview_inner.refresh()
+        self.tab_network_inner._sync_device_controls()
+        self.lbl_status.setText('İşlemler durduruluyor…')
         # Stop device jobs before dispatching the disconnect request, so a
         # queued scan or a multi-package action cannot reconnect afterwards.
         # cancel() cannot stop an ADB subprocess already in flight; wait for
         # every tracked worker before disconnecting the shared ADB target.
+        # A display rollback is preserved so the TV is restored before disconnect.
         for worker in list(self._workers):
-            try:
-                worker.cancel()
-            except (AttributeError, RuntimeError):
-                pass
+            if not (getattr(worker, '_recording_finalize', False)
+                    or getattr(worker, '_preserve_from_cancel', False)):
+                try:
+                    worker.cancel()
+                except (AttributeError, RuntimeError):
+                    pass
             try:
                 worker.finished.connect(self._watchdog_worker_finished)
             except (AttributeError, RuntimeError):
@@ -1215,6 +1389,13 @@ class MainWindow(QMainWindow):
         self._start_disconnect()
 
     def _device_workers_running(self):
+        if getattr(self.tab_remote_inner, '_recording_starting', False):
+            return True
+        try:
+            if self.tab_health_inner.display_panel._has_pending_display_transaction():
+                return True
+        except (AttributeError, RuntimeError):
+            pass
         for worker in list(self._workers):
             try:
                 if worker.isRunning():
@@ -1247,12 +1428,22 @@ class MainWindow(QMainWindow):
         self._disconnect_pending = False
         worker = Worker(lambda: self.core.disconnect())
         worker._allow_during_disconnect = True
-        self._run(worker,
-                  on_ok=self._after_disconnect,
-                  on_fail=self._after_disconnect_fail)
+        try:
+            self._run(worker,
+                      on_ok=self._after_disconnect,
+                      on_fail=self._after_disconnect_fail)
+        except Exception as error:
+            self._after_disconnect_fail(str(error))
+            self._show_error('Bağlantı kesme başlatılamadı', str(error))
 
     def _finish_connection_request(self):
         self._connection_busy = False
+        if self._closing or self._close_pending:
+            return
+        self.tab_overview_inner.refresh()
+        self.btn_connect.setText('Bağlan')
+        self.btn_disconnect.setText('Bağlantıyı kes')
+        self.lbl_status.setText('Bağlı: ' + (self.core.target or '') if self.core.connected else 'Bağlı değil')
         self.btn_connect.setEnabled(True)
         self.btn_disconnect.setEnabled(self.core.connected)
         self.txt_target.setEnabled(True)
@@ -1260,6 +1451,13 @@ class MainWindow(QMainWindow):
         self.cmb_devices.setEnabled(True)
         self.cmb_history.setEnabled(True)
         self.tab_files_inner._update_action_buttons()
+        self.tab_health_inner._sync_refresh_button()
+        self.tab_history._sync_snap_controls()
+        self.tab_history._update_selection_state()
+        self.tab_network_inner._sync_device_controls()
+        if self.core.connected:
+            self.tab_network_inner._fetch_dns_status()
+            self.tab_health_inner._refresh_hardware()
 
     def _after_disconnect(self, _):
         self._disconnect_in_progress = False
@@ -1326,24 +1524,34 @@ class MainWindow(QMainWindow):
 
     def _watchdog(self):
         """15 sn bekçi: hedefe sessizce dokun, kopmuşsa yeniden bağlan."""
-        if self._closing or getattr(self, '_selftest', False):
+        if (self._closing or self._close_pending or self._connection_busy
+                or self._disconnect_pending or self._disconnect_in_progress
+                or getattr(self, '_selftest', False)):
             return
         target = (self.core.target or '').strip()
         if (not target or target != self._reconnect_target
-                or any(w.isRunning() for w in self._workers)):
+                or self._device_workers_running()):
             return
         generation = self._watchdog_generation
+        engine = self.core.engine
 
         def do():
+            w.check_cancel()
             try:
                 # Bekci: zaman asimi/ag hatasi gecici sayilir, bir kez tekrar dener.
-                self.core.engine.connect(target, timeout=8, deneme=2)
+                engine.connect(target, timeout=8, deneme=2,
+                               cancel_check=w.isInterruptionRequested)
+                w.check_cancel()
                 return True
             except Exception:
+                w.check_cancel()
                 return False
 
         def done(ok):
-            if (self._closing or generation != self._watchdog_generation
+            if (self._closing or self._close_pending or self._connection_busy
+                    or self._disconnect_pending or self._disconnect_in_progress
+                    or self.core.engine is not engine
+                    or generation != self._watchdog_generation
                     or target != self._reconnect_target or target != self.core.target):
                 return
             if ok:
@@ -1372,13 +1580,18 @@ class MainWindow(QMainWindow):
                 if self.core.connected and self._watch_fail >= 2:
                     self.core.connected = False
                     self.core.connection_changed.emit(False, target)
-                    self.append_log('Bekçi: bağlantı koptu, yeniden deneniyor: ' + target, 'WARN')
+                    self.append_log('Bekçi: bağlantı koptu, yeniden deneniyor', 'WARN')
 
         w = Worker(do)
         self._watchdog_worker = w
         w.finished_ok.connect(done)
         w.finished.connect(self._watchdog_worker_finished)
-        self._run(w)
+        try:
+            self._run(w)
+        except Exception as error:
+            if self._watchdog_worker is w:
+                self._watchdog_worker = None
+            self.append_log('Bağlantı yoklaması başlatılamadı: ' + str(error), 'WARN')
 
     # ------------------------------------------------------------------
     def refresh_history_combo(self):
@@ -1401,8 +1614,10 @@ class MainWindow(QMainWindow):
             self._set_target_fields(d)
             self._sync_target()
 
-    def refresh_device_combo(self):
+    def refresh_device_combo(self, auto_select=False):
         """Adb cihaz listesini yeniler (arka plan)."""
+        if getattr(self, '_device_list_worker', None) is not None:
+            return
         try:
             engine = self.core.engine
         except Exception as e:
@@ -1411,7 +1626,49 @@ class MainWindow(QMainWindow):
 
         def do():
             return engine.devices()
-        self._run(Worker(do), on_ok=self._fill_device_combo)
+        def done(devs):
+            self._fill_device_combo(devs)
+            if (auto_select and not self._closing and not self._connection_busy
+                    and not self.core.connected and not self.core.target
+                    and not self.txt_target.text().strip()
+                    and len(devs) == 1 and devs[0].get('state') == 'device'):
+                cand = devs[0].get('id')
+                if cand:
+                    self._set_target_fields(cand)
+                    self._sync_target()
+                    self.append_log('Tek bağlı cihaz algılandı', 'INFO')
+        worker = Worker(do)
+        self._device_list_worker = worker
+        self.lbl_device_hint.setText('ADB cihaz listesi yenileniyor…')
+        def cleanup():
+            if self._device_list_worker is worker:
+                self._device_list_worker = None
+        worker.finished.connect(cleanup)
+        try:
+            self._run(worker, on_ok=done,
+                      on_fail=self._device_list_failed, desc='Cihaz listesini yenileme')
+        except Exception:
+            cleanup()
+            raise
+
+    def _device_list_failed(self, _err):
+        if not self._closing:
+            self.lbl_device_hint.setText(
+                'Cihaz listesi okunamadı; önceki liste korunuyor. '
+                'Yeniden denemek için Cihaz seç alanını kapatıp açın.')
+
+    @staticmethod
+    def _device_state_info(state):
+        return {
+            'device': ('Hazır', 'Cihaz hazır. Bağlantı için Bağlan düğmesine basın.'),
+            'unauthorized': ('Yetki bekliyor', 'TV ekranındaki USB hata ayıklama iznini onaylayın; ardından listeyi yenileyin.'),
+            'offline': ('Çevrimdışı', 'TV’yi uyandırın; kablo veya ağ bağlantısını kontrol edip yeniden bağlanın.'),
+            'no permissions': ('Erişim izni yok', 'Bilgisayarın USB cihazına erişim iznini ve ADB sürücüsünü kontrol edin.'),
+            'bootloader': ('Önyükleyici', 'Normal TV yönetimi için cihazı Android sistemine başlatın.'),
+            'recovery': ('Kurtarma modu', 'Normal TV yönetimi için cihazı Android sistemine başlatın.'),
+            'sideload': ('Yan yükleme modu', 'Normal TV yönetimi için yan yükleme modundan çıkın.'),
+            'rescue': ('Kurtarma modu', 'Normal TV yönetimi için cihazı Android sistemine başlatın.'),
+        }.get(state, ('Bilinmeyen durum', 'Cihazın Android sisteminde açık ve hata ayıklama izninin etkin olduğunu kontrol edin.'))
 
     def _fill_device_combo(self, devs):
         if self._closing:
@@ -1422,21 +1679,32 @@ class MainWindow(QMainWindow):
             return
         self.cmb_devices.blockSignals(True)
         self.cmb_devices.clear()
-        self.cmb_devices.addItem('Seç...', '')
+        self.cmb_devices.addItem('Cihaz seçin' if devs else 'Cihaz bulunamadı', '')
         for d in devs:
-            self.cmb_devices.addItem('{}  [{}]'.format(d['id'], d['state']), d['id'])
+            label, hint = self._device_state_info(d['state'])
+            self.cmb_devices.addItem('{} · {}'.format(label, d['id']), d['id'])
+            index = self.cmb_devices.count() - 1
+            self.cmb_devices.setItemData(index, hint, Qt.ToolTipRole)
         if cur:
             for i in range(self.cmb_devices.count()):
                 if self.cmb_devices.itemData(i) == cur:
                     self.cmb_devices.setCurrentIndex(i)
                     break
         self.cmb_devices.blockSignals(False)
+        idx = self.cmb_devices.currentIndex()
+        self.lbl_device_hint.setText(
+            self.cmb_devices.itemData(idx, Qt.ToolTipRole) if idx > 0 else
+            ('Cihaz seçimi adresi hazırlar. Bağlantı için Bağlan düğmesine basın.' if devs else
+             'ADB listesinde cihaz yok. USB bağlantısını ve hata ayıklama iznini kontrol edin veya Ağda Ara düğmesini kullanın.'))
 
     def _on_device_picked(self, idx):
+        if self._connection_busy:
+            return
         d = self.cmb_devices.itemData(idx)
         if d:
             self._set_target_fields(d)
             self._sync_target()
+            self.lbl_device_hint.setText(self.cmb_devices.itemData(idx, Qt.ToolTipRole))
 
     # ------------------------------------------------------------------
     def append_log(self, msg, level='INFO'):
@@ -1471,6 +1739,11 @@ class MainWindow(QMainWindow):
             return
         if not new_items:
             return
+        if not self.chk_log_follow.isChecked():
+            # Keep the visible document stable even when its bounded backing
+            # buffer evicts old records. Re-enable follow to catch up.
+            self._last_drawn = total
+            return
         try:
             html = []
             for rec in new_items:
@@ -1479,7 +1752,7 @@ class MainWindow(QMainWindow):
                 else:  # eski (msg, level) kuyruk kayitlariyla uyumluluk
                     msg, level = rec
                     ts = '??:??:??.???'
-                if level not in self._log_filter:
+                if not self._log_matches(ts, msg, level):
                     continue
                 pal = getattr(self, '_palette', None) or colors_for(self.core.config.dark_mode)
                 color = self._level_colors.get(level, pal['text'])
@@ -1491,8 +1764,12 @@ class MainWindow(QMainWindow):
                         pal['text'], self._esc(msg)))
             if html:
                 # tek appendHtml: 147 satirlik tik degisiminde bile tek duzen
+                scroll_position = self.txt_log.verticalScrollBar().value()
                 self.txt_log.appendHtml(''.join('<p>{}</p>'.format(line) for line in html))
-                self.txt_log.moveCursor(QTextCursor.End)
+                if self.chk_log_follow.isChecked():
+                    self.txt_log.moveCursor(QTextCursor.End)
+                else:
+                    self.txt_log.verticalScrollBar().setValue(scroll_position)
             self._last_drawn = total
         except RuntimeError:
             # pencere kapanirken widget silinmis olabilir
@@ -1507,6 +1784,7 @@ class MainWindow(QMainWindow):
         gunceller. Boylece tik ac/kapa sonrasi kayip olmaz.
         """
         try:
+            scroll_position = self.txt_log.verticalScrollBar().value()
             self.txt_log.clear()
         except RuntimeError:
             return
@@ -1523,7 +1801,7 @@ class MainWindow(QMainWindow):
                 else:
                     msg, level = rec
                     ts = '??:??:??.???'
-                if level not in self._log_filter:
+                if not self._log_matches(ts, msg, level):
                     continue
                 pal = getattr(self, '_palette', None) or colors_for(self.core.config.dark_mode)
                 color = self._level_colors.get(level, pal['text'])
@@ -1535,7 +1813,10 @@ class MainWindow(QMainWindow):
                         pal['text'], self._esc(msg)))
             if html:
                 self.txt_log.appendHtml(''.join('<p>{}</p>'.format(line) for line in html))
-                self.txt_log.moveCursor(QTextCursor.End)
+                if self.chk_log_follow.isChecked():
+                    self.txt_log.moveCursor(QTextCursor.End)
+                else:
+                    self.txt_log.verticalScrollBar().setValue(scroll_position)
             self._last_drawn = len(records)
         except RuntimeError:
             pass
@@ -1548,13 +1829,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _short_cmd(cmd):
-        """ADB komutunu okunabilir kisa bicime indir (hedef tekrarini at)."""
+        """ADB komutunu okunabilir kisalt; cihaz/hedef bilgilerini gizle."""
         parts = [str(a) for a in (cmd or [])]
-        # ['-s', hedef, 'shell', ...] -> 'shell ...'
+        # Cihaz seri numarası/IP'sini işlem izine ekleme.
         if len(parts) >= 3 and parts[0] == '-s' and parts[2] == 'shell':
             parts = parts[3:]
         elif len(parts) >= 2 and parts[0] == '-s':
-            parts = [parts[1]] + parts[2:]
+            parts = parts[2:]
+        if parts and parts[0] in ('connect', 'disconnect', 'pair'):
+            parts = parts[:1] + ['******']
         text = ' '.join(parts)
         if len(text) > 160:
             text = text[:157] + '...'
@@ -1585,7 +1868,8 @@ class MainWindow(QMainWindow):
         gorur; iptal edilen is 'kullanici durdurdu' raporu uretir.
         """
         self.tab_remote_inner._stop_hold()
-        running = [w for w in list(self._workers) if w.isRunning()]
+        running = [w for w in list(self._workers)
+                   if w.isRunning() and not getattr(w, '_preserve_from_cancel', False)]
         if not running:
             return
         try:
@@ -1650,13 +1934,22 @@ class MainWindow(QMainWindow):
         if on_ok:
             worker.finished_ok.connect(on_ok)
         if track:
-            worker.finished_ok.connect(lambda _result: self.status.showMessage('{} tamamlandı.'.format(label_str), 4000)
-                                       if not self._closing and track else None)
+            def _record_success(_result):
+                if not self._closing:
+                    message = '{} tamamlandı.'.format(label_str)
+                    self.status.showMessage(message, 4000)
+                    if desc or label_str != 'Arka plan isi':
+                        self.tab_overview_inner.record_action(message)
+            worker.finished_ok.connect(_record_success)
 
         def _handle_fail(err):
             if not is_silent:
                 self.append_log('✘ {} başarısız: {}'.format(label_str, str(err)), 'ERROR')
-                if 'kullanıcı durdurdu' not in str(err).lower():
+                if not self._closing:
+                    self.tab_overview_inner.record_action('{} başarısız.'.format(label_str))
+                if not any(text in str(err).casefold() for text in (
+                        'kullanıcı durdurdu', 'kullanici durdurdu', 'bağlantı değişti',
+                        'baglanti degisti')):
                     self._show_error(label_str, str(err))
             if on_fail:
                 on_fail(str(err))
@@ -1699,6 +1992,8 @@ class MainWindow(QMainWindow):
                     self.btn_stop.hide()
             except Exception:
                 pass
+            if self._disconnect_pending and not self._closing:
+                QTimer.singleShot(0, self._watchdog_worker_finished)
         try:
             worker.finished.connect(_cleanup)
         except Exception:
@@ -1711,7 +2006,11 @@ class MainWindow(QMainWindow):
                     self.btn_stop.show()
             except Exception:
                 pass
-        worker.start()
+        try:
+            worker.start()
+        except Exception:
+            _cleanup()
+            raise
 
     def _finalize_close(self):
         """Workers are stopped; release UI timers and save settings before closing."""
@@ -1722,7 +2021,8 @@ class MainWindow(QMainWindow):
         # 1. Timer'ları durdur (kapanış sırasında panele/sinyale dokunulmasın)
         for _t in (getattr(self, '_log_timer', None),
                    getattr(self, '_clock', None),
-                   getattr(self, '_watch', None)):
+                   getattr(self, '_watch', None),
+                   getattr(self.tab_remote_inner, '_scrcpy_poll_timer', None)):
             try:
                 if _t is not None:
                     _t.stop()
@@ -1786,13 +2086,54 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
 
-        # Finish an active device recording before the window and its worker
-        # registry are torn down.
+        # Keep a display change alive through its confirmation or rollback;
+        # cancelling it here could hide a successful change before restoration.
         try:
-            if getattr(self.tab_remote_inner, '_recording_remote_path', None):
-                self.tab_remote_inner._stop_screen_recording(show_saved_dialog=False)
-        except Exception:
+            display = self.tab_health_inner.display_panel
+            if display._has_pending_display_transaction():
+                display._close_after_transaction = True
+                self.status.showMessage(
+                    'Ekran ayarı güvenle tamamlanınca veya geri alınınca pencere kapanacak.')
+                e.ignore()
+                return
+        except (AttributeError, RuntimeError):
             pass
+
+        # Wait until a pending recording start has settled before disconnecting
+        # its completion callback during close.
+        try:
+            if not self.tab_remote_inner.prepare_recording_close():
+                e.ignore()
+                QTimer.singleShot(100, self.close)
+                return
+        except Exception as exc:
+            try:
+                self.append_log(
+                    'Ekran kaydı kapanış hazırlığında hata: {}'.format(
+                        str(exc)[:160]), 'WARN')
+            except Exception:
+                pass
+
+        try:
+            scrcpy_stopped = self.tab_remote_inner.prepare_scrcpy_close()
+        except Exception as exc:
+            scrcpy_stopped = None
+            try:
+                self.append_log(
+                    'Scrcpy kapanışında hata: {}'.format(str(exc)[:160]), 'WARN')
+            except Exception:
+                pass
+        if scrcpy_stopped is False:
+            self.status.showMessage('Scrcpy kapatılıyor; pencere kapanınca uygulama çıkacak.')
+            QTimer.singleShot(100, self.close)
+            e.ignore()
+            return
+        if scrcpy_stopped is None:
+            try:
+                self.append_log(
+                    'Scrcpy 4 saniyede kapanmadı; uygulama kapanışı sürdürüldü.', 'WARN')
+            except Exception:
+                pass
 
         running = []
         for worker in list(self._workers):
@@ -1804,6 +2145,8 @@ class MainWindow(QMainWindow):
 
         if running:
             self._close_pending = True
+            self._watchdog_generation += 1
+            self._watch.stop()
             self.status.showMessage(
                 'Çalışan işler durduruluyor; tamamlanınca pencere kapanacak.')
             try:
@@ -1825,6 +2168,8 @@ class MainWindow(QMainWindow):
                 except (AttributeError, RuntimeError, TypeError):
                     pass
                 if getattr(worker, 'preserve_on_close', False):
+                    worker.failed.connect(
+                        lambda error: self.append_log('Kapanış sırasında aktarım başarısız: ' + str(error), 'ERROR'))
                     try:
                         worker.finished.connect(self._finish_close_when_workers_stop)
                     except (AttributeError, RuntimeError):
