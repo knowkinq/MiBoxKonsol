@@ -1,5 +1,9 @@
 # Değişiklik günlüğü
 
+## [1.4.1] - 2026-10-16
+
+- Bağlantı kurulurken ekran bilgisi sorgusu erken uyarı göstermeden bekler; bağlantı tamamlanınca sorgu otomatik başlar.
+
 ## [1.4.0] - 2026-10-16
 
 - Başarısız terminal komutlarının standart çıktı ve hata ayrıntıları korunur; komut ve cihaz bilgileri günlüklerde maskeli kalır. Onaysız görüntü ayarı geri alınırken bağlantı kesme ve genel durdurma geri alma işi tamamlanana kadar bekler.

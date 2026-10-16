@@ -212,8 +212,10 @@ class DisplayPanel(QWidget):
             return
         if self._read_worker is not None:
             return
-        if (not self.core.connected or not self.core.target
-                or getattr(self.window, '_connection_busy', False)):
+        if getattr(self.window, '_connection_busy', False):
+            self.lbl_status.setText('Bağlantı tamamlanınca ekran bilgileri okunacak.')
+            return
+        if not self.core.connected or not self.core.target:
             QMessageBox.information(self, 'Bağlantı Yok', 'Ekran bilgilerini okumak için önce cihaza bağlanın.')
             return
         target = self.core.target

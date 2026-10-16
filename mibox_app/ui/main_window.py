@@ -1458,6 +1458,7 @@ class MainWindow(QMainWindow):
         if self.core.connected:
             self.tab_network_inner._fetch_dns_status()
             self.tab_health_inner._refresh_hardware()
+            self.tab_health_inner.display_panel.read_display()
 
     def _after_disconnect(self, _):
         self._disconnect_in_progress = False
