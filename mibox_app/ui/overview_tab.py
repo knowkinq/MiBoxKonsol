@@ -5,8 +5,14 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-    QVBoxLayout, QWidget,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
 from . import kit
@@ -159,7 +165,10 @@ class OverviewTab(QWidget):
         card = QFrame()
         card.setObjectName('contentCard')
         card.setMinimumHeight(142)
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Yatay Ignored: kartlarin ic minimumu ortak minimumu buyutup dar
+        # pencerede 2/1 sutun esiklerini ulasilamaz kiliyordu; boylece
+        # _reflow_cards asagi yonde de calisir (test yakaladi).
+        card.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(7)

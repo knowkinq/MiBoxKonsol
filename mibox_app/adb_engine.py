@@ -12,15 +12,15 @@ import os
 import posixpath
 import re
 import shlex
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
 import unicodedata
-from urllib.parse import urlsplit
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
@@ -163,19 +163,23 @@ def sanitize_input_text(text):
     """'adb shell input text' icin guvenli metin uretir.
 
     - Turkce karakterleri ASCII karsiligina indirger.
-    - Bosluk -> %s; harf/rakam ve -_.,:/@+= disindaki her sey atilir
-      (shell metakarakterleri komut kirilmasina yol acardi).
+    - Bosluk -> %s; normal metinde harf/rakam ve -_.,:/@+= korunur.
+    - HTTP(S) URL'lerinde sorgu ve yuzde kodlamasi dahil URL sembolleri
+      korunur; input_text sonucu Android shell icin tirnaklar.
     - ASCII disi kalan karakterleri atar (cihazda '?' olusmamasi icin).
     """
+    symbols = _INPUT_SAFE_SYMBOLS
+    if re.fullmatch(r'https?://[^\s]+', text, re.I):
+        symbols = symbols | set("!#$%&'()*;?[]~")
     out = []
     for ch in text:
         if ch in _TR_CHARS:
             out.append(_TR_CHARS[ch])
         elif ch == ' ':
             out.append('%s')
-        elif ch.isascii() and (ch.isalnum() or ch in _INPUT_SAFE_SYMBOLS):
+        elif ch.isascii() and (ch.isalnum() or ch in symbols):
             out.append(ch)
-        # diger her sey (%, shell metakarakterleri, emoji, unicode) atilir
+        # Desteklenmeyen karakterler atilir.
     return ''.join(out)
 
 
@@ -506,7 +510,13 @@ class AdbEngine:
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
                 deadline = _time.monotonic() + max(0.0, float(timeout))
                 while True:
-                    if cancel_check():
+                    cancellation_error = None
+                    try:
+                        cancelled = cancel_check()
+                    except BaseException as exc:
+                        cancelled = True
+                        cancellation_error = exc
+                    if cancelled:
                         if proc.poll() is None:
                             try:
                                 proc.terminate()
@@ -523,6 +533,8 @@ class AdbEngine:
                             except OSError:
                                 pass
                             proc.communicate()
+                        if cancellation_error is not None:
+                            raise cancellation_error
                         self._trace(args, False,
                                     int((_time.time() - t0) * 1000),
                                     'kullanıcı durdurdu',
@@ -904,7 +916,9 @@ class AdbEngine:
             else:
                 for key in [k for k in self._pkg_cache if k[0] == target]:
                     del self._pkg_cache[key]
-            self._pkg_cache_gen += 1
+            # Sinif uzerindeki sayaci artir; self._pkg_cache_gen += 1 ornek
+            # niteligi yaratir ve jenerasyon diger orneklerle paylasilmaz.
+            AdbEngine._pkg_cache_gen += 1
 
     @classmethod
     def clear_pkg_cache_for_tests(cls):
@@ -1219,7 +1233,8 @@ class AdbEngine:
         result = self.shell(target, 'cmd', 'appops', 'get', '--user', str(uid),
                             pkg, op, timeout=10)
         text = '{} {}'.format(result.output, result.error).strip()
-        if result.exit_code != 0 or re.search(r'error|exception|unknown|denied', text, re.I):
+        if result.exit_code != 0 or re.search(
+                r'\b(?:error|exception|unknown|denied)\b', text, re.I):
             raise AdbError('Arka plan izni okunamadı ({}): {}'.format(pkg, text))
         match = re.search(
             re.escape(op) + r'\s*:\s*(allow|ignore|default|deny|errored|foreground)\b',
@@ -1443,6 +1458,142 @@ class AdbEngine:
                 return r
         raise AdbError('Kaldırılamadı ({}): {}'.format(pkg, text.strip() or 'bilinmeyen hata'))
 
+    def is_orphaned_package_registration(self, target, pkg, cancel_check=None):
+        """Return True only for a package-manager entry with no installed APK.
+
+        This is deliberately a strict, read-only check for the narrow
+        INSTALL_FAILED_UPDATE_INCOMPATIBLE recovery path. Any failed or
+        ambiguous probe raises instead of authorizing removal.
+        """
+        pkg = str(pkg or '').strip()
+        if not is_valid_package(pkg):
+            raise AdbError('Geçersiz paket adı: {!r}'.format(pkg))
+
+        def probe(*command, allow_empty_missing=False):
+            if cancel_check is not None:
+                cancel_check()
+            result = self.shell(target, *command, timeout=20,
+                                cancel_check=cancel_check)
+            if ((result.exit_code != 0 or (result.error or '').strip())
+                    and not (allow_empty_missing and result.exit_code == 1
+                             and not (result.output or '').strip()
+                             and not (result.error or '').strip())):
+                raise PackageStateUnknownError(
+                    'Paket durumu doğrulanamadı ({}): {}'.format(
+                        ' '.join(command),
+                        (result.error or result.output or 'ADB sorgusu başarısız').strip()))
+            if cancel_check is not None:
+                cancel_check()
+            return result.output or ''
+
+        installed = set(self._parse_package_list(
+            probe('pm', 'list', 'packages')))
+        if pkg in installed:
+            return False
+
+        retained = set(self._parse_package_list(
+            probe('pm', 'list', 'packages', '-u')))
+        if pkg not in retained:
+            return False
+
+        paths = [line.strip() for line in probe(
+            'pm', 'path', pkg, allow_empty_missing=True).splitlines()
+                 if line.strip()]
+        if paths:
+            if all(line.startswith('package:') and line[len('package:'):].strip()
+                   for line in paths):
+                return False
+            raise PackageStateUnknownError(
+                'pm path {} belirsiz sonuç verdi.'.format(pkg))
+
+        dump = probe('dumpsys', 'package', pkg)
+        header = re.search(
+            r'(?m)^\s*Package\s+\[\s*{}\s*\]\s*'
+            r'(?:\([^\r\n)]*\))?\s*:\s*$'.format(re.escape(pkg)), dump)
+        if not header:
+            raise PackageStateUnknownError(
+                'dumpsys package {} kaydı doğrulanamadı.'.format(pkg))
+        next_header = re.search(r'(?m)^\s*Package\s+\[', dump[header.end():])
+        section = dump[header.end():]
+        if next_header:
+            section = section[:next_header.start()]
+        if not re.search(r'(?m)^\s*pkg\s*=\s*null\s*$', section):
+            return False
+        if not re.search(
+                r'(?m)^\s*User\s+0\s*:[^\r\n]*\binstalled\s*=\s*true\b',
+                section):
+            return False
+
+        code_paths = re.findall(
+            r'(?m)^\s*codePath\s*=\s*([^\r\n]+?)\s*$', section)
+        if len(code_paths) != 1 or not code_paths[0].startswith('/'):
+            raise PackageStateUnknownError(
+                'dumpsys package {} codePath doğrulanamadı.'.format(pkg))
+        try:
+            code_path = safe_remote_path(code_paths[0])
+            quoted_path = _quoted_remote_path(code_path)
+        except AdbError as exc:
+            raise PackageStateUnknownError(
+                'dumpsys package {} güvenli bir codePath vermedi.'.format(pkg)) from exc
+        # Adopted storage may be temporarily unmounted. Its APK path then
+        # looks missing even though the package registration and user data are
+        # valid; never offer an all-user uninstall based on that observation.
+        if not code_path.startswith('/data/app/'):
+            raise PackageStateUnknownError(
+                'Paketin APK yolu dahili /data/app alanında değil; depolama durumu '
+                'doğrulanamadığı için otomatik kayıt onarımı yapılmadı.')
+        if cancel_check is not None:
+            cancel_check()
+        path_result = self.shell(target, 'ls', '-ld', quoted_path, timeout=20,
+                                 cancel_check=cancel_check,
+                                 hide_from_trace=True)
+        if cancel_check is not None:
+            cancel_check()
+        path_text = '{} {}'.format(path_result.output or '', path_result.error or '')
+        if path_result.exit_code == 0 and not (path_result.error or '').strip():
+            return False
+        missing_path = (path_result.exit_code != 0
+                        and code_path in path_text
+                        and re.search(r'\bNo such file or directory\b', path_text, re.I)
+                        and not re.search(
+                            r'\b(permission denied|not permitted|operation not permitted)\b',
+                            path_text, re.I))
+        if not missing_path:
+            raise PackageStateUnknownError(
+                'Uygulama dosyasının codePath varlığı doğrulanamadı.')
+        return True
+
+    def uninstall_package_full(self, target, pkg, cancel_check=None):
+        """Fully uninstall a package, removing its app data (never uses ``-k``)."""
+        pkg = str(pkg or '').strip()
+        if not is_valid_package(pkg):
+            raise AdbError('Geçersiz paket adı: {!r}'.format(pkg))
+        if cancel_check is not None:
+            cancel_check()
+        try:
+            result = self.shell(target, 'pm', 'uninstall', pkg, timeout=60,
+                                cancel_check=cancel_check)
+            text = '{} {}'.format(result.output or '', result.error or '')
+            if (result.exit_code != 0 or not re.search(r'\bSuccess\b', text)
+                    or re.search(r'\b(error|failed|failure|denied|not allowed)\b',
+                                 text, re.I)):
+                raise AdbError('Tam kaldırma başarısız ({}): {}'.format(
+                    pkg, text.strip() or 'bilinmeyen hata'))
+            if cancel_check is not None:
+                cancel_check()
+            verified = self.shell(target, 'pm', 'list', 'packages', '-u',
+                                  timeout=20, cancel_check=cancel_check)
+            if verified.exit_code != 0 or (verified.error or '').strip():
+                raise PackageStateUnknownError(
+                    'Tam kaldırma sonrası paket kaydı doğrulanamadı: {}'.format(
+                        (verified.error or verified.output or 'pm list packages -u başarısız').strip()))
+            if pkg in set(self._parse_package_list(verified.output)):
+                raise AdbError(
+                    'Tam kaldırma başarılı görünse de {} -u paket listesinde kaldı.'.format(pkg))
+            return result
+        finally:
+            self.invalidate_pkg_cache(target)
+
     def install_existing(self, target, pkg, user_id=0):
         """Geri yukleme (UAD: cmd package install-existing --user USER_ID).
 
@@ -1656,7 +1807,17 @@ class AdbEngine:
         safe = sanitize_input_text(text)
         if not safe:
             raise AdbError('Gonderilecek geçerli karakter yok (özel semboller atildi).')
-        return self.shell(target, 'input', 'text', safe, timeout=10)
+        # ADB joins shell arguments; quoting must also protect URL '&', '?',
+        # quotes and shell expansion on the Android side. For literal URL
+        # '%s', separate '%' and 's' so Android input cannot turn it into space.
+        chunks = (re.split(r'(?<=%)(?=s)', safe)
+                  if re.fullmatch(r'https?://[^\s]+', text, re.I) else [safe])
+        for chunk in chunks:
+            result = self.shell(target, 'input', 'text', shlex.quote(chunk), timeout=10)
+            if result.exit_code != 0:
+                raise AdbError('Metin gönderilemedi: {}'.format(
+                    result.error or 'ADB input text başarısız'))
+        return result
 
     def tap(self, target, x, y, timeout=10):
         """Ekranda belirli bir koordinata dokunur (input tap X Y)."""
@@ -1715,9 +1876,13 @@ class AdbEngine:
                                timeout=timeout)
                 resolved = next((line.strip() for line in (r.output or '').splitlines()
                                  if home_pkg_of(line.strip()) == pkg), None)
-                if r.exit_code == 0 and resolved:
-                    r2 = self.shell(target, 'am', 'start', '--user', str(uid), '-n', resolved,
-                                    timeout=timeout)
+                if (r.exit_code == 0 and resolved
+                        and is_valid_home_component(resolved)):
+                    # Cihaz cikmasi shell'e tiriaksiz donerse '$' gibi
+                    # karakterler cihazda yeniden genisletilir; sozdizimini
+                    # dogrulayip tek shell kelimesi olarak quote'la.
+                    r2 = self.shell(target, 'am', 'start', '--user', str(uid), '-n',
+                                    shlex.quote(resolved), timeout=timeout)
                     if (r2.exit_code == 0 and not re.search(
                             r'error|exception|failed',
                             '{} {}'.format(r2.output or '', r2.error or ''), re.I)):
@@ -1729,6 +1894,26 @@ class AdbEngine:
     def launch_app(self, target, pkg, timeout=15, user_id=0):
         """Uygulamayı TV ekranında başlatır (launch_resolved takma adı)."""
         return self.launch_resolved(target, pkg, timeout=timeout, user_id=user_id)
+
+    def open_play_store(self, target, pkg, timeout=15):
+        """TV'de paketin Play Store sayfasını açar (market://details?id=...).
+
+        Paket adı doğrulanır (kullanıcı eki ':' reddedilir); URI yalnızca
+        doğrulanmış paketten kurulduğu için shell'e ham kullanıcı girdisi
+        gitmez.
+        """
+        pkg = '' if pkg is None else str(pkg).strip()
+        if not is_valid_package(pkg) or ':' in pkg:
+            raise AdbError('Geçersiz paket adi: {!r}'.format(pkg))
+        uri = 'market://details?id={}'.format(pkg)
+        r = self.shell(target, 'am', 'start', '-a',
+                       'android.intent.action.VIEW', '-d', uri, timeout=timeout)
+        text = '{} {}'.format(r.output or '', r.error or '').strip()
+        if r.exit_code != 0 or re.search(
+                r'^\s*(?:error|exception|failed|unable)\b', text, re.I | re.M):
+            raise AdbError('Play Store sayfası açılamadı ({}): {}'.format(
+                pkg, text or 'bilinmeyen hata'))
+        return r
 
     # ------------------------------------------------------------------
     # Donanim / sistem
@@ -2480,8 +2665,8 @@ class AdbEngine:
                                 grant_perms=False, allow_downgrade=False,
                                 cancel_check=None):
         """Use a single explicitly universal APK when bundletool is absent."""
-        import zipfile
         import tempfile as _tempfile
+        import zipfile
         try:
             with zipfile.ZipFile(archive_path) as archive:
                 members = [entry for entry in archive.infolist()
@@ -2540,9 +2725,8 @@ class AdbEngine:
                 grant_perms=grant_perms, allow_downgrade=allow_downgrade,
                 cancel_check=cancel_check)
         if isinstance(apk_path, str) and apk_path.lower().endswith(('.apkm', '.xapk')):
-            import zipfile
             import tempfile
-            import shutil
+            import zipfile
             try:
                 with zipfile.ZipFile(apk_path) as archive:
                     members = [entry for entry in archive.infolist()
@@ -2641,7 +2825,10 @@ class AdbEngine:
         if not is_valid_home_component(comp):
             raise AdbError('Geçersiz HOME bileseni: {!r}'.format(component))
         want = comp.split('/')[0]
-        r = self.shell(target, 'cmd', 'package', 'set-home-activity', comp,
+        # '$' icerebilen sinif adlarinin cihaz shell'inde genisletilmemesi
+        # icin bilesen tek shell kelimesi olarak quote'lanir.
+        quoted_comp = shlex.quote(comp)
+        r = self.shell(target, 'cmd', 'package', 'set-home-activity', quoted_comp,
                        timeout=timeout)
         text = '{} {}'.format(r.output, r.error)
         if r.exit_code != 0:
@@ -2663,7 +2850,7 @@ class AdbEngine:
                 'Kurulum sihirbazi devre dışı bırakıldı: ' + blocker)
         except AdbError as e:
             self.last_home_notes.append(str(e))
-        r2 = self.shell(target, 'cmd', 'package', 'set-home-activity', comp,
+        r2 = self.shell(target, 'cmd', 'package', 'set-home-activity', quoted_comp,
                         timeout=timeout)
         cur2 = self.home_activity(target)
         if home_pkg_of(cur2) == want:
@@ -2955,7 +3142,7 @@ class AdbEngine:
         try:
             df = self.shell(target, 'df', '/data', timeout=timeout).output
             # ör: /dev/block/...  12345678  2345678  9999999  19% /data
-            line = [l for l in df.splitlines() if '/data' in l]
+            line = [ln for ln in df.splitlines() if '/data' in ln]
             line = line[-1] if line else ''
             parts = line.split()
             if len(parts) >= 5:
@@ -3013,7 +3200,7 @@ class AdbEngine:
         try:
             df = self.shell(target, 'df', '/data', timeout=timeout).output
             # son satirdaki kullanim % ve bos alan
-            lines = [l for l in df.splitlines() if '/data' in l]
+            lines = [ln for ln in df.splitlines() if '/data' in ln]
             info['disk_data'] = lines[-1].strip() if lines else df.strip().splitlines()[-1]
         except AdbError:
             info['disk_data'] = '?'
@@ -3378,7 +3565,7 @@ class AdbEngine:
                     continue
                 full_path = '/storage/' + name
                 df_r = self.shell(target, 'df', full_path, timeout=5)
-                lines = [l for l in (df_r.output or '').splitlines() if full_path in l]
+                lines = [ln for ln in (df_r.output or '').splitlines() if full_path in ln]
                 total_kb, avail_kb = 0, 0
                 if lines:
                     parts = lines[-1].split()

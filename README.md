@@ -11,7 +11,7 @@ Mi Box, Mi TV Stick ve Android TV için ADB tabanlı masaüstü yönetim merkezi
 <br>
 
 [![Latest Release](https://img.shields.io/github/v/release/maventra-dev/MiBoxKonsol?display_name=tag&sort=semver)](https://github.com/maventra-dev/MiBoxKonsol/releases/latest)
-[![Build](https://img.shields.io/github/actions/workflow/status/maventra-dev/MiBoxKonsol/build-release.yml?branch=master&label=Windows%20build)](https://github.com/maventra-dev/MiBoxKonsol/actions/workflows/build-release.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/maventra-dev/MiBoxKonsol/release.yml?branch=master&label=Windows%20build)](https://github.com/maventra-dev/MiBoxKonsol/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-8b7cf6.svg)](LICENSE)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-2563eb.svg)](https://www.microsoft.com/windows)
 

@@ -8,6 +8,7 @@ Calisma bicimleri (hepsi calisir):
 
 --selftest: pencereyi kurar, event isler, mibox-selftest-ok.txt yazar, cikar.
 --version : surum + ortam bilgisi yazip cikar (paketleme tani icin).
+--check-catalog: katalog indirme adreslerini denetler (bakim/CI; GUI acmaz).
 """
 import os
 import sys
@@ -307,7 +308,7 @@ def _install_crash_traps():
         state['hook'] = _hook
 
         try:
-            from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+            from PySide6.QtCore import QtMsgType, qInstallMessageHandler
             logged = {'n': 0}
 
             def _qtmsg(mode, ctx, msg):
@@ -318,7 +319,11 @@ def _install_crash_traps():
                         if logged['n'] < 200:
                             fh = _open()
                             if fh is not None:
-                                fh.write('[QT {}] {}\n'.format(int(mode), msg))
+                                # int(mode) yerine .value: PySide6 bazi
+                                # ortamlarda QtMsgType duz Enum olarak
+                                # olusturulur ve int() TypeError atar.
+                                fh.write('[QT {}] {}\n'.format(
+                                    getattr(mode, 'value', mode), msg))
                                 fh.flush()
                                 logged['n'] += 1
                     except Exception:
@@ -360,9 +365,14 @@ def main(argv=None):
 
     --version / --bilgi : pencere acmadan surum + ortam bilgisi yaz, cik.
     --selftest          : pencereyi offscreen kur, isaretci yaz, cik.
+    --check-catalog     : katalog adreslerini denetle, basarisizlikta 1 don.
+    --update-hash <id>  : katalog kaydinin guncel sha256'sini hesapla, yazdir.
     (baska)             : normal GUI.
     """
     argv = list(sys.argv if argv is None else argv)
+    if '--check-catalog' in argv or '--update-hash' in argv:
+        from .catalog_health import main as check_catalog
+        return check_catalog(argv)
     if '--version' in argv or '--bilgi' in argv:
         output_path = None
         if '--report-file' in argv:

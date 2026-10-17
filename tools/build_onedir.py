@@ -17,9 +17,9 @@ Cikti:
 Temizlik:
     python tools/build_onedir.py --clean-package
 """
+import glob
 import os
 import re
-import glob
 import shutil
 import stat
 import subprocess

@@ -5,7 +5,7 @@ Serbest konsol yerine sınıflı çalıştırma:
   - READ: getprop/dumpsys/pm list/... → doğrudan çalışır
   - SETTING: settings put/wm size/set-home-activity → göster + çalıştır
   - CHANGE: pm disable-user/pm install/dpm/... → göster + ONAYLA + çalıştır
-  - REFUSED: wipe/factory reset/bootloader/su/adb_enabled 0/... → ASLA çalışmaz
+  - REFUSED: wipe/factory reset/bootloader/su/adb_enabled (her yazma)/... → ASLA çalışmaz
 """
 import re
 import shlex
@@ -83,11 +83,14 @@ def classify(cmdline):
         tokens = shlex.split(c)
     except ValueError:
         return 'REFUSED'
-    for key, value in zip(tokens, tokens[1:]):
-        if key.lower() == 'adb_enabled':
-            # Avoid int()'s digit limit: a very long zero string still means 0.
-            if re.fullmatch(r'[+-]?0+', value):
-                return 'REFUSED'
+    if any(token.lower() == 'adb_enabled' for token in tokens):
+        # Android reads this key with Settings.Global.getInt(..., 0) == 1:
+        # every value that is not literally 1 disables ADB debugging
+        # ('false', '.0', '', 0x0). Interpreting the value can never be
+        # complete, so every write path is refused; only the read-only
+        # 'settings get' form stays available for diagnostics.
+        if not any(pattern.fullmatch(low) for pattern in READ_PATTERNS):
+            return 'REFUSED'
 
     def matches_prefix(prefix):
         prefix = prefix.rstrip()

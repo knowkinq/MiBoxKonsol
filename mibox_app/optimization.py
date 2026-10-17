@@ -3,7 +3,6 @@
 
 from .workers import CancelledError
 
-
 _ANIMATION_VALUES = (None, '0', '0.5', '1')
 _MISSING = object()
 

@@ -93,7 +93,6 @@ def init_qt():
 
     # 1. PySide6 dene (varsayılan, 64-bit)
     try:
-        import PySide6
         from PySide6 import QtCore
         QT_API = 'PySide6'
         QT_VERSION = getattr(QtCore, '__version__', '6.x')

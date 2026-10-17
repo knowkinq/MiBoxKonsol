@@ -1,5 +1,5 @@
 """Small, consistent line icons rendered by Qt without external assets."""
-from PySide6.QtCore import Qt, QRectF, QPointF
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
 

@@ -1,5 +1,11 @@
 # Değişiklik günlüğü
 
+## [1.5.1] - 2026-10-17
+
+- Kumandadan HTTP(S) bağlantısı gönderilirken `?`, `&`, `%` ve diğer URL sembolleri korunur; Android komut satırına güvenli tırnaklama uygulanır.
+- Uygulama kaldırma onayına, tüm Android kullanıcılarından uygulamayı ve verilerini kalıcı olarak silen tam kaldırma seçeneği eklendi. Tam kaldırma geçmişten geri alınabilir olarak gösterilmez.
+- Tek APK kurulumunda imza çakışmasına yol açan, APK'sı bulunmayan eski paket kayıtları denetlenir. Kullanıcının veri silme onayıyla kayıt temizlenir ve kurulum yeniden denenir; durumu doğrulanamayan veya APK'sı bulunan paketler otomatik temizlenmez.
+
 ## [1.5.0] - 2026-10-16
 
 - Taşınabilir Windows paketi, Android Platform-Tools 37.0.1 ADB bileşenlerini ve lisans bildirimini içerir; ayrıca ADB kurmak gerekmez.

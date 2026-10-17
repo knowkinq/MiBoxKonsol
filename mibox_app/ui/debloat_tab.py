@@ -5,21 +5,41 @@ import csv
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QMessageBox,
-    QComboBox, QLineEdit, QFileDialog, QInputDialog, QSizePolicy,
-    QMenu, QToolButton,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QTableWidgetItem,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..debloat_db import (all_categories, CAT_COLORS, add_user_entry, remove_user_entries,
-                            uad_removal_of, uad_list_of, needed_by, REMOVAL_TR,
-                            REMOVAL_COLOR, CAT_LABELS)
+from ..debloat_db import (
+    CAT_COLORS,
+    CAT_LABELS,
+    REMOVAL_COLOR,
+    REMOVAL_TR,
+    add_user_entry,
+    all_categories,
+    needed_by,
+    remove_user_entries,
+    uad_list_of,
+    uad_removal_of,
+)
 from ..profiles import PROFILES, profile_summary, validate_profile
-from .theme import cat_colors_for, removal_colors_for
 from ..workers import CancelledError, PackageActionWorker, Worker
 from . import kit
-from .flowlayout import FlowLayout
 from .actions_dialog import search_key
+from .flowlayout import FlowLayout
+from .theme import cat_colors_for, removal_colors_for
 
 COL_CHECK = 0
 COL_NAME = 1
@@ -646,8 +666,8 @@ class DebloatTab(QWidget):
         self._stage_refresh_label()
 
     def _stage_show(self):
-        from .stage_dialog import StageDialog
         from ..workers import StageWorker
+        from .stage_dialog import StageDialog
         st = self._stage()
         if not st.count():
             QMessageBox.information(self, 'Sahne', 'Sahne boş. Önce işlem ekleyin.')
@@ -747,8 +767,8 @@ class DebloatTab(QWidget):
                 '{}\n\n{}'.format(profile_counts, profile_summary(key)))
             return
 
-        from .stage_dialog import StageDialog
         from ..workers import StageWorker, format_action_result
+        from .stage_dialog import StageDialog
         dialog = StageDialog(
             self, stage, self.core.config.friendly_name,
             description=profile_summary(key), summary=profile_counts)
@@ -836,7 +856,7 @@ class DebloatTab(QWidget):
 
     def _bulk(self, action):
         # Debloat adlarini DB aciklamasindan coz (dost ad yoksa paket).
-        from .dialogs import confirm_action, ACTION_TR
+        from .dialogs import confirm_action
         pkgs = self._selected_packages()
         if not pkgs:
             QMessageBox.information(self, 'Seçim', 'Önce paketleri seçin.')
@@ -864,7 +884,6 @@ class DebloatTab(QWidget):
         engine, target, _generation = context
         user_id = int(self.core.config.user_id or 0)
         name_of = lambda p: self._debloat_name(p)
-        label = ACTION_TR.get(action, action)
         # UAD bağımlılık uyarısı (auto-remove YOK, sadece uyar — UAD davranışı)
         dep_warn = []
         for p in pkgs:
@@ -977,7 +996,7 @@ class DebloatTab(QWidget):
 
     def _smart_remove(self, pkgs, context, user_id):
         """Akilli kaldirma: her paket icin disable dene, olmazsa uninstall."""
-        from ..workers import SmartRemoveWorker, format_action_result
+        from ..workers import SmartRemoveWorker
         if not self._revalidate_mutation_context(context, 'Akıllı kaldırma'):
             return
         engine, target, _generation = context
@@ -1150,7 +1169,7 @@ class DebloatTab(QWidget):
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                wanted = {l.strip() for l in f if l.strip() and not l.startswith('#')}
+                wanted = {ln.strip() for ln in f if ln.strip() and not ln.startswith('#')}
         except OSError as e:
             QMessageBox.critical(self, 'Hata', str(e))
             return
@@ -1369,7 +1388,8 @@ class DebloatTab(QWidget):
                 w = csv.writer(f)
                 w.writerow(['Ad', 'Paket', 'Açıklama', 'Cihazda'])
                 for row in range(self.grid.rowCount()):
-                    w.writerow([self.grid.item(row, c).text() if self.grid.item(row, c) else ''
+                    w.writerow([kit.csv_cell(self.grid.item(row, c).text()
+                                             if self.grid.item(row, c) else '')
                                 for c in (COL_NAME, COL_PKG, COL_DESC, COL_PRESENT)])
             QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:

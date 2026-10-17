@@ -1,4 +1,6 @@
-__version__ = '1.5.0'
+__version__ = '1.5.1'
 APP_NAME = 'MiBox Konsol'
 
-from . import qt_compat
+# qt_compat, Qt modulleri yuklenmeden ONCE ortam ayari yapar; import
+# yan etkisi bilinclidir (kasitli).
+from . import qt_compat  # noqa: E402,F401

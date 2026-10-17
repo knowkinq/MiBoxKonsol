@@ -6,17 +6,29 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QTableWidgetItem, QLineEdit, QComboBox, QPushButton,
-    QLabel, QHeaderView, QMenu, QMessageBox, QToolButton,
-    QFileDialog, QDialog, QDialogButtonBox, QTextEdit, QApplication,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..config import APK_DIR
-from ..workers import AppScanWorker, PackageActionWorker, ApkBackupWorker, Worker
+from ..workers import ApkBackupWorker, AppScanWorker, PackageActionWorker, Worker
 from . import kit
-from .flowlayout import FlowLayout
 from .actions_dialog import search_key
+from .flowlayout import FlowLayout
 
 COL_CHECK = 0
 COL_NAME = 1
@@ -212,7 +224,7 @@ class AppsTab(QWidget):
         self.btn_enable = QPushButton('Aktif et')
         self.btn_enable.clicked.connect(lambda: self._pkg_action('enable'))
         self.btn_uninstall = QPushButton('Kaldır')
-        self.btn_uninstall.setToolTip('Uygulamayı seçili Android kullanıcısı için kaldırır; işlem öncesinde onay istenir.')
+        self.btn_uninstall.setToolTip('Kaldırmadan önce verileri koruma veya tamamen silme seçeneği sunar.')
         self.btn_uninstall.setProperty('danger', True)
         self.btn_uninstall.clicked.connect(lambda: self._pkg_action('uninstall'))
         self.btn_restore = QPushButton('Geri Yükle')
@@ -914,10 +926,14 @@ class AppsTab(QWidget):
         if context is None:
             QMessageBox.information(self, 'Bağlantı Yok', 'Önce cihaza bağlanın.')
             return
+        uninstall_options = {}
         if action in ('uninstall', 'clear', 'disable', 'stop'):
+            confirmation_options = ({'uninstall_options': uninstall_options}
+                                    if action == 'uninstall' else {})
             if not confirm_action(self, action, pkgs,
                                   self.core.config.friendly_name,
-                                  extra='Cihaz: {} · Android kullanıcısı: 0'.format(context[1])):
+                                  extra='Cihaz: {} · Android kullanıcısı: 0'.format(context[1]),
+                                  **confirmation_options):
                 return
             if self._busy or not self._device_context_current(context):
                 QMessageBox.warning(
@@ -925,16 +941,21 @@ class AppsTab(QWidget):
                     'Cihaz bağlantısı değişti. İşlem başlatılmadı; yeniden deneyin.')
                 return
         from .dialogs import ACTION_TR
+        action_label = ('Verileri silerek tam kaldırma'
+                        if uninstall_options.get('full_uninstall')
+                        else ACTION_TR.get(action, action))
         try:
             self.window.set_last_action(
                 '{} uygulamaya {}: {} paket'.format(
-                    len(pkgs), ACTION_TR.get(action, action),
+                    len(pkgs), action_label,
                     ', '.join(pkgs[:3]) + ('…' if len(pkgs) > 3 else '')))
         except Exception:
             pass
         engine, target, _generation = context
+        worker_options = ({'full_uninstall': True}
+                          if uninstall_options.get('full_uninstall') else {})
         w = PackageActionWorker(engine, target, pkgs,
-                                action, self.core.config.protected)
+                                action, self.core.config.protected, **worker_options)
         self._start_package_operation(w, context, self._on_pkg_done, refresh_after=True)
 
     def _on_pkg_done(self, res):
@@ -960,7 +981,9 @@ class AppsTab(QWidget):
         self._start_package_operation(w, context, self._on_backup_done)
 
     def _open_apk_dir(self):
-        import os, subprocess, sys
+        import os
+        import subprocess
+        import sys
         try:
             os.makedirs(APK_DIR, exist_ok=True)
             if sys.platform == 'win32':
@@ -1011,7 +1034,8 @@ class AppsTab(QWidget):
                 w = csv.writer(f)
                 w.writerow(['Ad', 'Paket', 'Durum'])
                 for row in range(self.grid.rowCount()):
-                    w.writerow([self.grid.item(row, c).text() if self.grid.item(row, c) else ''
+                    w.writerow([kit.csv_cell(self.grid.item(row, c).text()
+                                             if self.grid.item(row, c) else '')
                                 for c in (COL_NAME, COL_PKG, COL_STATE)])
             QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:

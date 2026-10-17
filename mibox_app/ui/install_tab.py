@@ -4,26 +4,52 @@
 Kaynaklar: ADB AppControl (batch install/APKS), tvboxtools (set-home-activity,
 animasyon kapatma, command gate), android-tv-debloat-toolkit (launcher akışı).
 """
-import os
 import glob
 import html
+import os
+import threading
 
-from PySide6.QtCore import Qt, QEvent, QTimer
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QComboBox,
-    QLineEdit, QPlainTextEdit, QAbstractItemView,
-    QTableWidget, QTableWidgetItem, QTabWidget, QProgressBar, QHeaderView,
-    QDialog, QDialogButtonBox,
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
+from ..catalog import TV_CATEGORIES, download_apk, get_catalog
 from ..workers import Worker
-from ..catalog import TV_CATALOG, TV_CATEGORIES, get_catalog, download_apk
 from . import kit
 
-
 _PACKAGE_EXTENSIONS = ('.apk', '.apks', '.apkm', '.xapk')
+
+
+class _InstallRepairBridge(QObject):
+    """Marshal an install worker's confirmation request to the UI thread."""
+
+    requested = Signal(object)
+
+
+def _is_store_item(item):
+    """Katalog kaydi Play Store turu mu (APK adresi yok, magazada acilir)."""
+    return str(item.get('type') or '').strip().lower() == 'store'
 
 
 class _DropQueueList(QListWidget):
@@ -82,6 +108,8 @@ class InstallTab(QWidget):
         self._install_result = None
         self._install_snapshot = ()
         self._install_operation = None
+        self._install_repair_bridge = _InstallRepairBridge(self)
+        self._install_repair_bridge.requested.connect(self._confirm_orphan_repair)
         self._meta_cache = {}
         self._installed_pkgs = set()
         self._catalog_status_known = False
@@ -576,6 +604,41 @@ class InstallTab(QWidget):
                 and getattr(self.core, 'target', None) == target
                 and not getattr(self.window, '_connection_busy', False))
 
+    def _confirm_orphan_repair(self, request):
+        """Confirm full package removal on the UI thread; refusal is the default."""
+        approved = False
+        target = request['target']
+        generation = request['generation']
+        worker = request.get('worker')
+        operation = request.get('operation')
+        current_request = (
+            worker is not None and operation is not None
+            and self._install_worker is worker
+            and self._install_operation is operation
+            and not worker.isInterruptionRequested())
+        if (self._target_is_current(target, generation)
+                and current_request
+                and not getattr(self.window, '_closing', False)
+                and not getattr(self.window, '_close_pending', False)):
+            package = request['package']
+            answer = QMessageBox.question(
+                self, 'Kayıtlı Paket Çakışması',
+                '{} paketinin cihazda kurulu APK dosyası bulunamadı; yalnızca bozuk '
+                'paket kaydı doğrulandı. Kaydı tamamen kaldırıp kurulumu bir kez '
+                'yeniden denemek ister misiniz?\n\n'
+                'Tam kaldırma bu paketin cihazdaki tüm uygulama verilerini, '
+                'ayarlarını ve hesaplarını siler. Bu işlem geri alınamaz.'.format(package),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            approved = (answer == QMessageBox.Yes
+                        and self._target_is_current(target, generation)
+                        and self._install_worker is worker
+                        and self._install_operation is operation
+                        and not worker.isInterruptionRequested()
+                        and not getattr(self.window, '_closing', False)
+                        and not getattr(self.window, '_close_pending', False))
+        request['decision']['approved'] = approved
+        request['event'].set()
+
     def _catalog_status_known_for(self, target):
         return (self._catalog_status_known
                 and self._catalog_status_target == target
@@ -717,16 +780,30 @@ class InstallTab(QWidget):
                 btn_open.clicked.connect(lambda _, it=item: self._launch_catalog_app(it))
                 cell_layout.addWidget(btn_open)
 
-                btn_reinstall = QPushButton('Yeniden Kur')
-                btn_reinstall.setProperty('role', 'secondary')
-                btn_reinstall.clicked.connect(
-                    lambda _, it=item: self._install_catalog_app(it, require_installed=True))
-                cell_layout.addWidget(btn_reinstall)
+                if _is_store_item(item):
+                    btn_store = QPushButton('Mağazada Aç')
+                    btn_store.setProperty('role', 'secondary')
+                    btn_store.clicked.connect(
+                        lambda _, it=item: self._open_catalog_store(it))
+                    cell_layout.addWidget(btn_store)
+                else:
+                    btn_reinstall = QPushButton('Yeniden Kur')
+                    btn_reinstall.setProperty('role', 'secondary')
+                    btn_reinstall.clicked.connect(
+                        lambda _, it=item: self._install_catalog_app(it, require_installed=True))
+                    cell_layout.addWidget(btn_reinstall)
             else:
-                btn_inst = QPushButton('İndir ve TV\'ye Kur')
-                btn_inst.setProperty('accent', True)
-                btn_inst.clicked.connect(lambda _, it=item: self._install_catalog_app(it))
-                cell_layout.addWidget(btn_inst)
+                if _is_store_item(item):
+                    btn_store = QPushButton('Play Store\'da Aç')
+                    btn_store.setProperty('accent', True)
+                    btn_store.clicked.connect(
+                        lambda _, it=item: self._open_catalog_store(it))
+                    cell_layout.addWidget(btn_store)
+                else:
+                    btn_inst = QPushButton('İndir ve TV\'ye Kur')
+                    btn_inst.setProperty('accent', True)
+                    btn_inst.clicked.connect(lambda _, it=item: self._install_catalog_app(it))
+                    cell_layout.addWidget(btn_inst)
 
             for index in range(cell_layout.count()):
                 button = cell_layout.itemAt(index).widget()
@@ -810,6 +887,10 @@ class InstallTab(QWidget):
         return item['package']
 
     def _install_catalog_app(self, item, require_installed=False):
+        if _is_store_item(item):
+            # Mağaza kaydında APK yok; kurulum yerine TV'de mağaza açılır.
+            self._open_catalog_store(item)
+            return
         if (self._catalog_worker is not None or self._installing
                 or getattr(self.window, '_connection_busy', False)
                 or getattr(self.window, '_closing', False)
@@ -1035,6 +1116,47 @@ class InstallTab(QWidget):
         w.failed.connect(on_fail)
         self.window._run(w, desc='Katalog: {} TV ekranında başlatılıyor'.format(app_name))
 
+    def _open_catalog_store(self, item):
+        """Mağaza kaydını TV'de açar: Play Store sayfasına yönlendirir."""
+        if (self._catalog_worker is not None or self._installing
+                or getattr(self.window, '_connection_busy', False)):
+            return
+        if not self.core.connected or not self.core.target:
+            QMessageBox.information(
+                self, 'Bağlantı Yok',
+                'Play Store sayfasını açmak için önce cihaza bağlanın.')
+            return
+        target = self.core.target
+        generation = self._connection_generation
+        engine = self.core.engine
+        pkg = str(item.get('package') or '')
+        app_name = item['name']
+
+        def do():
+            w.check_cancel()
+            if not self._target_is_current(target, generation):
+                from ..workers import CancelledError
+                raise CancelledError('bağlantı değişti')
+            return engine.open_play_store(target, pkg)
+
+        def on_done(_):
+            if self._target_is_current(target, generation):
+                self.lbl_catalog_status.setText(
+                    '{} için Play Store sayfası TV\'de açıldı.'.format(app_name))
+
+        def on_fail(err):
+            if self._target_is_current(target, generation):
+                QMessageBox.warning(
+                    self, 'Mağaza Açılamadı',
+                    'Play Store sayfası açılamadı:\n{}\n\n'
+                    'TV\'de Play Store uygulaması kurulu ve güncel olmalıdır.'.format(err))
+
+        w = Worker(do)
+        w.job_name = '{} Mağaza'.format(app_name)
+        w.finished_ok.connect(on_done)
+        w.failed.connect(on_fail)
+        self.window._run(w, desc='Katalog: {} Play Store sayfası açılıyor'.format(app_name))
+
     def _refresh_catalog_statuses(self):
         if self._catalog_worker is not None or self._installing:
             self._catalog_refresh_pending = True
@@ -1211,6 +1333,13 @@ class InstallTab(QWidget):
             def target_is_current():
                 return self._target_is_current(t, connection_generation)
 
+            def check_repair_context():
+                worker.check_cancel()
+                if (not target_is_current()
+                        or getattr(self.window, '_closing', False)
+                        or getattr(self.window, '_close_pending', False)):
+                    raise CancelledError('hedef veya bağlantı değişti')
+
             try:
                 worker.check_cancel()
             except Exception as exc:
@@ -1231,6 +1360,71 @@ class InstallTab(QWidget):
                 pass
             total = len(files)
             from ..workers import CancelledError
+
+            def repair_orphan_and_retry(path, original_error):
+                if (mode != 'single' or len(files) != 1
+                        or os.path.isdir(path)
+                        or not path.lower().endswith('.apk')
+                        or 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'
+                        not in str(original_error).upper()):
+                    return None
+                check_repair_context()
+                metadata = eng.read_apk_metadata(path)
+                check_repair_context()
+                package = str((metadata or {}).get('package') or '').strip()
+                if not package:
+                    return None
+                def package_is_protected():
+                    try:
+                        config = self.core.config
+                        checker = getattr(config, 'is_protected', None)
+                        if callable(checker):
+                            return bool(checker(package))
+                        return package in (getattr(config, 'protected', ()) or ())
+                    except Exception:
+                        # If protection state cannot be read, fail closed.
+                        return True
+
+                if package_is_protected():
+                    return None
+                orphan_check = getattr(eng, 'is_orphaned_package_registration', None)
+                full_uninstall = getattr(eng, 'uninstall_package_full', None)
+                if not callable(orphan_check) or not callable(full_uninstall):
+                    return None
+                if not orphan_check(t, package, cancel_check=check_repair_context):
+                    return None
+                check_repair_context()
+                if package_is_protected():
+                    return None
+
+                request = {'target': t, 'generation': connection_generation,
+                           'worker': worker, 'operation': operation,
+                           'package': package, 'event': threading.Event(),
+                           'decision': {'approved': False}}
+                self._install_repair_bridge.requested.emit(request)
+                while not request['event'].wait(0.1):
+                    check_repair_context()
+                check_repair_context()
+                if not request['decision']['approved']:
+                    return None
+                # Consent can go stale while the user is deciding. Re-run all
+                # read-only checks immediately before the destructive command.
+                if package_is_protected():
+                    return None
+                if not orphan_check(t, package, cancel_check=check_repair_context):
+                    return None
+                check_repair_context()
+                if package_is_protected():
+                    return None
+
+                full_uninstall(t, package, cancel_check=check_repair_context)
+                check_repair_context()
+                eng.install_apk(t, path, reinstall=reinstall,
+                                grant_perms=grant_perms,
+                                allow_downgrade=allow_downgrade,
+                                cancel_check=worker.check_cancel)
+                return package
+
             for i, f in enumerate(files, 1):
                 try:
                     worker.check_cancel()
@@ -1248,9 +1442,27 @@ class InstallTab(QWidget):
                                              grant_perms=grant_perms, allow_downgrade=allow_downgrade,
                                              cancel_check=worker.check_cancel)
                     else:
-                        eng.install_apk(t, f, reinstall=reinstall,
-                                        grant_perms=grant_perms, allow_downgrade=allow_downgrade,
-                                        cancel_check=worker.check_cancel)
+                        try:
+                            eng.install_apk(
+                                t, f, reinstall=reinstall,
+                                grant_perms=grant_perms,
+                                allow_downgrade=allow_downgrade,
+                                cancel_check=worker.check_cancel)
+                        except Exception as install_error:
+                            try:
+                                repaired_package = repair_orphan_and_retry(
+                                    f, install_error)
+                            except CancelledError:
+                                raise
+                            except Exception as repair_error:
+                                raise RuntimeError(
+                                    '{}; güvenli onarım yapılamadı: {}'.format(
+                                        install_error, repair_error)) from install_error
+                            if repaired_package is None:
+                                raise
+                            operation['msgs'].append(
+                                '~ {} çakışan kaydı onayla kaldırıldı; kurulum '
+                                'yeniden denendi.'.format(repaired_package))
                     operation['successes'].append(f)
                     operation['msgs'].append('+ ' + os.path.basename(f))
                     if worker.isInterruptionRequested():

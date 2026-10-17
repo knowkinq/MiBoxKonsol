@@ -18,10 +18,10 @@ import tempfile
 import threading
 import time
 import urllib.request
-from urllib.parse import urlsplit
-from pathlib import PurePosixPath
 import zipfile
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import Signal
 

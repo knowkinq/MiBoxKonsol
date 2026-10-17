@@ -302,11 +302,6 @@ for _dependent, _deps in DEPENDENCIES.items():
         NEEDED_BY.setdefault(_d, []).append(_dependent)
 
 
-def dependencies_of(pkg):
-    """Paketin ihtiyaç duydukları (kaldırınca bunlara dikkat)."""
-    return list(DEPENDENCIES.get(pkg, []))
-
-
 def needed_by(pkg):
     """Bu pakete ihtiyaç duyanlar (bunu kaldırınca bunlar bozulabilir)."""
     return list(NEEDED_BY.get(pkg, []))
@@ -321,18 +316,6 @@ def all_categories():
         ('dokunma', 'Dokunma (Kritik)', DEBLOAT_DB['dokunma']),
         ('favoriler', 'Favoriler (Kendin Ekladigin)', user_entries()),
     ]
-
-
-def all_packages():
-    """Tum kategorilerdeki tum paketleri tek liste olarak dondurur (tekil)."""
-    out = []
-    seen = set()
-    for cat in ('guvenli', 'opsiyonel', 'riskli', 'dokunma'):
-        for pkg, _n, _d in DEBLOAT_DB.get(cat, []):
-            if pkg not in seen:
-                seen.add(pkg)
-                out.append(pkg)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -468,32 +451,6 @@ def remove_user_entries(pkgs):
         _FAVORITES[:] = before
         raise
     return True
-
-
-def remove_user_entry(pkg):
-    return remove_user_entries((pkg,))
-
-
-def get_category_with_user(name):
-    """get_category + kullanici girileri. 'guvenli' icinde kullanicinin
-    ekledigi favoriler de gorunur (sona eklenir)."""
-    base = list(DEBLOAT_DB.get(name, []))
-    if name == 'guvenli':
-        for pkg, n, d in user_entries():
-            if pkg not in [p for p, _n, _dd in base]:
-                base.append((pkg, n, d))
-    return base
-
-
-def package_to_category_with_user(pkg):
-    """package_to_category + kullanici favorileri (favoriler->None yerine 'favoriler')."""
-    cat = _PKG_CAT.get(pkg)
-    if cat:
-        return cat
-    for p, _n, _d in user_entries():
-        if p == pkg:
-            return 'favoriler'
-    return None
 
 
 def package_to_category(pkg):

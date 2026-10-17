@@ -2,14 +2,25 @@
 """Geçmiş sekmesi: kalıcı işlem kayıtları + tek tıkla geri alma + durum kaydı."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QMessageBox,
-    QComboBox, QFileDialog, QMenu, QToolButton, QLineEdit,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTableWidgetItem,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
+from ..action_labels import ACTION_TR_LOG as ACTION_TR  # gecmis/durum kisa adi
 from ..workers import PackageActionWorker, SmartRemoveWorker, SnapshotWorker, Worker
-from .actions_dialog import search_key
 from . import kit
+from .actions_dialog import search_key
 
 COL_TS = 0
 COL_TARGET = 1
@@ -18,13 +29,6 @@ COL_ACTION = 3
 COL_PKG = 4
 COL_METHOD = 5
 COL_OK = 6
-
-ACTION_TR = {
-    'uninstall': 'Kaldırma', 'disable': 'Devre dışı', 'enable': 'Aktif',
-    'restore': 'Geri yükleme', 'restrict': 'Kısıtla', 'unrestrict': 'Serbest',
-    'smart': 'Akıllı kaldırma', 'snapshot': 'Durum kaydı', 'clear': 'Veri silme',
-    'stop': 'Force stop', 'launch': 'Açma',
-}
 
 
 class HistoryTab(QWidget):
@@ -620,20 +624,14 @@ class HistoryTab(QWidget):
         if not path:
             return
         try:
-            def csv_cell(value):
-                text = '' if value is None else str(value)
-                if text.lstrip(' \t\r\n\v\f')[:1] in ('=', '+', '-', '@'):
-                    return "'" + text
-                return text
-
             with open(path, 'w', newline='', encoding='utf-8-sig') as f:
                 w = csv.writer(f)
                 w.writerow(['Zaman', 'Hedef', 'Kullanıcı', 'İşlem',
                             'Paket', 'Yöntem', 'Sonuç'])
                 for rec in self._records:
-                    w.writerow([csv_cell(rec.get('ts', '')), csv_cell(rec.get('target', '')),
+                    w.writerow([kit.csv_cell(rec.get('ts', '')), kit.csv_cell(rec.get('target', '')),
                                 rec.get('user_id', 0), rec.get('action', ''),
-                                csv_cell(rec.get('package', '')), csv_cell(rec.get('method', '')),
+                                kit.csv_cell(rec.get('package', '')), kit.csv_cell(rec.get('method', '')),
                                 'ok' if rec.get('ok') else 'fail'])
             QMessageBox.information(self, 'Tamam', 'Aktarıldı:\n' + path)
         except OSError as e:

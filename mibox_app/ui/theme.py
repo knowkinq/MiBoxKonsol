@@ -2,7 +2,6 @@
 """Slate/indigo dark and light themes with shared semantic design tokens."""
 from string import Template
 
-
 _DARK = {
     'background': '#0b1220', 'workspace': '#10192b', 'sidebar': '#0c1424',
     'surface': '#172238', 'surface_alt': '#1d2b43', 'input': '#111c30',

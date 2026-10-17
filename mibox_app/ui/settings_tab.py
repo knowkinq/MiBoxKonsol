@@ -1,16 +1,26 @@
 # -*- coding: utf-8 -*-
 """Ayarlar sekmesi: tema, koruma listesi, bilinen uygulama adlari, genel."""
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLabel, QLineEdit, QPushButton, QListWidget,
-    QListWidgetItem, QMessageBox, QFileDialog, QPlainTextEdit, QApplication,
-    QDialog, QDialogButtonBox,
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
+from ..config import APK_DIR, LOG_DIR, SHOT_DIR
 from . import kit
-
-from ..config import APK_DIR, SHOT_DIR, LOG_DIR
 
 
 class SettingsTab(QWidget):

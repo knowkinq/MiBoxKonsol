@@ -3,14 +3,22 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QBoxLayout, QFrame, QLabel, QLineEdit, QPushButton,
-    QTableWidgetItem, QHeaderView, QTabBar,
+    QBoxLayout,
+    QFrame,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTabBar,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..workers import AppScanWorker, BulkActionWorker
 from . import kit
-from .flowlayout import FlowLayout
 from .dialogs import confirm_action
+from .flowlayout import FlowLayout
 
 
 class BackgroundPanel(QWidget):

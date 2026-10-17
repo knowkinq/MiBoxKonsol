@@ -4,12 +4,19 @@ import datetime
 import html
 import re
 
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QPlainTextEdit, QMessageBox, QGroupBox,
     QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .. import gate

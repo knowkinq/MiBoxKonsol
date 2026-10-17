@@ -5,6 +5,7 @@ Kullanıcıların harici sitelerden zararlı veya uyumsuz mobil APK aramak
 zorunda kalmadan; SmartTube, Stremio, Projectivy, Kodi, VLC gibi TV için optimize
 edilmiş en iyi uygulamaları tek tıkla indirip TV'ye kurmasını sağlar.
 """
+import hashlib
 import os
 import struct
 import tempfile
@@ -81,10 +82,13 @@ TV_CATALOG = [
         'badge': 'Önerilen',
         'icon': '⊞',
         'package': 'com.spocky.projengmenu',
-        'author': 'Spocky (Açık Kaynak)',
+        'author': 'Spocky',
         'description': 'Android TV için modern, hızlı ve reklam içermeyen alternatif arayüz. Stok Google TV reklamlarını kaldırır ve kanalları özelleştirir.',
-        'url': 'https://github.com/spocky/mimir/releases/latest/download/ProjectivyLauncher.apk',
-        'website': 'https://github.com/spocky/mimir',
+        # Sürüm-ekli asset adı sabit bir 'latest' yolu izin vermiyor;
+        # güncellemede URL ve özet birlikte yenilenmeli.
+        'url': 'https://github.com/spocky/miproja1/releases/download/4.72/ProjectivyLauncher-4.72-c97-xda-release.apk',
+        'sha256': 'a312935837b7cf323880455c322f4c98060e3e37e8c6187963fb2c4764534aae',
+        'website': 'https://github.com/spocky/miproja1',
     },
     {
         'id': 'flauncher',
@@ -95,8 +99,8 @@ TV_CATALOG = [
         'package': 'me.efdev.flauncher',
         'author': 'EtienneP (Açık Kaynak)',
         'description': 'Flutter ile geliştirilmiş minimalist, ultra hafif TV başlatıcı. Sıfır reklam, sıfır telemetri ve çok düşük RAM tüketimi.',
-        'url': 'https://gitlab.com/etiennep/flauncher/-/jobs/artifacts/master/raw/app-release.apk?job=assembleRelease',
-        'website': 'https://gitlab.com/etiennep/flauncher',
+        'url': 'https://gitlab.com/flauncher/flauncher/-/releases/0.18.0/downloads/flauncher-0.18.0.apk',
+        'website': 'https://gitlab.com/flauncher/flauncher',
     },
     {
         'id': 'kodi_tv',
@@ -131,20 +135,9 @@ TV_CATALOG = [
         'package': 'org.courville.nova',
         'author': 'Nova Team',
         'description': 'Android TV için tasarlanmış açık kaynak video oynatıcı. Filmler ve diziler için otomatik afiş, özet ve altyazı indirir.',
-        'url': 'https://github.com/nova-video-player/aos-AVP/releases/download/v6.2.62/Nova-v6.2.62-universal-release.apk',
+        'url': 'https://github.com/nova-video-player/aos-AVP/releases/download/v6.5.5/org.courville.nova-2672099-6.5.5-20261009.2113-universal-release.apk',
+        'sha256': 'f252631680328916ed847c8c0d6711d6a9922373e54f939178c428a9b3c3e1a5',
         'website': 'https://github.com/nova-video-player/aos-AVP',
-    },
-    {
-        'id': 'sftv',
-        'name': 'Send Files to TV',
-        'category': 'Dosya & Araçlar',
-        'badge': 'Pratik',
-        'icon': '⇄',
-        'package': 'com.yablio.sendfilestotv',
-        'author': 'Yablio',
-        'description': 'Bilgisayar veya akıllı telefonunuzdan Mi Box’a yerel WiFi üzerinden saniyeler içinde film, APK ve dosya gönderin.',
-        'url': 'https://sendfilestotv.app/apk/sftv.apk',
-        'website': 'https://sendfilestotv.app',
     },
     {
         'id': 'button_mapper',
@@ -171,6 +164,19 @@ TV_CATALOG = [
         'website': 'https://anexplorer.io/download/tv',
     },
     {
+        'id': 'sftv',
+        'name': 'Send Files to TV',
+        'category': 'Dosya & Araçlar',
+        'badge': 'Play Store',
+        'icon': '📨',
+        'package': 'com.yablio.sendfilestotv',
+        'author': 'Yablio',
+        'description': 'Aynı Wi-Fi ağındaki telefon ile TV arasında hızlı dosya aktarımı. Resmî APK dağıtımı olmadığından TV\'de Play Store sayfası açılarak kurulur.',
+        'type': 'store',
+        'store_url': 'https://play.google.com/store/apps/details?id=com.yablio.sendfilestotv',
+        'website': 'https://play.google.com/store/apps/details?id=com.yablio.sendfilestotv',
+    },
+    {
         'id': 'moonlight_tv',
         'name': 'Moonlight Game Streaming',
         'category': 'Oyun & Akış',
@@ -179,7 +185,7 @@ TV_CATALOG = [
         'package': 'com.limelight',
         'author': 'Moonlight Stream (Açık Kaynak)',
         'description': 'Bilgisayarınızdaki PC oyunlarını (Sunshine / NVIDIA Gamestream) TV’nize 4K HDR 60/120 FPS ultra düşük gecikmeyle aktarın.',
-        'url': 'https://github.com/moonlight-stream/moonlight-android/releases/download/v12.2/Moonlight-12.2.apk',
+        'url': 'https://github.com/moonlight-stream/moonlight-android/releases/latest/download/app-nonRoot-release.apk',
         'website': 'https://moonlight-stream.org',
     },
     {
@@ -203,8 +209,8 @@ TV_CATALOG = [
         'package': 'com.aurora.store',
         'author': 'Aurora OSS',
         'description': 'Google Play Store açık kaynak istemcisi. TV kütüphanesinde kısıtlı olan Android uygulamalarını güvenle indirin.',
-        'url': 'https://gitlab.com/AuroraOSS/AuroraStore/-/releases/permalink/latest/downloads/AuroraStore.apk',
-        'website': 'https://aurorastore.com',
+        'url': 'https://gitlab.com/-/project/6922885/uploads/245eec8867a47057cbc54535f73b32ee/AuroraStore-4.8.4.apk',
+        'website': 'https://auroraoss.com',
     },
 ]
 
@@ -221,7 +227,14 @@ def get_catalog(category=None, search=None):
 
 
 def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
-    """Uygulama APK'sini resmi kaynaktan indirir ve yerel dosya yolunu döner."""
+    """Uygulama APK'sini resmi kaynaktan indirir ve yerel dosya yolunu döner.
+
+    'store' türü kayıtların APK adresi yoktur; indirilmek istenirse hata
+    verilir (TV'de Play Store sayfası açılır).
+    """
+    if str(app_item.get('type') or '').strip().lower() == 'store':
+        raise ValueError(
+            'Bu kayıt mağaza kaydı; APK indirilmez, TV\'de Play Store açılır.')
     dest_dir = dest_dir or DOWNLOADS_DIR
     os.makedirs(dest_dir, exist_ok=True)
 
@@ -254,6 +267,7 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
         target_path = temp_path[:-len('.part')]
         try:
             os.close(fd)
+            digest = hashlib.sha256()
             with open(temp_path, 'wb') as f:
                 while True:
                     if check_cancel:
@@ -264,12 +278,21 @@ def download_apk(app_item, dest_dir=None, progress_cb=None, check_cancel=None):
                     if downloaded + len(chunk) > max_size:
                         raise ValueError('APK dosyası izin verilen boyut sınırını aşıyor.')
                     f.write(chunk)
+                    digest.update(chunk)
                     downloaded += len(chunk)
                     if progress_cb and total_len > 0:
                         progress_cb(downloaded, total_len)
 
             if total_len and downloaded != total_len:
                 raise ValueError('APK indirmesi eksik kaldı; dosya kuruluma açılmadı.')
+
+            # Sabit sürümlü kayıtlarda yayıncı özeti doğrulanır; özeti
+            # olmayan (sürekli güncellenen 'latest') kayıtlar atlanır.
+            expected_sha = str(app_item.get('sha256') or '').strip().lower()
+            if expected_sha and digest.hexdigest() != expected_sha:
+                raise ValueError(
+                    'İndirilen dosya beklenen SHA-256 özetiyle eşleşmiyor; '
+                    'dosya kuruluma açılmadı.')
 
             if check_cancel:
                 check_cancel()

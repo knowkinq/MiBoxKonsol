@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
 """Device diagnostics and explicitly selected, non-destructive tuning."""
-from PySide6.QtCore import Qt, Signal, QTimer
 import math
+
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QFrame, QLabel, QPushButton,
-    QComboBox, QPlainTextEdit, QMessageBox, QDialog, QDialogButtonBox,
+    QBoxLayout,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..workers import Worker, CancelledError
+from ..workers import CancelledError, Worker
 from . import kit
 from .flowlayout import FlowLayout
 

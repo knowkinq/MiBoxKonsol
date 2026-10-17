@@ -4,15 +4,29 @@ import ipaddress
 import re
 import socket
 
-from PySide6.QtCore import Slot, Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QLineEdit,
-    QSpinBox, QMessageBox, QInputDialog, QProgressBar, QSizePolicy, QFrame, QApplication,
+    QApplication,
+    QBoxLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..workers import Worker, NetworkScanWorker, CancelledError
+from ..workers import CancelledError, NetworkScanWorker, Worker
 from . import kit
 from .flowlayout import FlowLayout
 

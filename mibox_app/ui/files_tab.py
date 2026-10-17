@@ -5,16 +5,27 @@ import posixpath
 import tempfile
 import unicodedata
 
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QFrame, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QMessageBox,
-    QLineEdit, QFileDialog, QInputDialog, QMenu, QApplication, QProgressBar
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
-from . import kit
-
 from ..workers import Worker
+from . import kit
 
 COL_NAME = 0
 COL_SIZE = 1

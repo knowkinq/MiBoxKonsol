@@ -68,6 +68,7 @@ mibox-logcat.txt
 uad_exported_selection.txt
 
 # --- Binary / Downloaded Packages ---
+/artifacts/
 *.apk
 *.apks
 *.xapk

@@ -1,21 +1,37 @@
 # -*- coding: utf-8 -*-
 """Ana pencere: baglanti cubugu + sekmeler + canli log."""
 import datetime
+import ipaddress
 import os
 import re
 import threading
-import ipaddress
-
 from collections import deque
 
-from PySide6.QtCore import Qt, QTimer, QObject, QMutex, QSize
-from PySide6.QtGui import QGuiApplication, QTextCursor, QKeySequence, QShortcut
+from PySide6.QtCore import QMutex, QObject, QSize, Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QComboBox, QTabWidget,
-    QPlainTextEdit, QMessageBox, QStatusBar,
-    QSplitter, QScrollArea, QListWidget, QListWidgetItem, QProgressBar, QSizePolicy,
-    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QStatusBar,
+    QSystemTrayIcon,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .. import APP_NAME, __version__
@@ -23,12 +39,14 @@ from ..adb_engine import sanitize_log_text, target_private_values, watchdog_inte
 from ..config import LOG_DIR
 from ..workers import Worker
 from . import kit
+from .actions_dialog import ActionsDialog, search_key
 from .apps_tab import AppsTab
 from .debloat_tab import DebloatTab
-from .flowlayout import FlowLayout
 from .files_tab import FilesTab
+from .flowlayout import FlowLayout
 from .health_tab import HealthTab
 from .history_tab import HistoryTab
+from .icons import line_icon
 from .install_tab import InstallTab
 from .logcat_tab import LogcatTab
 from .network_tab import NetworkTab
@@ -36,9 +54,7 @@ from .overview_tab import OverviewTab
 from .remote_tab import RemoteTab
 from .settings_tab import SettingsTab
 from .terminal_tab import TerminalTab
-from .theme import qss_for, level_colors_for, colors_for, conn_style
-from .icons import line_icon
-from .actions_dialog import ActionsDialog, search_key
+from .theme import colors_for, conn_style, level_colors_for, qss_for
 
 HOST_RE = re.compile(
     r'^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
@@ -2197,8 +2213,3 @@ class MainWindow(QMainWindow):
 
         self._finalize_close()
         e.accept()
-
-
-def make_flow(parent=None):
-    """Islem cubuklari icin disari acik FlowLayout kurucu."""
-    return FlowLayout(parent)

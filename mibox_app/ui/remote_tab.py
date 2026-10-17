@@ -2,27 +2,47 @@
 """Kumanda sekmesi: ADB keyevent tabanlı büyük, ergonomik uzaktan kumanda,
 canlı ekran önizleme, dokunmatik etkileşim (tap/swipe), pano senkronizasyonu ve TV kontrolleri.
 """
+import math
 import os
 import shlex
 import struct
 import subprocess
 import sys
 import time
-import math
 
-from PySide6.QtCore import Qt, QTimer, QEvent, Signal, QSize, QPoint
-from PySide6.QtGui import QPixmap, QImage, QColor, QPainter, QPen, QIcon
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
-    QLabel, QPushButton, QLineEdit, QComboBox, QMessageBox,
-    QFileDialog, QApplication, QSizePolicy, QFrame, QTabWidget,
-    QProgressDialog, QMenu, QSlider
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
+from ..adb_engine import (
+    KEYCODE_POWER,
+    KEYCODE_SLEEP,
+    KEYCODE_WAKEUP,
+    AdbError,
+    sanitize_input_text,
+)
 from ..config import BASE_DIR
-from ..adb_engine import AdbError, KEYCODE_POWER, KEYCODE_SLEEP, KEYCODE_WAKEUP, sanitize_input_text
+from ..scrcpy_manager import ScrcpyDownloader, find_scrcpy, launch_scrcpy
 from ..workers import CancelledError, Worker
-from ..scrcpy_manager import find_scrcpy, launch_scrcpy, ScrcpyDownloader
 from . import kit
 from .icons import line_icon
 
@@ -876,6 +896,11 @@ class RemoteTab(QWidget):
         send_text.setProperty('role', 'primary')
         send_text.clicked.connect(self._send_text)
 
+        self.btn_text_delete = self._key_btn('⌫ Sil', 67, height=28)
+        self.btn_text_delete.setToolTip(
+            'TV’de odaklı metin alanında imlecin solundaki karakteri siler.\n'
+            'Basılı tut: sürekli sil.')
+
         btn_paste_pc = QPushButton('📋 Pano')
         btn_paste_pc.setFixedHeight(28)
         btn_paste_pc.setProperty('role', 'secondary')
@@ -891,6 +916,7 @@ class RemoteTab(QWidget):
         self.lbl_text_hint = kit.hint_label('')
         text_row.addWidget(self.txt_input, 2)
         text_row.addWidget(send_text)
+        text_row.addWidget(self.btn_text_delete)
         text_row.addWidget(btn_paste_pc)
         text_row.addWidget(btn_open_url)
         app_lay.addLayout(text_row)

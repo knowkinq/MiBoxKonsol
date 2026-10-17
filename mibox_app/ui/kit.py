@@ -10,13 +10,19 @@ yardimcilari kullanir:
   - hint_label(): silik ipucu satiri
   - make_table(cols, headers): ayni stilli tablo (secim+zebra+30px satir)
   - set_busy(widgets, busy): buton kilitleme (cift worker onler)
-  - confirm(): No-varsayilanli onay (dialogs.confirm_action kisayolu)
+  - csv_cell(value): CSV hucrelerinde formul enjeksiyonunu etkisizlestirir
 """
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QVBoxLayout, QGroupBox, QLabel, QTableWidget, QCheckBox,
-    QAbstractItemView, QMessageBox, QStyle, QStyleOptionButton,
+    QAbstractItemView,
+    QCheckBox,
+    QGroupBox,
+    QLabel,
+    QStyle,
+    QStyleOptionButton,
+    QTableWidget,
+    QVBoxLayout,
 )
 
 from .flowlayout import FlowLayout
@@ -89,13 +95,18 @@ def title(dark=True):
 def dark_from(widget=None, default=True):
     """Bir widget/core/window uzerinden koyu-tema bayragini coz."""
     ancestor = widget
-    while ancestor is not None:
-        core = getattr(ancestor, 'core', ancestor)
-        cfg = getattr(core, 'config', None)
-        if cfg is not None and hasattr(cfg, 'dark_mode'):
-            return bool(cfg.dark_mode)
-        parent = getattr(ancestor, 'parentWidget', None)
-        ancestor = parent() if callable(parent) else None
+    try:
+        while ancestor is not None:
+            core = getattr(ancestor, 'core', ancestor)
+            cfg = getattr(core, 'config', None)
+            if cfg is not None and hasattr(cfg, 'dark_mode'):
+                return bool(cfg.dark_mode)
+            parent = getattr(ancestor, 'parentWidget', None)
+            ancestor = parent() if callable(parent) else None
+    except Exception:
+        # Silinmis C++ nesnesi (RuntimeError) ya da beklenmedik erisim:
+        # varsayilana dus; cagirani patlatma (olasilik testi yakaladi).
+        return default
     try:
         core = getattr(widget, 'core', widget)
         cfg = getattr(core, 'config', None)
@@ -185,21 +196,6 @@ def action_bar():
     return FlowLayout()
 
 
-def _size_to_hint(w):
-    """Buton/combo yazisi tasmasin: minimum genislik = hint olcusu."""
-    try:
-        hint = w.sizeHint()
-        w.setMinimumWidth(max(w.minimumWidth(), hint.width()))
-    except (RuntimeError, AttributeError):
-        pass
-    return w
-
-
-def fit_buttons(*widgets):
-    for w in widgets:
-        _size_to_hint(w)
-
-
 class DataTable(QTableWidget):
     """Table with a useful empty state that follows real model changes."""
 
@@ -271,94 +267,9 @@ def set_busy(widgets, busy):
             pass
 
 
-def select_bar(grid, check_col):
-    """Standart toplu secim cubugu: Tumunu Sec / Birak / Ters Cevir.
-
-    grid: QTableWidget, check_col: checkbox sutun indexi. Tik-crash
-    korumasina uygun: sinyal bastirma + bayrak esitlik kontrolu.
-    Donus: (bar_layout, secilen_sayisi_fonksiyonu).
-    """
-    from PySide6.QtCore import Qt as _Qt
-    from PySide6.QtWidgets import QPushButton as _PB, QLabel as _LB
-    from .flowlayout import FlowLayout as _FL
-    bar = _FL()
-    btn_all = _PB('Tümünü Seç')
-    btn_none = _PB('Seçimi Bırak')
-    btn_inv = _PB('Ters Çevir')
-    lbl = _LB('')
-    lbl.setStyleSheet(faint(dark_from(grid)))
-
-    def _set_all(on):
-        st = _Qt.Checked if on else _Qt.Unchecked
-        grid.blockSignals(True)
-        try:
-            for row in range(grid.rowCount()):
-                it = grid.item(row, check_col)
-                if it and (it.flags() & _Qt.ItemIsUserCheckable):
-                    if it.checkState() != st:
-                        it.setCheckState(st)
-        finally:
-            try:
-                grid.blockSignals(False)
-            except RuntimeError:
-                pass
-        _update_count()
-
-    def _invert():
-        grid.blockSignals(True)
-        try:
-            for row in range(grid.rowCount()):
-                it = grid.item(row, check_col)
-                if it and (it.flags() & _Qt.ItemIsUserCheckable):
-                    it.setCheckState(
-                        _Qt.Unchecked if it.checkState() == _Qt.Checked else _Qt.Checked)
-        finally:
-            try:
-                grid.blockSignals(False)
-            except RuntimeError:
-                pass
-        _update_count()
-
-    def _update_count():
-        try:
-            n = sum(1 for row in range(grid.rowCount())
-                    for _ in [grid.item(row, check_col)]
-                    if _ is not None and (_.flags() & _Qt.ItemIsUserCheckable)
-                    and _.checkState() == _Qt.Checked)
-            total = grid.rowCount()
-            lbl.setText('Seçili: {}/{}'.format(n, total))
-        except RuntimeError:
-            pass
-
-    def selected():
-        """Secili checkbox satirlari (yoksa secili satirlar)."""
-        out = []
-        try:
-            for row in range(grid.rowCount()):
-                it = grid.item(row, check_col)
-                if it and (it.flags() & _Qt.ItemIsUserCheckable) \
-                        and it.checkState() == _Qt.Checked:
-                    out.append(it.data(_Qt.UserRole))
-        except RuntimeError:
-            return out
-        return out
-
-    btn_all.clicked.connect(lambda: _set_all(True))
-    btn_none.clicked.connect(lambda: _set_all(False))
-    btn_inv.clicked.connect(_invert)
-    for w in (btn_all, btn_none, btn_inv):
-        bar.addWidget(w)
-        fit_buttons(w)
-    bar.addWidget(lbl)
-    try:
-        grid.itemChanged.connect(lambda _it: _update_count())
-    except (RuntimeError, AttributeError):
-        pass
-    _update_count()
-    return bar, selected, _update_count
-
-
-def confirm(parent, title, body):
-    return QMessageBox.question(parent, title, body,
-                                QMessageBox.Yes | QMessageBox.No,
-                                QMessageBox.No) == QMessageBox.Yes
+def csv_cell(value):
+    """CSV hucre degeri; formul enjeksiyonunu ('=', '+', '-', '@') etkisizlestirir."""
+    text = '' if value is None else str(value)
+    if text.lstrip(' \t\r\n\v\f')[:1] in ('=', '+', '-', '@'):
+        return "'" + text
+    return text

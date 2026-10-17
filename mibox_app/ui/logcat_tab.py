@@ -6,14 +6,21 @@ from collections import deque
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QPlainTextEdit, QPushButton,
-    QLabel, QComboBox, QLineEdit, QMessageBox, QFileDialog, QApplication,
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QWidget,
 )
 
+from ..workers import Worker
 from . import kit
 from .actions_dialog import search_key
-
-from ..workers import Worker
 
 # Geriye donuk uyumluluk: koyu palet tabanli seviye renkleri.
 # Yeni kod apply_theme() icinde theme.logcat_colors_for(dark) kullanir.

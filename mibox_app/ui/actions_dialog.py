@@ -2,8 +2,15 @@
 """Searchable, keyboard-accessible navigation and safe quick actions."""
 import unicodedata
 
-from PySide6.QtCore import Qt, QEvent, QRect, QSize
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QLabel
+from PySide6.QtCore import QEvent, QRect, QSize, Qt
+from PySide6.QtWidgets import (
+    QDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QVBoxLayout,
+)
 
 
 def search_key(text):
@@ -25,13 +32,17 @@ class ActionsDialog(QDialog):
         self.search.setPlaceholderText('Sayfa veya işlem ara…')
         self.search.setAccessibleName('Hızlı erişimde ara')
         self.search.setClearButtonEnabled(True)
-        self.search.installEventFilter(self)
         layout.addWidget(self.search)
         self.results = QListWidget()
         self.results.setAccessibleName('Hızlı erişim sonuçları')
         self.results.setWordWrap(True)
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.results, 1)
+        # Olay filtreleri sonuçlar hazır olduktan SONRA takılır: arama alanına
+        # inşa sırasında gelen bir olay eventFilter'a düşerse self.results
+        # eksikliğinden AttributeError ile inşa kırılıyordu (test yakaladı).
+        self.search.installEventFilter(self)
+        self.results.installEventFilter(self)
         self.empty = QLabel('Eşleşen sayfa veya işlem yok.')
         self.empty.setProperty('role', 'quiet')
         layout.addWidget(self.empty)
@@ -41,7 +52,6 @@ class ActionsDialog(QDialog):
         self.search.textChanged.connect(self._filter)
         self.search.returnPressed.connect(self._activate)
         self.results.itemClicked.connect(self._activate)
-        self.results.installEventFilter(self)
         self._filter('')
 
     def _filter(self, text):

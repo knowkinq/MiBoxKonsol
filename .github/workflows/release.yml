@@ -1,0 +1,174 @@
+name: Release
+
+# v* etiketi itilince: surum dogrulama -> lint+test -> ADB'li ONEDIR paket
+# -> paketlenmis exe uzerinde --version/--selftest dumani -> zip + sha256
+# -> GitHub Release. workflow_dispatch yalnizca derler ve dogrular; yayimlamaz.
+#
+# Not: pyproject.toml surumu ve CHANGELOG girdisi elle guncellenir; bu is
+# akisi yalnizca mibox_app/__init__.py icindeki __version__ ile etiketi
+# karsilastirir.
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+
+    - name: Read and verify version
+      shell: pwsh
+      env:
+        REF_NAME: ${{ github.ref_name }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $match = Select-String -Path "mibox_app\__init__.py" `
+          -Pattern "__version__\s*=\s*'([^']+)'" | Select-Object -First 1
+        if (-not $match) {
+          Write-Error "mibox_app/__init__.py icinde __version__ bulunamadi."
+          exit 1
+        }
+        $version = $match.Matches[0].Groups[1].Value
+        $tag = $env:REF_NAME
+        "MIBOX_VERSION=$version" >> $env:GITHUB_ENV
+        "MIBOX_TAG=$tag" >> $env:GITHUB_ENV
+        if ($env:EVENT_NAME -eq "push" -and $tag -ne "v$version") {
+          Write-Error "Tag ($tag) uygulama surumuyle (v$version) uyusmuyor; once surumu guncelleyin."
+          exit 1
+        }
+        Write-Host "Surum dogrulandi: v$version (ref: $tag)"
+
+    - name: Lint and test
+      run: |
+        python -m ruff check .
+        python -m pytest
+
+    - name: Download official ADB (platform-tools)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $archive = Join-Path $env:RUNNER_TEMP "platform-tools_r37.0.1-win.zip"
+        $extract = Join-Path $env:RUNNER_TEMP "mibox-platform-tools"
+        $url = "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip"
+        $expectedSha256 = "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99"
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $expectedSha256) {
+          throw "Android Platform-Tools SHA-256 doğrulaması başarısız."
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+        $adbSource = Join-Path $extract "platform-tools"
+        $revision = Join-Path $adbSource "source.properties"
+        if (-not (Test-Path -LiteralPath (Join-Path $adbSource "adb.exe") -PathType Leaf)) {
+          throw "Doğrulanmış arşivde adb.exe bulunamadı."
+        }
+        if (-not (Select-String -LiteralPath $revision -Pattern '^Pkg.Revision=37\.0\.1$' -Quiet)) {
+          throw "Beklenmeyen Android Platform-Tools sürümü."
+        }
+
+    - name: Build ONEDIR package with bundled ADB
+      shell: pwsh
+      run: |
+        $adbSource = Join-Path $env:RUNNER_TEMP "mibox-platform-tools\platform-tools"
+        python tools/build_onedir.py --adb-source $adbSource
+        if ($LASTEXITCODE -ne 0) { throw "Taşınabilir paket derlemesi başarısız." }
+
+    - name: Smoke test packaged exe
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $paket = "dist-onedir\MiBoxKonsol"
+        $exe = Join-Path $paket "MiBoxKonsol.exe"
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+          Write-Error "Paket exe bulunamadi: $exe"
+          exit 1
+        }
+        $rapor = Join-Path $env:TEMP "mibox-version.txt"
+        $p = Start-Process -FilePath $exe `
+          -ArgumentList "--version", "--report-file", $rapor -Wait -PassThru
+        if ($p.ExitCode -ne 0) {
+          Write-Error "--version basarisiz (exit $($p.ExitCode))."
+          exit 1
+        }
+        $metin = Get-Content -LiteralPath $rapor -Raw
+        if ($metin -notmatch [regex]::Escape("v$env:MIBOX_VERSION")) {
+          Write-Error "--version ciktisi beklenen surumu icermiyor."
+          exit 1
+        }
+        $env:QT_QPA_PLATFORM = "offscreen"
+        $p2 = Start-Process -FilePath $exe -ArgumentList "--selftest" `
+          -WorkingDirectory $paket -Wait -PassThru
+        if ($p2.ExitCode -ne 0) {
+          Write-Error "--selftest basarisiz (exit $($p2.ExitCode))."
+          exit 1
+        }
+        $isaret = Join-Path $paket "mibox-selftest-ok.txt"
+        $icerik = ""
+        if (Test-Path -LiteralPath $isaret -PathType Leaf) {
+          $icerik = (Get-Content -LiteralPath $isaret -Raw).Trim()
+        }
+        if ($icerik -ne "SELFTEST_OK") {
+          Write-Error "--selftest isaretcisi dogrulanamadi."
+          exit 1
+        }
+
+    - name: Strip runtime artifacts from package
+      run: python tools/build_onedir.py --clean-package
+
+    - name: Package zip and checksums
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $zip = "MiBoxKonsol-$env:MIBOX_VERSION-win64-onedir.zip"
+        Compress-Archive -Path "dist-onedir\MiBoxKonsol" `
+          -DestinationPath $zip -CompressionLevel Optimal -Force
+        $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
+        "$hash  $zip" | Set-Content -LiteralPath "SHA256SUMS.txt" -Encoding ASCII
+        Get-Content -LiteralPath "SHA256SUMS.txt"
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: MiBoxKonsol-${{ github.ref_name }}-win64-onedir
+        path: |
+          MiBoxKonsol-*-win64-onedir.zip
+          SHA256SUMS.txt
+        retention-days: 14
+
+    - name: Publish GitHub release
+      if: github.event_name == 'push'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        gh release create "$env:MIBOX_TAG" `
+          "MiBoxKonsol-$env:MIBOX_VERSION-win64-onedir.zip" `
+          "SHA256SUMS.txt" `
+          --title "MiBox Konsol v$env:MIBOX_VERSION" `
+          --generate-notes

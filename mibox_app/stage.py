@@ -6,16 +6,8 @@ kullanıcı Önizle ile görür, Uygula ile tek worker zincirinde çalıştırı
 Her sahne çalışması öncesi paket durum snapshot'ı alınır; uygulama verisi
 snapshot'a dahil değildir.
 """
+from .action_labels import ACTION_TR  # geriye uyumlu disa aktarim
 from .adb_engine import AdbError
-
-# (aksiyon, paket) -> insan dilinde açıklama
-ACTION_TR = {
-    'uninstall': 'Kaldır (user 0)', 'disable': 'Devre dışı bırak',
-    'enable': 'Aktif et', 'restore': 'Geri yükle',
-    'restrict': 'Kısıtla', 'unrestrict': 'Serbest bırak',
-    'clear': 'Veriyi sil', 'stop': 'Force stop',
-    'smart': 'Akıllı kaldır (önce devre dışı bırak)',
-}
 
 ACTION_ICON = {
     'uninstall': '🗑', 'disable': '⏸', 'enable': '▶', 'restore': '♻',

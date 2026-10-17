@@ -382,7 +382,7 @@ class PackageActionWorker(BaseWorker):
     """Tek veya coklu paket islemi (stop/clear/enable/disable/uninstall/launch)."""
 
     def __init__(self, engine, target, packages, action, protected, auto_snapshot=True,
-                 user_id=0):
+                 user_id=0, *, full_uninstall=False):
         super().__init__()
         self.job_name = 'Paket islemi'
         self._engine = engine
@@ -391,6 +391,7 @@ class PackageActionWorker(BaseWorker):
         self._action = action
         self._protected = frozenset(protected)
         self._user_id = check_user_id(0 if user_id is None else user_id)
+        self._full_uninstall = bool(full_uninstall)
         self._auto_snapshot = auto_snapshot and action in (
             'uninstall', 'disable', 'restore', 'enable')
         self._snapshot_required = auto_snapshot and action in ('uninstall', 'disable')
@@ -426,7 +427,10 @@ class PackageActionWorker(BaseWorker):
         elif self._action == 'disable':
             _call_user_method(e, 'disable_user', t, pkg, user_id=self._user_id)
         elif self._action == 'uninstall':
-            _call_user_method(e, 'uninstall_user', t, pkg, user_id=self._user_id)
+            if self._full_uninstall:
+                e.uninstall_package_full(t, pkg, cancel_check=self.check_cancel)
+            else:
+                _call_user_method(e, 'uninstall_user', t, pkg, user_id=self._user_id)
         elif self._action == 'restore':
             _call_user_method(e, 'install_existing', t, pkg, user_id=self._user_id)
         elif self._action == 'launch':
@@ -442,10 +446,14 @@ class PackageActionWorker(BaseWorker):
         """Islem sonrasi durumu dogrula; tutarsizsa hata yukseltir."""
         e = self._engine
         t = self._target
-        if self._action == 'uninstall':
+        if self._action == 'uninstall' and not self._full_uninstall:
             if not _call_user_method(
                     e, 'is_uninstalled_for_user', t, pkg, user_id=self._user_id):
                 raise AdbError('Doğrulama başarısız: {} hala kurulu gorunuyor.'.format(pkg))
+        elif self._action == 'uninstall' and self._full_uninstall:
+            # uninstall_package_full verifies that the package is absent for
+            # every Android user before it returns successfully.
+            return
         elif self._action == 'disable':
             if not _call_user_method(e, 'is_disabled', t, pkg, user_id=self._user_id):
                 raise AdbError('Doğrulama başarısız: {} hala aktif gorunuyor.'.format(pkg))
@@ -481,8 +489,17 @@ class PackageActionWorker(BaseWorker):
         }
         if self._action not in action_methods:
             raise AdbError('Bilinmeyen paket işlemi: {}'.format(self._action))
-        _require_user_scope(
-            self._engine, action_methods.get(self._action, ()), self._user_id)
+        if self._full_uninstall and self._action != 'uninstall':
+            raise AdbError('Tam kaldırma yalnız uninstall işlemiyle kullanılabilir.')
+        if self._full_uninstall and self._user_id != 0:
+            raise AdbError(
+                'Tam kaldırma yalnız user 0 seçiliyken kullanılabilir; işlem yapılmadı.')
+        if self._full_uninstall:
+            if not callable(getattr(self._engine, 'uninstall_package_full', None)):
+                raise AdbError('Tam kaldırma API’si bulunamadı; işlem yapılmadı.')
+        else:
+            _require_user_scope(
+                self._engine, action_methods.get(self._action, ()), self._user_id)
         if self._auto_snapshot:
             from . import snapshot as snapmod
             _require_user_scope(snapmod, ('take',), self._user_id)
@@ -493,13 +510,15 @@ class PackageActionWorker(BaseWorker):
         ok = 0
         fail = 0
         cancelled = 0
+        interrupted = False
         details = []
         total = len(self._packages)
         for i, pkg in enumerate(self._packages, 1):
-            if self.isInterruptionRequested():
+            if interrupted or self.isInterruptionRequested():
                 details.append((pkg, False, 'kullanıcı durdurdu'))
                 fail += 1
                 cancelled += 1
+                interrupted = True
                 self.progress.emit(i, total)
                 continue
             self.progress.emit(i, total)
@@ -517,7 +536,22 @@ class PackageActionWorker(BaseWorker):
                 self._do(pkg)
                 self._verify(pkg)
                 ok += 1
-                details.append((pkg, True, 'tamam (dogrulandi)'))
+                if self._full_uninstall:
+                    details.append((
+                        pkg, True,
+                        'tam kaldırma tamamlandı; tüm Android kullanıcılarının uygulama verisi silindi'))
+                else:
+                    details.append((pkg, True, 'tamam (dogrulandi)'))
+            except CancelledError:
+                interrupted = True
+                fail += 1
+                cancelled += 1
+                details.append((
+                    pkg, False,
+                    'işlem iptal edildi; paket durumu değişmiş olabilir'))
+                self.log.emit(
+                    '{} {} iptal edildi; paket durumu değişmiş olabilir.'.format(
+                        pkg, self._action))
             except AdbError as e:
                 self.log.emit('{} {}: {}'.format(pkg, self._action, e))
                 fail += 1
@@ -527,7 +561,9 @@ class PackageActionWorker(BaseWorker):
         try:
             from . import history as histmod
             histmod.append_many(
-                self._target, self._action, details, user_id=self._user_id)
+                self._target,
+                'uninstall_full' if self._full_uninstall else self._action,
+                details, user_id=self._user_id)
         except Exception as e:
             if self._user_id != 0:
                 self.log.emit('User {} işlem geçmişi kaydedilemedi: {}'.format(
@@ -538,7 +574,9 @@ class PackageActionWorker(BaseWorker):
             pass
         self.finished_ok.emit({'ok': ok, 'fail': fail, 'details': details,
                                'cancelled': cancelled,
-                               'action': self._action, 'auto_snap': snap_name,
+                               'action': ('uninstall_full' if self._full_uninstall
+                                          else self._action),
+                               'auto_snap': snap_name,
                                'user_id': self._user_id})
 
 
@@ -555,6 +593,7 @@ def format_action_result(res, name_of=None, max_items=60):
     action = res.get('action', '')
     labels = {
         'uninstall': 'kaldırıldı (user)', 'disable': 'devre dışı bırakıldı',
+        'uninstall_full': 'tam kaldırıldı (tüm kullanıcıların uygulama verisi silindi)',
         'enable': 'aktif edildi', 'restore': 'geri yuklendi', 'clear': 'verisi temizlendi',
         'stop': 'durduruldu', 'launch': 'acildi', 'smart': 'işlem yapildi',
         'stage': 'işlem yapildi',
@@ -776,22 +815,6 @@ class SnapshotWorker(BaseWorker):
             raise AdbError('Bilinmeyen snapshot işlemi: {}'.format(self._mode))
 
 
-class HealthWorker(BaseWorker):
-    """Cihaz saglik ozeti (depolama/RAM/paket)."""
-
-    def __init__(self, engine, target):
-        super().__init__()
-        self.job_name = 'Sağlık olcumu'
-        self._engine = engine
-        self._target = target
-
-    def _work(self):
-        self.check_cancel()
-        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
-        self.check_cancel()
-        self.finished_ok.emit(self._engine.health(self._target))
-
-
 class StageWorker(BaseWorker):
     """Sahneyi arka planda calistirir (otomatik snapshot dahil)."""
 
@@ -964,49 +987,6 @@ class StageWorker(BaseWorker):
                                  is_cancelled=self.isInterruptionRequested)
         res['user_id'] = self._user_id
         self.finished_ok.emit(res)
-
-
-class ScreenshotWorker(BaseWorker):
-    finished_ok = Signal(bytes)
-
-    def __init__(self, engine, target):
-        super().__init__()
-        self.job_name = 'Ekran goruntusu'
-        self._engine = engine
-        self._target = target
-
-    def _work(self):
-        self.check_cancel()
-        self._engine.connect(self._target, cancel_check=self.isInterruptionRequested)
-        self.check_cancel()
-        data = self._engine.screenshot(self._target)
-        # PNG gecerliligini worker'da dogrula (bozuk veri UI'a gitmesin)
-        from .adb_engine import png_is_valid
-        if not png_is_valid(data):
-            self.failed.emit('Ekran goruntusu bozuk indi (PNG degil). Tekrar deneyin.')
-            return
-        self.finished_ok.emit(data)
-
-
-class DeviceInfoWorker(BaseWorker):
-    finished_ok = Signal(dict)
-
-    def __init__(self, engine, target):
-        super().__init__()
-        self.job_name = 'Cihaz bilgisi'
-        self._engine = engine
-        self._target = target
-
-    def _work(self):
-        self.check_cancel()
-        target = str(self._target or '').strip()
-        if not target:
-            raise AdbError('Hedef cihaz seçilmedi.')
-        self._engine.connect(target, cancel_check=self.isInterruptionRequested)
-        self.check_cancel()
-        info = self._engine.device_info_full(target)
-        self.check_cancel()
-        self.finished_ok.emit(info)
 
 
 class ApkBackupWorker(BaseWorker):

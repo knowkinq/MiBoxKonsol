@@ -2,11 +2,21 @@
 """Ekran, çözünürlük, DPI ve kenar taşması (overscan) yönetim paneli."""
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QFrame, QLabel,
-    QPushButton, QComboBox, QMessageBox, QDialog, QDialogButtonBox,
+    QBoxLayout,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..workers import Worker, CancelledError
+from ..workers import CancelledError, Worker
 from . import kit
 
 

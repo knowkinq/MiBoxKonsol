@@ -26,7 +26,7 @@ INVERSE = {
     'unrestrict': 'restrict',
 }
 
-NON_REVERSIBLE = {'clear', 'stop', 'launch'}
+NON_REVERSIBLE = {'clear', 'stop', 'launch', 'uninstall_full'}
 
 
 def _path():

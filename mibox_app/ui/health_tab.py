@@ -4,18 +4,27 @@ import re
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-    QPushButton, QProgressBar, QMessageBox, QLineEdit,
-    QHeaderView, QTabWidget, QScrollArea, QBoxLayout,
+    QBoxLayout,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..workers import Worker, CancelledError
+from ..workers import CancelledError, Worker
 from . import kit
-from .flowlayout import FlowLayout
-from .optimization_tab import OptimizationTab, measurement
 from .background_panel import BackgroundPanel
 from .display_panel import DisplayPanel
-
+from .flowlayout import FlowLayout
+from .optimization_tab import OptimizationTab, measurement
 
 AUTO_COL_NAME = 0
 AUTO_COL_PACKAGE = 1
@@ -724,8 +733,8 @@ class HealthTab(QWidget):
         self._read('Depolama taraması', lambda engine, target: engine.storage_top(target), self._show_top)
 
     def _show_top(self, items):
-        from PySide6.QtWidgets import QTableWidgetItem as _TWI
         from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtWidgets import QTableWidgetItem as _TWI
         self.grid_top.setRowCount(0)
         for e in items:
             r = self.grid_top.rowCount()
@@ -767,8 +776,8 @@ class HealthTab(QWidget):
         self._read('Otomatik başlayan taraması', scan, self._show_autorun)
 
     def _show_autorun(self, found, labels=None):
-        from PySide6.QtWidgets import QTableWidgetItem as _TWI3
         from PySide6.QtCore import Qt as _Qt3
+        from PySide6.QtWidgets import QTableWidgetItem as _TWI3
         if labels is None and isinstance(found, tuple) and len(found) == 2:
             found, labels = found
         labels = labels if isinstance(labels, dict) else {}
@@ -870,8 +879,9 @@ class HealthTab(QWidget):
                 pass
 
     def _autorun_restrict(self):
-        from ..workers import BulkActionWorker
         from PySide6.QtCore import Qt as _Qt4
+
+        from ..workers import BulkActionWorker
 
         def closing():
             return bool(getattr(self.window, '_closing', False)
