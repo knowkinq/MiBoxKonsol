@@ -6,6 +6,8 @@ gercek APK, ADB cihazi veya ag kullanilmaz.
 """
 import os
 import struct
+import sys
+import types
 import warnings
 import zipfile
 
@@ -14,6 +16,20 @@ import pytest
 from mibox_app.adb_engine import AdbEngine
 
 NO_INDEX = 0xFFFFFFFF
+
+
+def _patch_androguard(monkeypatch, apk_class):
+    package = types.ModuleType('androguard')
+    package.__path__ = []
+    core = types.ModuleType('androguard.core')
+    core.__path__ = []
+    apk = types.ModuleType('androguard.core.apk')
+    apk.APK = apk_class
+    package.core = core
+    core.apk = apk
+    monkeypatch.setitem(sys.modules, 'androguard', package)
+    monkeypatch.setitem(sys.modules, 'androguard.core', core)
+    monkeypatch.setitem(sys.modules, 'androguard.core.apk', apk)
 
 
 def _len8(value):
@@ -683,7 +699,7 @@ class TestReadApkMetadata:
             def get_package(self):
                 return 'com.baska.app'
 
-        monkeypatch.setattr('androguard.core.apk.APK', CelisenApk)
+        _patch_androguard(monkeypatch, CelisenApk)
         info = AdbEngine.read_apk_metadata(str(path))
         assert info['package'] == ''
         assert info['version_name'] == ''
@@ -697,6 +713,6 @@ class TestReadApkMetadata:
             def __init__(self, path):
                 raise RuntimeError('patladi')
 
-        monkeypatch.setattr('androguard.core.apk.APK', PatlayanApk)
+        _patch_androguard(monkeypatch, PatlayanApk)
         info = AdbEngine.read_apk_metadata(str(path))
         assert info['package'] == 'com.example.app'
